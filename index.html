@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090b10" />
+    <title>H3 Director — Narrative Engine Renderer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      if (window.location.protocol === 'file:') {
+        document.getElementById('root').innerHTML = `
+          <main style="min-height:100vh;display:grid;place-content:center;padding:32px;background:#090b10;color:#f3f0e9;font:16px system-ui,sans-serif;text-align:center">
+            <h1 style="margin:0 0 12px">H3 Director needs its local server</h1>
+            <p style="max-width:580px;margin:0 auto 20px;color:#9da2ad;line-height:1.6">This is a Vite application, so opening <code>index.html</code> directly cannot load its modules or video-generation API.</p>
+            <code style="padding:12px 16px;border:1px solid #343844;border-radius:8px;background:#10131a">npm run dev</code>
+            <p style="color:#9da2ad">Then open <strong>http://localhost:4173/</strong></p>
+          </main>`;
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+logLevel: info
+logDestinations: [stdout]
+
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: no
+srt: no
+webrtc: no
+
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: fmp4
+hlsSegmentCount: 45
+hlsSegmentDuration: 1s
+hlsSegmentMaxSize: 50M
+hlsAllowOrigin: '*'
+
+paths:
+  all_others:
