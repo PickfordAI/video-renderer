@@ -1,0 +1,3 @@
+{$RENDERER_DOMAIN} {
+    reverse_proxy renderer:4174
+}

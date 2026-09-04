@@ -6,6 +6,8 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ViteDevServer } from 'vite';
 
+import { allowOperatorRequest } from './access.js';
+import { serveMedia } from './media.js';
 import { ExternalRendererRunManager } from './external-renderer.js';
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
 import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
@@ -17,19 +19,11 @@ import { prepareReferenceAudioUrls } from './reference-audio.js';
 const isDevelopment = process.argv.includes('--dev');
 const appRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const distRoot = resolve(appRoot, 'dist');
+const hlsModulePath = join(appRoot, 'node_modules', 'hls.js', 'dist', 'hls.mjs');
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
 const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
-const builtInReferenceAssets = new Set([
-  'whispers/kent.jpg',
-  'whispers/nathan.jpg',
-  'whispers/richard.jpg',
-  'whispers/cassandra.jpg',
-  'whispers/june.jpg',
-  'whispers/song.jpg',
-  'whispers/autumn.jpg',
-]);
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -39,10 +33,6 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(JSON.stringify(body));
 }
 
-function isLoopbackRequest(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress;
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-}
 
 function isLocalUiRequest(request: IncomingMessage): boolean {
   const host = (request.headers.host ?? '').split(':', 1)[0];
@@ -66,17 +56,20 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
-function referenceAssetDataUrl(assetKey: string): string {
-  if (!builtInReferenceAssets.has(assetKey)) throw new Error(`unknown character reference asset: ${assetKey}`);
-  const assetRoot = isDevelopment ? join(appRoot, 'public', 'reference-assets') : join(distRoot, 'reference-assets');
-  const assetPath = join(assetRoot, assetKey);
-  if (!existsSync(assetPath)) throw new Error(`character reference asset is missing: ${assetKey}`);
-  return `data:image/jpeg;base64,${readFileSync(assetPath).toString('base64')}`;
+function referenceAssetDataUrl(_assetKey: string): string {
+  throw new Error('Bundled reference assets are not supported; provide an HTTPS image URL.');
 }
 
 async function handleApi(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
   const requestUrl = new URL(request.url ?? '/', 'http://local');
   const pathname = requestUrl.pathname;
+  if (pathname === '/api/config' && request.method === 'GET') {
+    const configPath = join(appRoot, '.renderer', 'services.json');
+    const saved = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
+    const keys: Record<string, string> = { narrativeEngineUrl: 'NARRATIVE_ENGINE_URL', narrativeAuthoringUrl: 'NARRATIVE_AUTHORING_URL', realtimeGatewayUrl: 'REALTIME_GATEWAY_URL', chatBackendUrl: 'CHAT_BACKEND_URL', rendererBaseUrl: 'RENDERER_PLATFORM_URL' };
+    sendJson(response, 200, Object.fromEntries(Object.entries(keys).map(([key, env]) => [key, process.env[env] || saved[key] || ''])));
+    return true;
+  }
   if (pathname === '/api/health' && request.method === 'GET') {
     sendJson(response, 200, {
       ok: true,
@@ -109,10 +102,6 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
     return true;
   }
   if (pathname === '/api/external-renderer/runs' && request.method === 'POST') {
-    if (!isLoopbackRequest(request)) {
-      sendJson(response, 403, { error: 'external renderer runs may only be started from loopback' });
-      return true;
-    }
     try {
       sendJson(response, 202, externalRendererRuns.start(await readJson(request)));
     } catch (error) {
@@ -257,6 +246,7 @@ const mimeTypes: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 function serveProduction(request: IncomingMessage, response: ServerResponse): void {
@@ -275,6 +265,23 @@ function serveProduction(request: IncomingMessage, response: ServerResponse): vo
 let vite: ViteDevServer | null = null;
 
 const server = createServer(async (request, response) => {
+  if (!allowOperatorRequest(request)) {
+    sendJson(response, 403, { error: 'This is the private operator port. Use the local agent or authenticated private proxy.' });
+    return;
+  }
+  try {
+  if (new URL(request.url ?? '/', 'http://local').pathname === '/vendor/hls.js') {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, { error: 'method not allowed' });
+      return;
+    }
+    response.writeHead(200, {
+      'Content-Type': 'text/javascript; charset=utf-8',
+      'Cache-Control': isDevelopment ? 'no-store' : 'public, max-age=86400',
+    });
+    createReadStream(hlsModulePath).pipe(response);
+    return;
+  }
   if (await handleNarrativeEngineApi(request, response)) return;
   if (await handleApi(request, response)) return;
   if (vite) {
@@ -285,6 +292,14 @@ const server = createServer(async (request, response) => {
     return;
   }
   serveProduction(request, response);
+  } catch {
+    if (!response.headersSent) sendJson(response, 500, { error: 'Renderer request failed' });
+    else response.destroy();
+  }
+});
+
+const mediaServer = createServer((request, response) => {
+  void serveMedia(request, response, playoutManager).catch(() => response.destroy());
 });
 
 if (isDevelopment) {
@@ -295,12 +310,21 @@ if (isDevelopment) {
   });
 }
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`MiniMax Renderer listening at http://localhost:${port}`);
+server.listen(port, process.env.HOST ?? '127.0.0.1', () => {
+  console.log(`H3 Director listening at http://localhost:${port}`);
 });
+
+mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), process.env.MEDIA_HOST ?? '127.0.0.1');
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).finally(() => server.close());
+    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).finally(() => {
+      server.close();
+      server.closeAllConnections();
+      mediaServer.close();
+      mediaServer.closeAllConnections();
+      void vite?.close();
+      setTimeout(() => process.exit(0), 3000).unref();
+    });
   });
 }

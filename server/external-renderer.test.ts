@@ -12,6 +12,7 @@ import {
 const rendererId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const credentialId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const roomId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const roomShortlink = 'ROOM42';
 const storyChannelId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const roomChannelId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
@@ -23,6 +24,7 @@ function config() {
     rendererVersion: 'h3.20260903.edge.1',
     storyId: 42,
     roomId,
+    roomShortlink,
     storyMessageChannelId: storyChannelId,
     roomMainMessageChannelId: roomChannelId,
     storyConfig: { message_channel_ids: [storyChannelId] },
@@ -31,13 +33,13 @@ function config() {
 }
 
 describe('external renderer run configuration', () => {
-  it('pins edge defaults and requires at least one hundred audience messages', () => {
+  it('uses service defaults without generating synthetic audience traffic', () => {
     const parsed = parseExternalRendererRunConfig(config());
 
     expect(parsed.baseUrl).toBe('https://edge.pickford.ai');
-    expect(parsed.chatBaseUrl).toBe('https://chat.edge.pickford.ai');
-    expect(parsed.audienceMessages).toBe(100);
+    expect(parsed).not.toHaveProperty('audienceMessages');
     expect(parsed.resolution).toBe('480P');
+    expect(parsed.roomShortlink).toBe(roomShortlink);
   });
 
   it('accepts a local bridge without audience-only room metadata', () => {
@@ -52,7 +54,7 @@ describe('external renderer run configuration', () => {
       resumeExistingStory: true,
     });
 
-    expect(parsed.enableAudience).toBe(false);
+    expect(parsed).not.toHaveProperty('enableAudience');
     expect(parsed.tier).toBe('renderer-dev');
   });
 

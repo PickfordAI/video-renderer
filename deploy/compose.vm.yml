@@ -1,0 +1,36 @@
+# Run from repository root with --env-file .renderer/hosting.env.
+name: pickford-renderer
+services:
+  renderer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: hosted
+    restart: unless-stopped
+    environment:
+      FAL_KEY: ${FAL_KEY:?Supply FAL_KEY through the agent environment}
+      RENDERER_ADMIN_TOKEN: ${RENDERER_ADMIN_TOKEN:?Run npm run hosted:prepare}
+      PUBLIC_APP_URL: https://${RENDERER_DOMAIN:?Agent must configure the VM DNS name}
+      HOST: 0.0.0.0
+      MEDIA_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:4173:4173"
+    expose:
+      - "4174"
+  https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - renderer
+    environment:
+      RENDERER_DOMAIN: ${RENDERER_DOMAIN:?Agent must configure the VM DNS name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

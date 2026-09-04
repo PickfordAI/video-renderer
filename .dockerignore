@@ -3,3 +3,8 @@ dist
 server-dist
 .env*
 *.log
+.git
+.renderer
+.vercel
+viewer-dist
+coverage

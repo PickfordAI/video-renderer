@@ -1,57 +1,5 @@
 import type { CharacterReferenceMedia, CharacterReferenceSetting, StoryBeat } from './types';
 
-interface BuiltInCharacterReference extends CharacterReferenceSetting {
-  aliases: string[];
-}
-
-const VOICE_PREVIEW_ROOT =
-  'https://storage.googleapis.com/stoked-genius-449903-r6-dev-public-assets/voice-previews/audio';
-
-export const DEFAULT_CHARACTER_REFERENCES: BuiltInCharacterReference[] = [
-  {
-    characterName: 'Marcus Kent',
-    imageUrl: '/reference-assets/whispers/kent.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/kent-4328b029a621ff84.mp3`,
-    aliases: ['Marcus', 'Kent'],
-  },
-  {
-    characterName: 'Nathan Paulson',
-    imageUrl: '/reference-assets/whispers/nathan.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/nathan-b8ff52aba7006bb6.mp3`,
-    aliases: ['Nathan', 'Paulson', 'Nathan Brooks', 'Brooks'],
-  },
-  {
-    characterName: 'Richard Cho',
-    imageUrl: '/reference-assets/whispers/richard.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/richard-c6632b9f42086088.mp3`,
-    aliases: ['Richard', 'Cho', 'Richard Vance', 'Vance'],
-  },
-  {
-    characterName: 'Cassandra Vexon',
-    imageUrl: '/reference-assets/whispers/cassandra.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/cassandra-37657c49f4ed66b6.mp3`,
-    aliases: ['Cassandra', 'Vexon', 'Cassandra Wells', 'Wells'],
-  },
-  {
-    characterName: 'June Morrison',
-    imageUrl: '/reference-assets/whispers/june.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/june-eb0539760d654ee8.mp3`,
-    aliases: ['June', 'Morrison'],
-  },
-  {
-    characterName: 'Lily Song',
-    imageUrl: '/reference-assets/whispers/song.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/song-0853e82a63cb152a.mp3`,
-    aliases: ['Lily', 'Song'],
-  },
-  {
-    characterName: 'Autumn Tate',
-    imageUrl: '/reference-assets/whispers/autumn.jpg',
-    audioUrl: `${VOICE_PREVIEW_ROOT}/autumn-9fb1d00201b97d56.mp3`,
-    aliases: ['Autumn', 'Tate'],
-  },
-];
-
 function normalizeName(value: string): string {
   return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
 }
@@ -73,11 +21,7 @@ function validSetting(value: unknown): CharacterReferenceSetting | null {
 }
 
 export function createDefaultCharacterReferences(): CharacterReferenceSetting[] {
-  return DEFAULT_CHARACTER_REFERENCES.map(({ characterName, imageUrl, audioUrl }) => ({
-    characterName,
-    imageUrl,
-    audioUrl,
-  }));
+  return [];
 }
 
 export function loadCharacterReferences(value: unknown, legacyImageUrls = ''): CharacterReferenceSetting[] {
@@ -99,20 +43,6 @@ export function loadCharacterReferences(value: unknown, legacyImageUrls = ''): C
   return references;
 }
 
-function builtInForName(name: string): BuiltInCharacterReference | null {
-  const normalized = normalizeName(name);
-  return DEFAULT_CHARACTER_REFERENCES.find((reference) =>
-    [reference.characterName, ...reference.aliases].some((candidate) => normalizeName(candidate) === normalized),
-  ) ?? null;
-}
-
-function imageSource(value: string): Pick<CharacterReferenceMedia, 'assetKey' | 'imageUrl'> {
-  const localPrefix = '/reference-assets/';
-  if (value.startsWith(localPrefix)) return { assetKey: value.slice(localPrefix.length) };
-  if (value.startsWith('https://')) return { imageUrl: value };
-  return {};
-}
-
 export function resolveCharacterReferences(
   beat: StoryBeat,
   configuredReferences: CharacterReferenceSetting[],
@@ -123,26 +53,22 @@ export function resolveCharacterReferences(
         ...configuredReferences
           .filter((reference) => containsName(beat.prompt, reference.characterName))
           .map((reference) => reference.characterName),
-        ...DEFAULT_CHARACTER_REFERENCES
-          .filter((reference) => reference.aliases.some((name) => containsName(beat.prompt, name)))
-          .map((reference) => reference.characterName),
       ];
   const result: CharacterReferenceMedia[] = [];
   const emitted = new Set<string>();
   let mediaCount = 0;
   const canonicalSpeaker = beat.speakerName
-    ? builtInForName(beat.speakerName)?.characterName ?? beat.speakerName.trim()
+    ? beat.speakerName.trim()
     : null;
   const speakerKey = canonicalSpeaker ? normalizeName(canonicalSpeaker) : null;
 
   for (const candidate of candidates) {
-    const builtIn = builtInForName(candidate);
-    const canonicalName = builtIn?.characterName ?? candidate.trim();
+    const canonicalName = candidate.trim();
     const key = normalizeName(canonicalName);
     if (!canonicalName || emitted.has(key)) continue;
     const configured = configuredReferences.find((reference) => normalizeName(reference.characterName) === key);
     if (!configured) continue;
-    const image = imageSource(configured.imageUrl.trim());
+    const image = configured.imageUrl.trim().startsWith('https://') ? { imageUrl: configured.imageUrl.trim() } : {};
     const exactDialogueAudio = key === speakerKey && beat.dialogueAudioUrl?.startsWith('https://')
       ? beat.dialogueAudioUrl
       : undefined;
@@ -151,7 +77,7 @@ export function resolveCharacterReferences(
       : undefined;
     const audioUrl = exactDialogueAudio ?? fallbackVoiceSample;
     const audioRole = exactDialogueAudio ? 'dialogue_performance' : audioUrl ? 'voice_sample' : undefined;
-    const referenceMediaCount = Number(Boolean(image.assetKey || image.imageUrl)) + Number(Boolean(audioUrl));
+    const referenceMediaCount = Number(Boolean(image.imageUrl)) + Number(Boolean(audioUrl));
     if (referenceMediaCount === 0 || mediaCount + referenceMediaCount > 12) continue;
     result.push({
       characterName: canonicalName,

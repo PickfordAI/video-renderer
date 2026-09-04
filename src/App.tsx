@@ -252,6 +252,10 @@ export function App() {
   };
 
   useEffect(() => {
+    void fetch('/api/config').then(response => response.json()).then((config) => {
+      const endpoints = Object.fromEntries(Object.entries(config).filter(([key, value]) => key in DEFAULT_SETTINGS && typeof value === 'string' && value));
+      setSettings(current => ({ ...current, ...endpoints }));
+    }).catch(() => undefined);
     void fetch('/api/health')
       .then((response) => response.json())
       .then((body: { provider?: 'minimax-direct' | 'fal'; falKeyConfigured?: boolean; minimaxKeyConfigured?: boolean; rendererPlatformConfigured?: boolean }) => {
@@ -1104,7 +1108,7 @@ export function App() {
               {settings.useCharacterReferences && (
                 <div className="reference-editor" aria-label="Editable character media references">
                   {settings.characterReferences.length === 0 && (
-                    <p className="reference-empty">No character references configured. Add a character or restore the Whispers defaults.</p>
+                    <p className="reference-empty">No character references configured. Add characters and media you have permission to use.</p>
                   )}
                   {settings.characterReferences.map((reference, index) => (
                     <article className="reference-row" key={index}>
@@ -1124,7 +1128,7 @@ export function App() {
                         <span>Image reference</span>
                         <input
                           aria-label={`${reference.characterName || `Character ${index + 1}`} image reference`}
-                          placeholder="/reference-assets/… or https://…"
+                          placeholder="https://…"
                           value={reference.imageUrl}
                           onChange={(event) => updateCharacterReference(index, 'imageUrl', event.target.value)}
                         />
@@ -1154,7 +1158,7 @@ export function App() {
                     </article>
                   ))}
                   <small className="reference-help">
-                    Local default images are bundled with this renderer. External images and all audio samples must use public HTTPS URLs. MiniMax receives only the characters matched to each shot.
+                    Images and audio samples must use public HTTPS URLs. H3 Max receives only the characters matched to each shot.
                   </small>
                 </div>
               )}

@@ -1,0 +1,13 @@
+{
+  "evdId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "rendererId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "credentialId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "clientSecret": "replace-with-installation-secret",
+  "setupToken": "replace-with-user-session",
+  "environment": "edge",
+  "storyType": "CREATOR",
+  "roomName": "My story",
+  "resolution": "480P",
+  "clipDurationSeconds": 6,
+  "storyConfig": {}
+}

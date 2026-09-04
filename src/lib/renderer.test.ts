@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDefaultCharacterReferences } from './character-references';
+const createTestReferences = () => ['Marcus Kent', 'Autumn Tate', 'June Morrison'].map(characterName => ({
+  characterName, imageUrl: `https://images.example/${characterName.split(' ')[0]}.jpg`, audioUrl: `https://audio.example/${characterName.split(' ')[0]}.mp3`,
+}));
 import { buildRenderPrompt, renderBeat } from './renderer';
 import type { RendererSettings } from './types';
 
@@ -62,7 +64,7 @@ describe('buildRenderPrompt', () => {
       duration: 5,
       resolution: '768P',
       useCharacterReferences: true,
-      characterReferences: createDefaultCharacterReferences(),
+      characterReferences: createTestReferences(),
     } as RendererSettings;
 
     const clip = await renderBeat({
@@ -71,15 +73,15 @@ describe('buildRenderPrompt', () => {
       blockIndex: 0,
       sequence: 1,
       prompt: 'Kent quietly questions Autumn in the hotel lobby.',
-      characterNames: ['Kent', 'Autumn'],
-      speakerName: 'Kent',
+      characterNames: ['Marcus Kent', 'Autumn Tate'],
+      speakerName: 'Marcus Kent',
     }, settings);
 
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body)) as Record<string, unknown>;
     expect(body.characterReferences).toEqual([
-      expect.objectContaining({ characterName: 'Marcus Kent', assetKey: 'whispers/kent.jpg', audioUrl: expect.stringContaining('/kent-') }),
-      expect.objectContaining({ characterName: 'Autumn Tate', assetKey: 'whispers/autumn.jpg' }),
+      expect.objectContaining({ characterName: 'Marcus Kent', imageUrl: 'https://images.example/Marcus.jpg', audioUrl: 'https://audio.example/Marcus.mp3' }),
+      expect.objectContaining({ characterName: 'Autumn Tate', imageUrl: 'https://images.example/Autumn.jpg' }),
     ]);
     expect((body.characterReferences as Array<Record<string, unknown>>)[1].audioUrl).toBeUndefined();
     expect(body.prompt).toContain('Image 1 is the canonical appearance of Marcus Kent');
@@ -102,7 +104,7 @@ describe('buildRenderPrompt', () => {
       duration: 5,
       resolution: '768P',
       useCharacterReferences: true,
-      characterReferences: createDefaultCharacterReferences(),
+      characterReferences: createTestReferences(),
     } as RendererSettings;
 
     await renderBeat({

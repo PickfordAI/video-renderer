@@ -3,3 +3,9 @@ dist/
 server-dist/
 .env*
 !.env.example
+.renderer/
+.vercel/
+viewer-dist/
+coverage/
+*.log
+.DS_Store

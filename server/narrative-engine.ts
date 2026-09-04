@@ -47,6 +47,18 @@ function requiredString(value: unknown, label: string): string {
   return value.trim();
 }
 
+function requiredPositiveInteger(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || (value as number) <= 0) throw new Error(`${label} must be a positive integer`);
+  return value as number;
+}
+
+function objects(value: unknown, label: string): Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.filter((item): item is Record<string, unknown> => (
+    Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+  ));
+}
+
 async function forwardResponse(upstream: Response, response: ServerResponse): Promise<void> {
   const body = Buffer.from(await upstream.arrayBuffer());
   response.writeHead(upstream.status, {
@@ -76,6 +88,23 @@ function narrativeHeaders(token: string): Record<string, string> {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   };
+}
+
+async function setupToken(
+  body: Record<string, unknown>,
+  baseUrl: string,
+  response: ServerResponse,
+): Promise<string | null> {
+  const supplied = typeof body.token === 'string' ? body.token.trim() : '';
+  if (supplied) return supplied;
+  const email = requiredString(body.email, 'setup account email');
+  const password = requiredString(body.password, 'setup account password');
+  const login = await requireUpstreamJson(await fetch(`${baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  }), response);
+  return login ? requiredString(login.session_token, 'login session token') : null;
 }
 
 async function proxyRoom(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -280,6 +309,119 @@ async function proxyPrepareShow(request: IncomingMessage, response: ServerRespon
   });
 }
 
+async function proxyProvisionExternalStory(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const raw = await readJson(request);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('request body must be an object');
+  const body = raw as Record<string, unknown>;
+  const baseUrl = serviceBaseUrl(body.baseUrl);
+  const token = await setupToken(body, baseUrl, response);
+  if (!token) return;
+  const roomName = requiredString(body.roomName, 'room name');
+  const evdId = requiredString(body.evdId, 'Narrative Engine EVD ID');
+  if (!uuidPattern.test(evdId)) {
+    sendJson(response, 400, { error: 'EVD ID must be a UUID from Narrative Engine.' });
+    return;
+  }
+  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
+  const headers = narrativeHeaders(token);
+
+  const created = await requireUpstreamJson(await fetch(`${baseUrl}/room/`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: roomName,
+      visibility: 'PRIVATE',
+      state: 'ACTIVE',
+      redundant_renderer_count: 1,
+      story_type: storyType,
+    }),
+  }), response);
+  if (!created) return;
+  const roomId = requiredString(created.id, 'created room id');
+  const shortlink = requiredString(created.shortlink, 'created room code');
+
+  const joined = await fetch(`${baseUrl}/room/join`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ shortlink }),
+  });
+  if (!joined.ok) {
+    await forwardResponse(joined, response);
+    return;
+  }
+  await joined.body?.cancel();
+
+  const story = await requireUpstreamJson(await fetch(`${baseUrl}/story/`, {
+    method: 'POST',
+    headers,
+    // The public renderer start owns the EVD-bearing story configuration.
+    // Keep the pre-created row deliberately bare and inactive so orchestration
+    // cannot mistake it for an already-running legacy show.
+    body: JSON.stringify({ room_id: roomId, active: false }),
+  }), response);
+  if (!story) return;
+  const storyId = requiredPositiveInteger(story.id, 'created story id');
+
+  const readChannels = async (scope: 'room_id' | 'story_id', id: string | number) => {
+    const upstream = await fetch(`${baseUrl}/message_channel/?${scope}=${encodeURIComponent(String(id))}`, { headers });
+    if (!upstream.ok) {
+      await forwardResponse(upstream, response);
+      return null;
+    }
+    return objects(await upstream.json(), `${scope} message channels`);
+  };
+
+  const roomChannels = await readChannels('room_id', roomId);
+  if (!roomChannels) return;
+  const activeRoomChannels = roomChannels.filter((channel) => channel.state === 'ACTIVE' && channel.room_id === roomId);
+  if (activeRoomChannels.length !== 1) throw new Error('room must have exactly one active main message channel');
+  const roomMainMessageChannelId = requiredString(activeRoomChannels[0].id, 'room main message channel id');
+
+  let storyChannels = await readChannels('story_id', storyId);
+  if (!storyChannels) return;
+  if (storyChannels.length === 0) {
+    const createdChannel = await fetch(`${baseUrl}/message_channel/`, {
+      method: 'POST',
+      headers,
+      // External-renderer authorization binds all three identities together:
+      // the story, its room, and this dedicated audience channel. The public
+      // API accepts both scopes on one channel; omitting room_id creates a
+      // story-only channel that can never pass the renderer-platform check.
+      body: JSON.stringify({
+        name: 'External audience',
+        state: 'ACTIVE',
+        story_id: storyId,
+        room_id: roomId,
+      }),
+    });
+    if (!createdChannel.ok) {
+      await forwardResponse(createdChannel, response);
+      return;
+    }
+    await createdChannel.body?.cancel();
+    storyChannels = await readChannels('story_id', storyId);
+    if (!storyChannels) return;
+  }
+  const activeStoryChannels = storyChannels.filter((channel) => (
+    channel.state === 'ACTIVE'
+    && channel.story_id === storyId
+    && channel.room_id === roomId
+  ));
+  if (activeStoryChannels.length !== 1) throw new Error('story must have exactly one active story-scoped message channel');
+  const storyMessageChannelId = requiredString(activeStoryChannels[0].id, 'story message channel id');
+  if (storyMessageChannelId === roomMainMessageChannelId) {
+    throw new Error('story-scoped and room-main message channels must be distinct');
+  }
+
+  sendJson(response, 201, {
+    roomId,
+    roomShortlink: shortlink,
+    storyId,
+    storyMessageChannelId,
+    roomMainMessageChannelId,
+  });
+}
+
 async function proxyExternalPlaybackState(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const raw = await readJson(request);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('request body must be an object');
@@ -321,7 +463,8 @@ async function proxyStopShow(request: IncomingMessage, response: ServerResponse)
   const body = raw as Record<string, unknown>;
   const baseUrl = serviceBaseUrl(body.baseUrl);
   const shortlink = requiredString(body.shortlink, 'room code');
-  const token = requiredString(body.token, 'session token');
+  const token = await setupToken(body, baseUrl, response);
+  if (!token) return;
   const headers = narrativeHeaders(token);
 
   const cancelled = await fetch(
@@ -464,19 +607,22 @@ export async function handleNarrativeEngineApi(
   const requestUrl = new URL(request.url ?? '/', 'http://renderer.local');
   const isRoom = requestUrl.pathname === '/api/narrative/room';
   const isStartShow = requestUrl.pathname === '/api/narrative/start-show';
+  const isProvisionExternalStory = requestUrl.pathname === '/api/narrative/provision-external-story';
   const isPrepareShow = requestUrl.pathname === '/api/narrative/prepare-show';
   const isStopShow = requestUrl.pathname === '/api/narrative/stop-show';
   const isExternalPlayback = requestUrl.pathname === '/api/narrative/external-playback-state';
   const isAvailableEvds = requestUrl.pathname === '/api/narrative/available-evds';
   const isDss = requestUrl.pathname === '/api/narrative/dss-events';
-  if (!isRoom && !isStartShow && !isPrepareShow && !isStopShow && !isExternalPlayback && !isAvailableEvds && !isDss) return false;
+  if (!isRoom && !isStartShow && !isPrepareShow && !isProvisionExternalStory && !isStopShow && !isExternalPlayback && !isAvailableEvds && !isDss) return false;
 
   try {
-    if (isRoom || isStartShow || isPrepareShow || isStopShow || isExternalPlayback || isAvailableEvds) {
+    if (isRoom || isStartShow || isPrepareShow || isProvisionExternalStory || isStopShow || isExternalPlayback || isAvailableEvds) {
       if (request.method !== 'POST') {
         sendJson(response, 405, { error: 'method not allowed' });
       } else if (isStartShow) {
         await proxyStartShow(request, response);
+      } else if (isProvisionExternalStory) {
+        await proxyProvisionExternalStory(request, response);
       } else if (isPrepareShow) {
         await proxyPrepareShow(request, response);
       } else if (isStopShow) {
