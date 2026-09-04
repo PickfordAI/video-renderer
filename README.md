@@ -19,6 +19,18 @@ same-origin proxy routes on the renderer server, avoiding browser CORS coupling.
 direct browser WebSocket connection. Service URLs and the session token are supplied by the user
 in the setup screen; the Narrative Engine is not started or imported by this repository.
 
+For deployed Story Kernel environments, the server also exposes a loopback-only external-renderer
+run API at `POST /api/external-renderer/runs`. It logs in through the public renderer endpoint,
+connects the query-free bridge WebSocket with a bearer header, registers an immutable manifest,
+starts a renderer-pinned story, renders and plays every ordered DSS group, keeps the lease alive,
+and exercises two independent public audience connections. Renderer credentials are accepted only
+in the local request body, retained in memory for the run, and omitted from status responses.
+
+Poll `GET /api/external-renderer/runs/<run-id>` for sanitized evidence and stop the connection with
+`DELETE /api/external-renderer/runs/<run-id>`. The caller must provide distinct, authoritative room
+main and story-scoped channel IDs; the server rejects a configuration that routes story Chat to the
+room channel.
+
 ## How playback works
 
 Incoming DSS command groups become ordered shots. Up to three fal jobs may run concurrently, but
