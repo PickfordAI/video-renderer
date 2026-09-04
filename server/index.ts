@@ -6,6 +6,7 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ViteDevServer } from 'vite';
 
+import { ExternalRendererRunManager } from './external-renderer.js';
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
 import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
 import { parseGenerationInput } from './generation-input.js';
@@ -19,6 +20,7 @@ const distRoot = resolve(appRoot, 'dist');
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
+const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
 const builtInReferenceAssets = new Set([
   'whispers/kent.jpg',
   'whispers/nathan.jpg',
@@ -35,6 +37,11 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
     'Cache-Control': 'no-store',
   });
   response.end(JSON.stringify(body));
+}
+
+function isLoopbackRequest(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress;
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -82,6 +89,31 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
       sendJson(response, 201, session.status());
     } catch (error) {
       sendJson(response, 503, { error: error instanceof Error ? error.message : 'could not start playout' });
+    }
+    return true;
+  }
+  if (pathname === '/api/external-renderer/runs' && request.method === 'POST') {
+    if (!isLoopbackRequest(request)) {
+      sendJson(response, 403, { error: 'external renderer runs may only be started from loopback' });
+      return true;
+    }
+    try {
+      sendJson(response, 202, externalRendererRuns.start(await readJson(request)));
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : 'invalid external renderer run' });
+    }
+    return true;
+  }
+  const externalRunMatch = pathname.match(/^\/api\/external-renderer\/runs\/([0-9a-f-]{36})$/i);
+  if (externalRunMatch) {
+    if (request.method === 'GET') {
+      const run = externalRendererRuns.get(externalRunMatch[1]);
+      sendJson(response, run ? 200 : 404, run ?? { error: 'external renderer run not found' });
+    } else if (request.method === 'DELETE') {
+      const run = await externalRendererRuns.stop(externalRunMatch[1]);
+      sendJson(response, run ? 200 : 404, run ?? { error: 'external renderer run not found' });
+    } else {
+      sendJson(response, 405, { error: 'method not allowed' });
     }
     return true;
   }
@@ -216,6 +248,6 @@ server.listen(port, '0.0.0.0', () => {
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void playoutManager.stopAll().finally(() => server.close());
+    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).finally(() => server.close());
   });
 }
