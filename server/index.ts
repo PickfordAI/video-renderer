@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import type { ViteDevServer } from 'vite';
 
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
+import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
 import { parseGenerationInput } from './generation-input.js';
 import { handleNarrativeEngineApi } from './narrative-engine.js';
 import { PlayoutManager } from './playout.js';
@@ -62,10 +63,15 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
   if (pathname === '/api/health' && request.method === 'GET') {
     sendJson(response, 200, {
       ok: true,
-      provider: 'fal',
-      textModel: process.env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',
-      referenceModel: process.env.FAL_REFERENCE_VIDEO_MODEL_ID ?? 'minimax/h3-max/reference-to-video',
+      provider: process.env.MINIMAX_API_KEY ? 'minimax-direct' : 'fal',
+      textModel: process.env.MINIMAX_API_KEY
+        ? process.env.MINIMAX_VIDEO_MODEL_ID ?? 'MiniMax-H3-Max'
+        : process.env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',
+      referenceModel: process.env.MINIMAX_API_KEY
+        ? process.env.MINIMAX_REFERENCE_VIDEO_MODEL_ID ?? 'MiniMax-H3'
+        : process.env.FAL_REFERENCE_VIDEO_MODEL_ID ?? 'minimax/h3-max/reference-to-video',
       falKeyConfigured: Boolean(process.env.FAL_KEY || process.env.FAL_API_KEY),
+      minimaxKeyConfigured: Boolean(process.env.MINIMAX_API_KEY),
     });
     return true;
   }
@@ -113,9 +119,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
     sendJson(response, 405, { error: 'method not allowed' });
     return true;
   }
-  const apiKey = process.env.FAL_KEY || process.env.FAL_API_KEY;
+  const minimaxApiKey = process.env.MINIMAX_API_KEY;
+  const apiKey = minimaxApiKey || process.env.FAL_KEY || process.env.FAL_API_KEY;
   if (!apiKey) {
-    sendJson(response, 503, { error: 'FAL_KEY is not configured on the renderer server' });
+    sendJson(response, 503, { error: 'MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server' });
     return true;
   }
   try {
@@ -134,7 +141,13 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
     };
     request.once('aborted', abortGeneration);
     response.once('close', abortGeneration);
-    const result = await generateVideo(input, {
+    const result = minimaxApiKey ? await generateMiniMaxVideo(input, {
+      apiKey: minimaxApiKey,
+      baseUrl: process.env.MINIMAX_API_BASE_URL,
+      textModel: process.env.MINIMAX_VIDEO_MODEL_ID,
+      referenceModel: process.env.MINIMAX_REFERENCE_VIDEO_MODEL_ID,
+      signal: controller.signal,
+    }) : await generateVideo(input, {
       apiKey,
       modelId: process.env.FAL_VIDEO_MODEL_ID,
       referenceModelId: process.env.FAL_REFERENCE_VIDEO_MODEL_ID,
@@ -147,7 +160,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
   } catch (error) {
     if (response.destroyed) return true;
     const message = error instanceof Error ? error.message : 'video generation failed';
-    sendJson(response, error instanceof FalVideoError ? 502 : 400, { error: message });
+    sendJson(response, error instanceof FalVideoError || error instanceof MiniMaxVideoError ? 502 : 400, { error: message });
   }
   return true;
 }

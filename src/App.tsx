@@ -159,6 +159,7 @@ export function App() {
   const [chatDraft, setChatDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [falConfigured, setFalConfigured] = useState<boolean | null>(null);
+  const [videoProvider, setVideoProvider] = useState<'minimax-direct' | 'fal' | null>(null);
   const [showStartGate, setShowStartGate] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [masterVolume, setMasterVolume] = useState(0.85);
@@ -243,7 +244,10 @@ export function App() {
   useEffect(() => {
     void fetch('/api/health')
       .then((response) => response.json())
-      .then((body: { falKeyConfigured?: boolean }) => setFalConfigured(Boolean(body.falKeyConfigured)))
+      .then((body: { provider?: 'minimax-direct' | 'fal'; falKeyConfigured?: boolean; minimaxKeyConfigured?: boolean }) => {
+        setVideoProvider(body.provider ?? null);
+        setFalConfigured(Boolean(body.falKeyConfigured || body.minimaxKeyConfigured));
+      })
       .catch(() => setFalConfigured(false));
   }, []);
 
@@ -621,7 +625,7 @@ export function App() {
   const generate = async (beat: StoryBeat) => {
     if (generatingBeatId) return;
     if (!falConfigured) {
-      setError('FAL_KEY is not configured on the local renderer server.');
+      setError('A MiniMax or fal API key is not configured on the local renderer server.');
       return;
     }
     setGeneratingBeatId(beat.storyBlockId);
@@ -677,7 +681,7 @@ export function App() {
       return 'Enable continuous auto-render before starting a live H3 Max show.';
     }
     if (settings.setupMode === 'create' && !falConfigured) {
-      return 'FAL_KEY must be configured before starting a live H3 Max show.';
+      return 'A MiniMax or fal API key must be configured before starting a live H3 Max show.';
     }
     return null;
   };
@@ -829,15 +833,15 @@ export function App() {
         <div className="brand-lockup">
           <div className="brand-mark"><span /></div>
           <div>
-            <strong>H3 Director</strong>
-            <small>Narrative Engine renderer lab</small>
+            <strong>MiniMax Renderer</strong>
+            <small>{videoProvider === 'minimax-direct' ? 'Direct MiniMax API' : videoProvider === 'fal' ? 'fal Turbo API' : 'Narrative Engine renderer lab'}</small>
           </div>
         </div>
         <div className="transport-strip" aria-label="Connection status">
           <span><StatusDot state={connectionState} />Engine</span>
           <span><StatusDot state={dssState} />Story</span>
           <span><StatusDot state={chatState} />Chat</span>
-          <span><StatusDot state={falConfigured ? 'connected' : falConfigured === false ? 'error' : 'idle'} />fal video</span>
+          <span><StatusDot state={falConfigured ? 'connected' : falConfigured === false ? 'error' : 'idle'} />{videoProvider === 'minimax-direct' ? 'MiniMax direct' : 'fal video'}</span>
         </div>
         <div className="topbar-actions">
           {connectionState === 'connected' && (
@@ -1095,7 +1099,7 @@ export function App() {
                   ? settings.setupMode === 'create' ? 'Starting show…' : 'Connecting…'
                   : settings.setupMode === 'create' ? 'Create room & start show' : 'Join room'}
               </button>
-              <span className="credential-note">FAL_KEY stays on this app’s server.</span>
+              <span className="credential-note">Video API keys stay on this app’s server.</span>
             </div>
           </form>
         </section>

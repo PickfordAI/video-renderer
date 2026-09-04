@@ -147,7 +147,7 @@ async function proxyStartShow(request: IncomingMessage, response: ServerResponse
   const playback = await fetch(`${baseUrl}/room/playback-mode`, {
     method: 'PATCH',
     headers,
-    body: JSON.stringify({ room_id: roomId, mode: 'external_renderer' }),
+    body: JSON.stringify({ room_id: roomId, mode: 'video' }),
   });
   if (!playback.ok) {
     await forwardResponse(playback, response);

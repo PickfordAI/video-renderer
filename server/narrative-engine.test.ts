@@ -138,7 +138,7 @@ describe('Narrative Engine server proxy', () => {
         body: { name: 'H3 Show', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: 'CREATOR' },
       },
       { method: 'POST', path: '/room/join', body: { shortlink: 'h3-show' } },
-      { method: 'PATCH', path: '/room/playback-mode', body: { room_id: 'room-1', mode: 'external_renderer' } },
+      { method: 'PATCH', path: '/room/playback-mode', body: { room_id: 'room-1', mode: 'video' } },
       {
         method: 'POST',
         path: '/show/start',

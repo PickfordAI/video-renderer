@@ -38,14 +38,14 @@ Requirements:
 - Node.js 22+
 - FFmpeg available as `ffmpeg`
 - Docker for the local MediaMTX relay
-- A fal API key
+- A MiniMax API key or fal API key
 - Separately running or remotely hosted Narrative Engine services
 
 Set up and start the renderer:
 
 ```bash
 cp .env.example .env
-# Put your FAL_KEY in .env.
+# Put MINIMAX_API_KEY (preferred) or FAL_KEY in .env.
 npm ci
 docker compose up -d media-relay
 npm run dev
@@ -95,7 +95,10 @@ relay origin when the viewer is not on the Docker host.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FAL_KEY` | required | Server-side fal credential |
+| `FAL_KEY` | optional fallback | Server-side fal credential |
+| `MINIMAX_API_KEY` | preferred | Server-side direct MiniMax credential; takes precedence over fal |
+| `MINIMAX_VIDEO_MODEL_ID` | `MiniMax-H3-Max` | Direct MiniMax text-to-video model |
+| `MINIMAX_REFERENCE_VIDEO_MODEL_ID` | `MiniMax-H3` | Direct MiniMax reference-to-video model |
 | `PORT` | `4173` | Renderer HTTP port |
 | `FAL_VIDEO_MODEL_ID` | `minimax/h3-max-turbo/text-to-video` | Text-only model |
 | `FAL_REFERENCE_VIDEO_MODEL_ID` | `minimax/h3-max/reference-to-video` | Reference model |
