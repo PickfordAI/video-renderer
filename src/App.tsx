@@ -167,6 +167,7 @@ export function App() {
   const [videoProvider, setVideoProvider] = useState<'minimax-direct' | 'fal' | null>(null);
   const [rendererPlatformConfigured, setRendererPlatformConfigured] = useState(false);
   const [platformRunId, setPlatformRunId] = useState<string | null>(null);
+  const [platformOutcome, setPlatformOutcome] = useState<'ended' | 'stopped' | 'failed' | null>(null);
   const [showStartGate, setShowStartGate] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [masterVolume, setMasterVolume] = useState(0.85);
@@ -456,9 +457,16 @@ export function App() {
       try {
         const status = await getExternalRendererConnection();
         if (cancelled || status.runId !== platformRunId) return;
-        if (status.state === 'failed') {
-          setError(status.failures.at(-1) ?? 'Renderer Platform bridge failed');
-          setDssState('error');
+        if (status.state === 'ended' || status.state === 'stopped' || status.state === 'failed') {
+          cancelled = true;
+          disconnect(false);
+          startedShowSettingsRef.current = null;
+          setPlatformOutcome(status.state);
+          if (status.state === 'failed') {
+            setError(status.failures.at(-1) ?? 'Renderer Platform bridge failed');
+            setConnectionState('error');
+            setDssState('error');
+          }
           return;
         }
         setDssState(status.state === 'running' ? 'connected' : 'idle');
@@ -523,7 +531,8 @@ export function App() {
     };
   }, []);
 
-  const disconnect = () => {
+  const disconnect = (stopPlatform = true) => {
+    setPlatformOutcome(null);
     externalSessionRef.current += 1;
     externalPlaybackEnabledRef.current = false;
     externalPlaybackTrackerRef.current.reset();
@@ -535,7 +544,7 @@ export function App() {
     const playoutSessionId = playoutSessionIdRef.current;
     playoutSessionIdRef.current = null;
     if (playoutSessionId) void stopPlayout(playoutSessionId).catch(() => undefined);
-    if (platformRunIdRef.current) void stopExternalRendererConnection(platformRunIdRef.current).catch(() => undefined);
+    if (stopPlatform && platformRunIdRef.current) void stopExternalRendererConnection(platformRunIdRef.current).catch(() => undefined);
     platformRunIdRef.current = null;
     setPlatformRunId(null);
     setPlayoutStatus(null);
@@ -1266,9 +1275,9 @@ export function App() {
                   </>
                 ) : (
                   <>
-                    <span className="eyebrow">Awaiting picture</span>
-                    <h2>{importedShow ? `${importedShow.name} is ready.` : connectionState === 'connected' ? 'The story feed is live.' : 'Start a Narrative Engine show.'}</h2>
-                    <p>{playoutStatus?.state === 'buffering'
+                    <span className="eyebrow">{platformOutcome ? 'Renderer finished' : 'Awaiting picture'}</span>
+                    <h2>{platformOutcome === 'ended' ? 'The story has ended.' : platformOutcome === 'stopped' ? 'The renderer has stopped.' : platformOutcome === 'failed' ? 'The renderer failed.' : importedShow ? `${importedShow.name} is ready.` : connectionState === 'connected' ? 'The story feed is live.' : 'Start a Narrative Engine show.'}</h2>
+                    <p>{platformOutcome ? 'Start a new show when you are ready.' : playoutStatus?.state === 'buffering'
                       ? `Building the ${playoutStatus.normalizedClips > 0 ? 'opening stream buffer' : 'first scenes'}…`
                       : playoutStatus?.state === 'starting'
                         ? 'Starting the continuous live stream…'
