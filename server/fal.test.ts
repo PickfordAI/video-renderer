@@ -64,14 +64,9 @@ describe('generateVideo', () => {
     expect(result.generationMode).toBe('reference');
   });
 
-  it('uses reference-to-video for an audio-only reference request', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(json({ request_id: 'request-audio' }))
-      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
-      .mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/audio-reference.mp4' } }));
-
-    await generateVideo(
+  it('rejects unsupported audio-only requests before paying for generation', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(generateVideo(
       {
         prompt: 'Audio 1 is the voice for the detective.',
         duration: 5,
@@ -80,9 +75,8 @@ describe('generateVideo', () => {
         referenceAudioUrls: ['https://audio.example/detective.mp3'],
       },
       { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
-    );
-
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max/reference-to-video');
+    )).rejects.toThrow('at least one image');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('surfaces terminal provider failures', async () => {
@@ -97,6 +91,50 @@ describe('generateVideo', () => {
         { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
       ),
     ).rejects.toBeInstanceOf(FalVideoError);
+  });
+
+  it('pins explicit Turbo i2v to its endpoint and sends only the first frame, without voice references', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'image-request' }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ video: { url: 'https://v3.fal.media/clip.mp4' } }));
+    const result = await generateVideo({
+      prompt: 'The detective looks toward the doorway.', duration: 5, resolution: '480P', aspectRatio: '16:9',
+      renderMode: 'fal-turbo-i2v', initialImageUrl: 'data:image/jpeg;base64,/9j/AAAA',
+      referenceImageUrls: ['https://images.example/character.jpg'], referenceAudioUrls: ['https://audio.example/voice.mp3'],
+    }, { apiKey: 'secret', modelId: 'ignored', referenceModelId: 'ignored', fetchImpl });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max-turbo/image-to-video');
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.image_url).toBe('data:image/jpeg;base64,/9j/AAAA');
+    expect(payload.reference_image_urls).toBeUndefined();
+    expect(payload.reference_audio_urls).toBeUndefined();
+    expect(result.generationMode).toBe('image');
+  });
+
+  it('pins explicit Max ref2v and preserves numbered refs before the optional scene anchor', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'ref-request' }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ video: { url: 'https://v3.fal.media/clip.mp4' } }));
+    await generateVideo({
+      prompt: 'Image 1 is the detective; Audio 1 is his voice.', duration: 5, resolution: '480P', aspectRatio: '16:9',
+      renderMode: 'fal-max-ref2v', initialImageUrl: 'https://images.example/scene.jpg',
+      referenceImageUrls: ['https://images.example/character.jpg'], referenceAudioUrls: ['data:audio/mpeg;base64,AAAA'],
+    }, { apiKey: 'secret', modelId: 'ignored', referenceModelId: 'ignored', fetchImpl });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max/reference-to-video');
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      reference_image_urls: ['https://images.example/character.jpg', 'https://images.example/scene.jpg'],
+      reference_audio_urls: ['data:audio/mp3;base64,AAAA'],
+    });
+  });
+
+  it('rejects missing explicit-mode assets and excess references before any paid submission', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const input = { prompt: 'The detective looks toward the doorway.', duration: 5, resolution: '480P', aspectRatio: '16:9' } as const;
+    await expect(generateVideo({ ...input, renderMode: 'fal-turbo-i2v' }, { apiKey: 'secret', fetchImpl })).rejects.toThrow('requires an initial');
+    await expect(generateVideo({ ...input, renderMode: 'fal-max-ref2v' }, { apiKey: 'secret', fetchImpl })).rejects.toThrow('requires a character');
+    await expect(generateVideo({ ...input, referenceImageUrls: Array(13).fill('https://images.example/ref.jpg') }, { apiKey: 'secret', fetchImpl })).rejects.toThrow('limits');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('cancels a submitted fal request when the renderer stops', async () => {
@@ -119,6 +157,6 @@ describe('generateVideo', () => {
     expect(fetchImpl.mock.calls[2]?.[0]).toBe(
       'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-stop/cancel',
     );
-    expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: 'PUT' });
+    expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: 'PUT', signal: expect.any(AbortSignal) });
   });
 });

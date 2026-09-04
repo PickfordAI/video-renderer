@@ -136,3 +136,74 @@ describe('buildRenderPrompt', () => {
     expect(body.prompt).not.toContain('never repeat or quote the reference sample');
   });
 });
+
+describe('explicit fal modes', () => {
+  const beat = { storyBlockId: 'first', sceneIndex: 0, blockIndex: 0, sequence: 1, prompt: 'Marcus speaks quietly to Autumn.', characterNames: ['Marcus Kent', 'Autumn Tate'], speakerName: 'Marcus Kent' };
+  const settings = { duration: 5, resolution: '480P', renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://images.example/scene.jpg', useCharacterReferences: true, characterReferences: createTestReferences() } as RendererSettings;
+  const generated = (name: string) => new Response(JSON.stringify({ requestId: name, videoUrl: `https://video.example/${name}.mp4`, timings: { totalSeconds: 2 }, generationMode: 'image' }));
+
+  it('uses an image without claiming absent character images or voice references', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(generated('first'));
+    vi.stubGlobal('fetch', fetchMock);
+    const clip = await renderBeat(beat, settings);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({ renderMode: 'fal-turbo-i2v', initialImageUrl: settings.initialImageUrl, characterReferences: [] });
+    expect(body.prompt).not.toMatch(/Image [12]|Audio [12]|canonical voice/);
+    expect(body.prompt).toContain('supplied initial image');
+    expect(clip.generationMode).toBe('image');
+  });
+
+  it('chains the next Turbo request from the extracted final frame and resets on Stop', async () => {
+    const { StudioRenderSession } = await import('./renderer');
+    const session = new StudioRenderSession();
+    const fetchMock = vi.fn().mockResolvedValueOnce(generated('first')).mockResolvedValueOnce(new Response(JSON.stringify({ imageUrl: 'data:image/jpeg;base64,test' }))).mockResolvedValueOnce(generated('second')).mockResolvedValueOnce(generated('fresh'));
+    vi.stubGlobal('fetch', fetchMock);
+    const signal = new AbortController().signal;
+    await session.render(beat, settings, signal);
+    await session.render({ ...beat, storyBlockId: 'second' }, settings, signal);
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/video-frame');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ videoUrl: 'https://video.example/first.mp4', position: 'last' });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).initialImageUrl).toBe('data:image/jpeg;base64,test');
+    session.reset();
+    await session.render({ ...beat, storyBlockId: 'fresh' }, settings, signal);
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body).initialImageUrl).toBe(settings.initialImageUrl);
+  });
+
+  it('does not submit another paid job if Stop occurs during frame extraction', async () => {
+    const { StudioRenderSession } = await import('./renderer');
+    const session = new StudioRenderSession();
+    let finishFrame!: (value: Response) => void;
+    const fetchMock = vi.fn().mockResolvedValueOnce(generated('first')).mockImplementationOnce(() => new Promise<Response>(resolve => { finishFrame = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    await session.render(beat, settings, new AbortController().signal);
+    const controller = new AbortController();
+    const next = session.render({ ...beat, storyBlockId: 'second' }, settings, controller.signal);
+    controller.abort(); session.reset();
+    finishFrame(new Response(JSON.stringify({ imageUrl: 'data:image/jpeg;base64,test' })));
+    await expect(next).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails before a request when no image matches an explicit ref2vid shot', async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    await expect(renderBeat({ ...beat, characterNames: ['Unknown'] }, { ...settings, renderMode: 'fal-max-ref2v', initialImageUrl: '' })).rejects.toThrow('No image reference matches');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('shared Turbo session ownership', () => {
+  it('rejects an overlapping manual or automatic shot before submitting another generation', async () => {
+    const { StudioRenderSession } = await import('./renderer');
+    const session = new StudioRenderSession();
+    let finish!: (value: Response) => void;
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const settings: RendererSettings = { duration: 5, resolution: '480P', renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://images.example/scene.jpg', useCharacterReferences: false, characterReferences: [], generationConcurrency: 2, maxBufferedSeconds: 30, styleDescription: '', narrativeEngineUrl: '', narrativeAuthoringUrl: '', realtimeGatewayUrl: '', chatBackendUrl: '', setupMode: 'create', roomName: '', roomShortlink: '', evdId: '', storyType: 'CREATOR', sessionToken: '', autoRender: false };
+    const beat = { storyBlockId: 'one', sceneIndex: 0, blockIndex: 0, sequence: 1, prompt: 'Lily enters the quiet lobby.' };
+    const first = session.render(beat, settings, new AbortController().signal);
+    await expect(session.render({ ...beat, storyBlockId: 'two' }, settings, new AbortController().signal)).rejects.toThrow('already generating');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    finish(new Response(JSON.stringify({ requestId: 'one', videoUrl: 'https://example.com/one.mp4', timings: { totalSeconds: 2 } })));
+    await first;
+  });
+});

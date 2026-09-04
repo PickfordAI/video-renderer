@@ -1,5 +1,5 @@
 import { watchUrlForStream } from './watch-url.mjs';
-import { validateHandoff } from './handoff.mjs';
+import { renderingOptions, validateHandoff } from './handoff.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { api, hosted, option, readState, rendererOrigin, services, sessionFile, stateDir, writePrivate } from './config.mjs';
@@ -27,6 +27,8 @@ try {
       if (!handoff.story && !handoff.setupToken) throw new Error('Handoff requires setupToken to provision a story, or an existing story object.');
       if (!endpoints.narrativeEngineUrl || !endpoints.rendererBaseUrl) throw new Error('Run npm run setup or supply services in the handoff.');
       const health = await api('/api/health', undefined, 'GET');
+      const renderOptions = renderingOptions(handoff);
+      if (renderOptions.renderMode !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
       if (!health.falKeyConfigured && !health.minimaxKeyConfigured) throw new Error('Configure MINIMAX_API_KEY or FAL_KEY in the worker environment before starting a story.');
       if (saved?.runId) {
         const previous = await api(`/api/external-renderer/runs/${saved.runId}`, undefined, 'GET').catch(() => null);
@@ -39,7 +41,7 @@ try {
       // Save provisioned identities before starting so failed starts can still be stopped.
       writePrivate(resolve(stateDir, sessionFile), story);
       let run = await api('/api/external-renderer/runs', {
-        ...story, baseUrl: endpoints.rendererBaseUrl,
+        ...story, ...renderOptions, baseUrl: endpoints.rendererBaseUrl,
         rendererId: handoff.rendererId, credentialId: handoff.credentialId, clientSecret: handoff.clientSecret,
         environment: handoff.environment,
         rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.0',

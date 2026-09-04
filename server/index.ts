@@ -11,6 +11,7 @@ import { serveMedia } from './media.js';
 import { ExternalRendererRunManager } from './external-renderer.js';
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
 import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
+import { extractVideoFrame, validateFrameVideoUrl } from './video-frame.js';
 import { parseGenerationInput } from './generation-input.js';
 import { handleNarrativeEngineApi } from './narrative-engine.js';
 import { PlayoutManager } from './playout.js';
@@ -44,13 +45,13 @@ function isLocalUiRequest(request: IncomingMessage): boolean {
     && request.headers['sec-fetch-site'] === 'same-origin';
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+async function readJson(request: IncomingMessage, maxBytes = maxRequestBytes): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buffer.length;
-    if (total > maxRequestBytes) throw new Error('request body is too large');
+    if (total > maxBytes) throw new Error('request body is too large');
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
@@ -188,19 +189,41 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
     }
     return true;
   }
+  if (pathname === '/api/video-frame') {
+    if (request.method !== 'POST') { sendJson(response, 405, { error: 'method not allowed' }); return true; }
+    const controller = new AbortController();
+    const abort = () => { if (!response.writableEnded) controller.abort(new DOMException('Frame request canceled', 'AbortError')); };
+    request.once('aborted', abort);
+    response.once('close', abort);
+    try {
+      const body = await readJson(request) as { videoUrl?: unknown; position?: unknown };
+      if (!body || typeof body !== 'object' || typeof body.videoUrl !== 'string') throw new Error('videoUrl must be an HTTPS URL');
+      const url = validateFrameVideoUrl(body.videoUrl);
+      if (body.position !== 'first' && body.position !== 'last') throw new Error('position must be first or last');
+      const imageUrl = await extractVideoFrame(url.toString(), { position: body.position, signal: controller.signal });
+      if (!controller.signal.aborted) sendJson(response, 200, { imageUrl });
+    } catch (error) {
+      if (!response.destroyed) sendJson(response, 400, { error: error instanceof Error ? error.message : 'Frame extraction failed' });
+    } finally {
+      request.off('aborted', abort);
+      response.off('close', abort);
+    }
+    return true;
+  }
   if (pathname !== '/api/generate') return false;
   if (request.method !== 'POST') {
     sendJson(response, 405, { error: 'method not allowed' });
     return true;
   }
-  const minimaxApiKey = process.env.MINIMAX_API_KEY;
-  const apiKey = minimaxApiKey || process.env.FAL_KEY || process.env.FAL_API_KEY;
-  if (!apiKey) {
-    sendJson(response, 503, { error: 'MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server' });
-    return true;
-  }
   try {
-    const parsedInput = parseGenerationInput(await readJson(request), referenceAssetDataUrl);
+    const parsedInput = parseGenerationInput(await readJson(request, 1_500_000), referenceAssetDataUrl);
+    const explicitFal = parsedInput.renderMode && parsedInput.renderMode !== 'auto';
+    const minimaxApiKey = explicitFal ? undefined : process.env.MINIMAX_API_KEY;
+    const apiKey = minimaxApiKey || process.env.FAL_KEY || process.env.FAL_API_KEY;
+    if (!apiKey) {
+      sendJson(response, 503, { error: explicitFal ? 'Explicit fal rendering requires FAL_KEY; no provider fallback is used' : 'MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server' });
+      return true;
+    }
     const input: GenerateVideoInput = {
       ...parsedInput,
       referenceAudioUrls: await prepareReferenceAudioUrls(

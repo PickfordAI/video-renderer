@@ -35,7 +35,9 @@ import {
   type PlayoutStatus,
 } from './lib/playout';
 import { orderClipsByTimeline, RenderPipeline, type RenderPipelineSnapshot } from './lib/render-pipeline';
-import { renderBeat } from './lib/renderer';
+import { StudioRenderSession } from './lib/renderer';
+import { DEFAULT_RENDER_OPTIONS, externalRenderOptions, loadRenderOptions, renderSettingsError } from './lib/render-options';
+import { RENDER_MODES, RENDER_MODE_LABELS, parseRenderMode } from '../server/render-mode';
 import { isUuid } from './lib/uuid';
 import type {
   ChatMessage,
@@ -50,6 +52,7 @@ import type {
 } from './lib/types';
 
 const DEFAULT_SETTINGS: RendererSettings = {
+  ...DEFAULT_RENDER_OPTIONS,
   narrativeEngineUrl: 'http://localhost:8081',
   narrativeAuthoringUrl: 'http://localhost:8091',
   realtimeGatewayUrl: 'http://localhost:8092',
@@ -92,6 +95,7 @@ function loadSettings(): RendererSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...persisted,
+      ...loadRenderOptions(persisted),
       evdId: isUuid(persisted.evdId) ? persisted.evdId.trim() : '',
       sessionToken: sessionStorage.getItem('h3-renderer-token') ?? '',
       characterReferences: loadCharacterReferences(persisted.characterReferences, persisted.characterReferenceUrls),
@@ -123,17 +127,6 @@ function plannedDuration(beat: StoryBeat, fallback: number): number {
   return beat.durationSeconds ?? fallback;
 }
 
-function renderCost(
-  durationSeconds: number,
-  resolution: RendererSettings['resolution'],
-  usesReferences = false,
-): string {
-  const rate = usesReferences
-    ? resolution === '480P' ? 0.05 : 0.08
-    : resolution === '480P' ? 0.025 : 0.04;
-  return (durationSeconds * rate).toFixed(2);
-}
-
 function StatusDot({ state }: { state: ConnectionState | TransportState }) {
   return <span className={`status-dot status-${state}`} aria-hidden="true" />;
 }
@@ -163,6 +156,7 @@ export function App() {
   const [stoppingShow, setStoppingShow] = useState(false);
   const [chatDraft, setChatDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [falKeyConfigured, setFalKeyConfigured] = useState(false);
   const [falConfigured, setFalConfigured] = useState<boolean | null>(null);
   const [videoProvider, setVideoProvider] = useState<'minimax-direct' | 'fal' | null>(null);
   const [rendererPlatformConfigured, setRendererPlatformConfigured] = useState(false);
@@ -187,6 +181,7 @@ export function App() {
   const enqueuedPlayoutBeatsRef = useRef(new Set<string>());
   const lastPlayedPlayoutPositionRef = useRef(-1);
   const pipelineRef = useRef<RenderPipeline | null>(null);
+  const studioRenderSessionRef = useRef(new StudioRenderSession());
   const manualRenderControllerRef = useRef<AbortController | null>(null);
   const startedShowSettingsRef = useRef<RendererSettings | null>(null);
   const connectedRoomSettingsRef = useRef<RendererSettings | null>(null);
@@ -203,17 +198,14 @@ export function App() {
   const importedServerMatch = importedShow && selectedImportedEpisode
     ? matchImportedEpisode(availableEvds, importedShow, selectedImportedEpisode)
     : null;
-  const baselineSpendPerClip = renderCost(settings.duration, settings.resolution);
+  const selectedBeatReferences = settings.renderMode !== 'fal-turbo-i2v' && (settings.useCharacterReferences || settings.renderMode === 'fal-max-ref2v')
+    ? resolveCharacterReferences(latestBeat ?? SAMPLE_BEAT, settings.characterReferences) : [];
   const selectedBeatDuration = plannedDuration(latestBeat ?? SAMPLE_BEAT, settings.duration);
-  const selectedBeatReferences = settings.useCharacterReferences
-    ? resolveCharacterReferences(latestBeat ?? SAMPLE_BEAT, settings.characterReferences)
-    : [];
-  const selectedBeatSpend = renderCost(
-    selectedBeatDuration,
-    settings.resolution,
-    selectedBeatReferences.length > 0,
-  );
-  const configuredModelLabel = videoProvider === 'minimax-direct' ? 'MiniMax H3 Max direct' : 'MiniMax H3 Max Turbo via fal';
+  const configuredModelLabel = settings.renderMode === 'auto'
+    ? videoProvider === 'minimax-direct' ? 'MiniMax H3 Max direct' : 'MiniMax H3 Max Turbo via fal'
+    : RENDER_MODE_LABELS[settings.renderMode];
+  const selectedProviderConfigured = settings.renderMode === 'auto' ? falConfigured : falKeyConfigured;
+  const generationSettingsLocked = connectionState === 'connecting' || connectionState === 'connected' || Boolean(generatingBeatId) || pipelineState.activeIds.length > 0;
   const needsPlaybackStart = !playbackActivated;
   const hlsAttachmentKey = playoutStatus?.hlsUrl
     ? `${playoutStatus.hlsUrl}:hlsjs-first`
@@ -227,7 +219,7 @@ export function App() {
   const updateCharacterReference = (
     index: number,
     field: keyof CharacterReferenceSetting,
-    value: string,
+    value: string | number | undefined,
   ) => {
     setSettings((current) => ({
       ...current,
@@ -260,6 +252,7 @@ export function App() {
       .then((response) => response.json())
       .then((body: { provider?: 'minimax-direct' | 'fal'; falKeyConfigured?: boolean; minimaxKeyConfigured?: boolean; rendererPlatformConfigured?: boolean }) => {
         setVideoProvider(body.provider ?? null);
+        setFalKeyConfigured(Boolean(body.falKeyConfigured));
         setFalConfigured(Boolean(body.falKeyConfigured || body.minimaxKeyConfigured));
         setRendererPlatformConfigured(Boolean(body.rendererPlatformConfigured));
       })
@@ -273,11 +266,12 @@ export function App() {
 
   useEffect(() => {
     settingsRef.current = settings;
+    saveSettings(settings);
   }, [settings]);
 
   useEffect(() => {
-    falConfiguredRef.current = falConfigured;
-  }, [falConfigured]);
+    falConfiguredRef.current = selectedProviderConfigured;
+  }, [selectedProviderConfigured]);
 
   const selectClip = (clipId: string | null) => {
     currentClipIdRef.current = clipId;
@@ -436,6 +430,7 @@ export function App() {
           }
           lastPlayedPlayoutPositionRef.current = status.playedThroughPosition;
           playbackCursorRef.current = status.playedThroughPosition + 1;
+          pipelineRef.current?.resume();
           queueExternalPlaybackReport();
         }
       } catch (statusError) {
@@ -498,9 +493,17 @@ export function App() {
 
   useEffect(() => {
     const pipeline = new RenderPipeline({
-      concurrency: 3,
+      concurrency: () => settingsRef.current.renderMode === 'fal-turbo-i2v' ? 1 : settingsRef.current.generationConcurrency,
       retries: 0,
-      render: (beat, signal) => renderBeat(beat, settingsRef.current, signal),
+      canStart: (beat) => {
+        if (manualRenderControllerRef.current) return false;
+        const snapshot = pipelineRef.current?.snapshot() ?? EMPTY_PIPELINE;
+        const occupied = liveTimelineRef.current.slice(playbackCursorRef.current).filter(item =>
+          clipByBeatRef.current.has(item.storyBlockId) || snapshot.activeIds.includes(item.storyBlockId));
+        const seconds = occupied.reduce((total, item) => total + plannedDuration(item, settingsRef.current.duration), 0);
+        return seconds === 0 || seconds + plannedDuration(beat, settingsRef.current.duration) <= settingsRef.current.maxBufferedSeconds;
+      },
+      render: (beat, signal) => studioRenderSessionRef.current.render(beat, settingsRef.current, signal),
       onClip: (_beat, clip) => {
         clipByBeatRef.current.set(clip.storyBlockId, clip);
         generationLatenciesRef.current = [...generationLatenciesRef.current.slice(-49), clip.generationMs];
@@ -525,7 +528,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    studioRenderSessionRef.current.reset();
+  }, [settings.renderMode, settings.initialImageUrl]);
+
+  useEffect(() => {
     return () => {
+      manualRenderControllerRef.current?.abort();
+      studioRenderSessionRef.current.reset();
       dssRef.current?.close();
       chatRef.current?.socket.close(1000, 'renderer unmounted');
       const sessionId = playoutSessionIdRef.current;
@@ -537,6 +546,7 @@ export function App() {
 
   const disconnect = (stopPlatform = true) => {
     setPlatformOutcome(null);
+    studioRenderSessionRef.current.reset();
     externalSessionRef.current += 1;
     externalPlaybackEnabledRef.current = false;
     externalPlaybackTrackerRef.current.reset();
@@ -679,21 +689,24 @@ export function App() {
   };
 
   const generate = async (beat: StoryBeat) => {
-    if (generatingBeatId) return;
+    if (manualRenderControllerRef.current || generatingBeatId) return;
     if (platformRunIdRef.current || connectionState === 'connecting') {
       setError('Manual rendering is disabled while the Renderer Platform run is active.');
       return;
     }
-    if (!falConfigured) {
-      setError('A MiniMax or fal API key is not configured on the local renderer server.');
+    const automatic = pipelineRef.current?.snapshot();
+    if (automatic && (automatic.activeIds.length || automatic.queuedIds.length)) {
+      setError('Wait for automatic generation to finish before rendering a manual shot.');
       return;
     }
+    const optionsError = renderSettingsError(settings, { falKeyConfigured, anyKeyConfigured: Boolean(falConfigured) });
+    if (optionsError) { setError(optionsError); return; }
     setGeneratingBeatId(beat.storyBlockId);
     setError(null);
     const controller = new AbortController();
     manualRenderControllerRef.current = controller;
     try {
-      const clip = await renderBeat(beat, settings, controller.signal);
+      const clip = await studioRenderSessionRef.current.render(beat, settings, controller.signal);
       if (controller.signal.aborted || manualRenderControllerRef.current !== controller) return;
       if (!playoutSessionIdRef.current) {
         const initialPlayoutStatus = await startPlayout(1);
@@ -719,6 +732,7 @@ export function App() {
       if (manualRenderControllerRef.current === controller) {
         manualRenderControllerRef.current = null;
         setGeneratingBeatId(null);
+        pipelineRef.current?.resume();
       }
     }
   };
@@ -745,10 +759,7 @@ export function App() {
     if (settings.setupMode === 'create' && !settings.autoRender && !rendererPlatformConfigured) {
       return 'Enable continuous auto-render before starting a live H3 Max show.';
     }
-    if (settings.setupMode === 'create' && !falConfigured) {
-      return 'A MiniMax or fal API key must be configured before starting a live H3 Max show.';
-    }
-    return null;
+    return renderSettingsError(settings, { falKeyConfigured, anyKeyConfigured: Boolean(falConfigured) });
   };
 
   const requestConnection = (event: FormEvent) => {
@@ -800,6 +811,7 @@ export function App() {
         if (usePlatformBridge) {
           const prepared = started as Awaited<ReturnType<typeof prepareRendererShow>>;
           const bridge = await startExternalRendererConnection({
+            ...externalRenderOptions(settings),
             storyId: prepared.storyId,
             roomId: prepared.room.id,
             storyMessageChannelId: prepared.storyMessageChannelId,
@@ -934,14 +946,14 @@ export function App() {
           <div className="brand-mark"><span /></div>
           <div>
             <strong>MiniMax Renderer</strong>
-            <small>{videoProvider === 'minimax-direct' ? 'Direct MiniMax API' : videoProvider === 'fal' ? 'fal Turbo API' : 'Narrative Engine renderer lab'}</small>
+            <small>{configuredModelLabel}</small>
           </div>
         </div>
         <div className="transport-strip" aria-label="Connection status">
           <span><StatusDot state={connectionState} />Engine</span>
           <span><StatusDot state={dssState} />Story</span>
           <span><StatusDot state={chatState} />Chat</span>
-          <span><StatusDot state={falConfigured ? 'connected' : falConfigured === false ? 'error' : 'idle'} />{videoProvider === 'minimax-direct' ? 'MiniMax direct' : 'fal video'}</span>
+          <span><StatusDot state={selectedProviderConfigured ? 'connected' : selectedProviderConfigured === false ? 'error' : 'idle'} />{settings.renderMode !== 'auto' ? 'fal video' : videoProvider === 'minimax-direct' ? 'MiniMax direct' : 'fal video'}</span>
         </div>
         <div className="topbar-actions">
           {connectionState === 'connected' && (
@@ -1083,17 +1095,39 @@ export function App() {
                 </label>
               )}
             </div>
+            <fieldset className="render-options" disabled={generationSettingsLocked}>
+              <legend>Generation</legend>
+              <div className="generation-row">
+                <label>
+                  <span>Model</span>
+                  <select value={settings.renderMode} onChange={event => setSettings({ ...settings, renderMode: parseRenderMode(event.target.value) })}>
+                    {RENDER_MODES.map(mode => <option key={mode} value={mode}>{RENDER_MODE_LABELS[mode]}</option>)}
+                  </select>
+                  <small>{settings.renderMode === 'auto' ? 'Uses the server’s configured MiniMax or fal provider.' : 'Uses fal even when a direct MiniMax key is configured.'}</small>
+                </label>
+                <label>
+                  <span>Initial scene image {settings.renderMode === 'fal-turbo-i2v' ? '(required)' : '(optional)'}</span>
+                  <input type="url" placeholder="https://…/scene.jpg" value={settings.initialImageUrl} onChange={event => setSettings({ ...settings, initialImageUrl: event.target.value })} />
+                </label>
+                <label>
+                  <span>Visual style</span>
+                  <input placeholder="Lighting, wardrobe, and visual treatment" value={settings.styleDescription} onChange={event => setSettings({ ...settings, styleDescription: event.target.value })} />
+                </label>
+              </div>
+              {settings.renderMode === 'fal-turbo-i2v' && <p className="reference-help">Turbo chains each shot from the previous clip’s last frame. Generation can overlap playback, but shots generate sequentially. This mode does not accept voice references; it does not mix or lip-sync ElevenLabs audio.</p>}
+              {settings.renderMode === 'fal-max-ref2v' && <p className="reference-help">Max uses named character images and dialogue or voice references. Connected StoryKernel runs preserve camera setup anchors and can generate independent shots in parallel. Imported studio shots use the configured references without camera setup anchors.</p>}
             <div className="reference-settings">
               <div className="reference-header">
                 <label className="toggle-label reference-toggle">
                   <input
                     type="checkbox"
-                    checked={settings.useCharacterReferences}
+                    checked={settings.useCharacterReferences || settings.renderMode === 'fal-max-ref2v'}
+                    disabled={settings.renderMode !== 'auto'}
                     onChange={(event) => setSettings({ ...settings, useCharacterReferences: event.target.checked })}
                   />
                   <span>
                     <b>Character reference lock</b>
-                    <small>Optional · enable to trade generation speed for stronger character and voice consistency.</small>
+                    <small>{settings.renderMode === 'fal-turbo-i2v' ? 'Turbo uses the initial and chained scene images only.' : 'Bind named characters to consistent appearance and voice references.'}</small>
                   </span>
                 </label>
                 <div className="reference-actions">
@@ -1105,7 +1139,7 @@ export function App() {
                   </button>
                 </div>
               </div>
-              {settings.useCharacterReferences && (
+              {settings.renderMode !== 'fal-turbo-i2v' && (settings.useCharacterReferences || settings.renderMode === 'fal-max-ref2v') && (
                 <div className="reference-editor" aria-label="Editable character media references">
                   {settings.characterReferences.length === 0 && (
                     <p className="reference-empty">No character references configured. Add characters and media you have permission to use.</p>
@@ -1134,6 +1168,14 @@ export function App() {
                         />
                       </label>
                       <label>
+                        <span>Appearance description</span>
+                        <input aria-label={`${reference.characterName || `Character ${index + 1}`} appearance`} placeholder="Wardrobe and distinguishing features" value={reference.description ?? ''} onChange={event => updateCharacterReference(index, 'description', event.target.value)} />
+                      </label>
+                      <label>
+                        <span>Voice sample length (seconds)</span>
+                        <input type="number" min="2" max="15" step="0.1" value={reference.audioDurationSeconds ?? ''} onChange={event => updateCharacterReference(index, 'audioDurationSeconds', event.target.value ? Number(event.target.value) : undefined)} />
+                      </label>
+                      <label>
                         <span>Audio reference</span>
                         <input
                           aria-label={`${reference.characterName || `Character ${index + 1}`} audio reference`}
@@ -1158,7 +1200,7 @@ export function App() {
                     </article>
                   ))}
                   <small className="reference-help">
-                    Images and audio samples must use public HTTPS URLs. H3 Max receives only the characters matched to each shot.
+                    Images and voice samples must use public HTTPS URLs. Provide the voice sample duration (2–15 seconds) to use it in connected runs. Exact DSS dialogue audio takes precedence. Voice conditioning does not guarantee exact lip-sync.
                   </small>
                 </div>
               )}
@@ -1167,8 +1209,8 @@ export function App() {
               <label>
                 <span>Resolution</span>
                 <select value={settings.resolution} onChange={(event) => setSettings({ ...settings, resolution: event.target.value as '480P' | '768P' })}>
-                  <option value="768P">768P{videoProvider === 'fal' ? ' · fal Turbo from $0.04/sec' : ''}</option>
-                  <option value="480P">480P{videoProvider === 'fal' ? ' · fal Turbo from $0.025/sec' : ''}</option>
+                  <option value="768P">768P</option>
+                  <option value="480P">480P</option>
                 </select>
               </label>
               <label>
@@ -1190,9 +1232,21 @@ export function App() {
               </label>
               <label className="toggle-label">
                 <input type="checkbox" checked={settings.autoRender} onChange={(event) => setSettings({ ...settings, autoRender: event.target.checked })} />
-                <span><b>Continuous auto-render</b><small>One DSS line per shot · expands through 15s{videoProvider === 'fal' ? ` · from ~${baselineSpendPerClip}/clip` : ''}</small></span>
+                <span><b>Continuous auto-render</b><small>One DSS line per shot · expands through 15s</small></span>
               </label>
             </div>
+              <div className="generation-row">
+                {settings.renderMode !== 'fal-turbo-i2v' && <label>
+                  <span>Parallel generation jobs</span>
+                  <input type="number" min="1" max="8" value={settings.generationConcurrency} onChange={event => setSettings({ ...settings, generationConcurrency: Number(event.target.value) })} />
+                </label>}
+                <label>
+                  <span>Generation lookahead (seconds)</span>
+                  <input type="number" min="5" max="120" value={settings.maxBufferedSeconds} onChange={event => setSettings({ ...settings, maxBufferedSeconds: Number(event.target.value) })} />
+                  <small>More lookahead smooths playback but delays the effect of audience input. One shot may exceed this window.</small>
+                </label>
+              </div>
+            </fieldset>
             <div className="setup-actions">
               <button className="primary-button" type="submit" disabled={connectionState === 'connecting'}>
                 {connectionState === 'connecting'
@@ -1327,6 +1381,8 @@ export function App() {
                 <small className="reference-status">
                   {selectedBeatReferences.length > 0
                     ? `${configuredModelLabel} reference-to-video · ${selectedBeatReferences.map((reference) => `${reference.characterName} (${[reference.assetKey || reference.imageUrl ? 'image' : '', reference.audioUrl ? 'audio' : ''].filter(Boolean).join(' + ')})`).join(' · ')}`
+                    : settings.renderMode === 'fal-turbo-i2v' ? `${configuredModelLabel} · last-frame continuity`
+                    : settings.renderMode === 'fal-max-ref2v' ? `${configuredModelLabel} · scene reference`
                     : `${configuredModelLabel} text-to-video · no matched character reference`}
                 </small>
               </div>
@@ -1336,12 +1392,12 @@ export function App() {
                   Boolean(generatingBeatId) ||
                   Boolean(platformRunId) ||
                   connectionState === 'connecting' ||
-                  pipelineState.activeIds.includes(latestBeat?.storyBlockId ?? '') ||
-                  pipelineState.queuedIds.includes(latestBeat?.storyBlockId ?? '')
+                  pipelineState.activeIds.length > 0 ||
+                  pipelineState.queuedIds.length > 0
                 }
                 onClick={() => void generate(latestBeat ?? SAMPLE_BEAT)}
               >
-                {generatingBeatId ? <><span className="spinner" />Generating…</> : <>Render {selectedBeatDuration}s beat{videoProvider === 'fal' && <span>~${selectedBeatSpend}</span>}</>}
+                {generatingBeatId ? <><span className="spinner" />Generating…</> : <>Render {selectedBeatDuration}s beat</>}
               </button>
             </div>
             <p className="prompt-copy">{latestBeat?.prompt ?? SAMPLE_BEAT.prompt}</p>
@@ -1364,7 +1420,7 @@ export function App() {
                   <video src={clip.videoUrl} muted preload="metadata" />
                   <span>
                     <b>Shot {index + 1} · {clip.durationSeconds}s</b>
-                    <small>{clip.totalSeconds.toFixed(1)}s generation · {clip.generationMode === 'reference' ? `${clip.referenceCharacters.length} character ref` : 'text'}</small>
+                    <small>{clip.totalSeconds.toFixed(1)}s generation · {clip.generationMode === 'reference' ? `${clip.referenceCharacters.length} character ref` : clip.generationMode === 'image' ? 'chained image' : 'text'}</small>
                   </span>
                 </button>
               ))}

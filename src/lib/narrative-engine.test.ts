@@ -13,6 +13,7 @@ import { createDefaultCharacterReferences } from './character-references';
 import type { RendererSettings } from './types';
 
 const settings: RendererSettings = {
+  renderMode: 'auto', initialImageUrl: '', generationConcurrency: 2, maxBufferedSeconds: 30, styleDescription: '',
   narrativeEngineUrl: 'http://engine.example/',
   narrativeAuthoringUrl: 'http://authoring.example/',
   realtimeGatewayUrl: 'http://realtime.example/',

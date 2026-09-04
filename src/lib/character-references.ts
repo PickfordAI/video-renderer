@@ -15,8 +15,11 @@ function validSetting(value: unknown): CharacterReferenceSetting | null {
   if (typeof candidate.characterName !== 'string') return null;
   return {
     characterName: candidate.characterName,
-    imageUrl: typeof candidate.imageUrl === 'string' ? candidate.imageUrl : '',
-    audioUrl: typeof candidate.audioUrl === 'string' ? candidate.audioUrl : '',
+    imageUrl: typeof candidate.imageUrl === 'string' && candidate.imageUrl.trim().startsWith('https://') ? candidate.imageUrl.trim() : '',
+    audioUrl: typeof candidate.audioUrl === 'string' && candidate.audioUrl.trim().startsWith('https://') ? candidate.audioUrl.trim() : '',
+    ...(typeof candidate.description === 'string' ? { description: candidate.description } : {}),
+    ...(typeof candidate.audioDurationSeconds === 'number' && candidate.audioDurationSeconds >= 2 && candidate.audioDurationSeconds <= 15
+      ? { audioDurationSeconds: candidate.audioDurationSeconds } : {}),
   };
 }
 
@@ -87,7 +90,7 @@ export function resolveCharacterReferences(
         audioRole,
         ...(exactDialogueAudio && beat.dialogueAudioDurationSeconds !== undefined
           ? { audioDurationSeconds: beat.dialogueAudioDurationSeconds }
-          : {}),
+          : !exactDialogueAudio && configured?.audioDurationSeconds !== undefined ? { audioDurationSeconds: configured.audioDurationSeconds } : {}),
       } : {}),
     });
     mediaCount += referenceMediaCount;

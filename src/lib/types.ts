@@ -1,4 +1,11 @@
+import type { RenderMode } from '../../server/render-mode';
+
 export interface RendererSettings {
+  renderMode: RenderMode;
+  initialImageUrl: string;
+  generationConcurrency: number;
+  maxBufferedSeconds: number;
+  styleDescription: string;
   narrativeEngineUrl: string;
   narrativeAuthoringUrl: string;
   realtimeGatewayUrl: string;
@@ -130,6 +137,8 @@ export interface CharacterReferenceSetting {
   characterName: string;
   imageUrl: string;
   audioUrl: string;
+  audioDurationSeconds?: number;
+  description?: string;
 }
 
 export interface CharacterReferenceMedia {
@@ -165,7 +174,7 @@ export interface GeneratedClip {
   durationSeconds: number;
   totalSeconds: number;
   generationMs: number;
-  generationMode: 'text' | 'reference';
+  generationMode: 'text' | 'reference' | 'image';
   referenceCharacters: string[];
 }
 

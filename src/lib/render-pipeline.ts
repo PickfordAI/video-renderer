@@ -56,7 +56,8 @@ interface QueueItem {
 }
 
 interface RenderPipelineOptions {
-  concurrency?: number;
+  concurrency?: number | (() => number);
+  canStart?: (beat: StoryBeat) => boolean;
   retries?: number;
   render: (beat: StoryBeat, signal: AbortSignal) => Promise<GeneratedClip>;
   onClip: (beat: StoryBeat, clip: GeneratedClip) => void;
@@ -65,7 +66,8 @@ interface RenderPipelineOptions {
 }
 
 export class RenderPipeline {
-  private readonly concurrency: number;
+  private readonly concurrency: number | (() => number);
+  private readonly canStart?: (beat: StoryBeat) => boolean;
   private readonly retries: number;
   private readonly render: RenderPipelineOptions['render'];
   private readonly onClip: RenderPipelineOptions['onClip'];
@@ -79,7 +81,8 @@ export class RenderPipeline {
   private generation = 0;
 
   constructor(options: RenderPipelineOptions) {
-    this.concurrency = Math.max(1, options.concurrency ?? 3);
+    this.concurrency = options.concurrency ?? 3;
+    this.canStart = options.canStart;
     this.retries = Math.max(0, options.retries ?? 1);
     this.render = options.render;
     this.onClip = options.onClip;
@@ -108,6 +111,8 @@ export class RenderPipeline {
     this.emit();
   }
 
+  resume(): void { this.pump(); }
+
   snapshot(): RenderPipelineSnapshot {
     return {
       queuedIds: this.queue.map(({ beat }) => beat.storyBlockId),
@@ -121,7 +126,9 @@ export class RenderPipeline {
   }
 
   private pump(): void {
-    while (this.active.size < this.concurrency && this.queue.length > 0) {
+    const concurrency = Math.max(1, typeof this.concurrency === 'function' ? this.concurrency() : this.concurrency);
+    while (this.active.size < concurrency && this.queue.length > 0) {
+      if (this.canStart && !this.canStart(this.queue[0].beat)) break;
       const item = this.queue.shift();
       if (!item) break;
       const id = item.beat.storyBlockId;

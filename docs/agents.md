@@ -33,6 +33,19 @@ identifiers and will not authenticate. Pass its path, never the credentials, on 
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
+| `renderMode` | `auto` (default), `fal-turbo-i2v`, or `fal-max-ref2v`; explicit fal modes require `FAL_KEY` even with a MiniMax key |
+| `initialImageUrl` | Public HTTPS scene image, required for Turbo; Max can use this or `shotPlanner` image references |
+| `generationConcurrency` | Integer 1–8, default 2; Turbo remains sequential because of last-frame chaining |
+| `maxBufferedSeconds` | Integer 5–120, default 30; larger lookahead trades audience responsiveness for smoother playback |
+| `shotPlanner` | Named `characters`/`sets`, optional `styleImageUrl`, `styleDescription`, `initialImageUrl`, `markNames`, `useDialogueAudioReferences`, and `defaultDurationSeconds` |
+
+Each `shotPlanner.characters` entry can supply `name`, `aliases`, `description`, `imageUrl`, and
+`voice: { "url": "https://…/voice.mp3", "durationSeconds": 4 }`. Voice samples require a known
+2–15-second duration; exact usable DSS dialogue audio takes precedence. Set entries contain
+`description` and/or `imageUrl`. Use media owned or authorized by the user. Turbo uses only the
+initial and chained scene images; do not promise voice conditioning, ElevenLabs mixing, or lip-sync.
+Max ref2vid maintains camera setup anchors for independent parallel shots, with ordered playback.
+Changing the handoff only affects the next run; stop before changing active run settings.
 
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.
 It must contain `storyId`, `roomId`, `roomShortlink`, `storyMessageChannelId`, and

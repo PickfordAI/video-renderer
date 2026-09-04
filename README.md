@@ -93,8 +93,8 @@ All operator pages stay private; the public listener serves only the viewer and 
 The studio stores service preferences in localStorage and its user token in sessionStorage.
 Agent-started stories keep runtime credentials in worker memory. Handoff files remain wherever
 the caller stored them. There are no bundled character portraits or remote voice samples; supply
-media you have permission to use. The studio supports character-reference generation; the agent
-bridge currently renders text prompts.
+media you have permission to use. The studio and agent bridge both support explicit Turbo image-to-video and Max reference-to-video
+choices. See [generation choices](#generation-choices) for inputs and adapter differences.
 
 For the entire local renderer in Docker, including FFmpeg:
 
@@ -158,3 +158,37 @@ session token, load an accessible EVD, and choose Create & start. The bridge pre
 inactive story and story channel, then starts it pinned to this renderer. Watch the local HLS player;
 press Stop to stop the upstream story and cancel local generation/playout. Local cancellation still
 runs if the upstream Stop request fails. Terminal failures and ended stories clear the live UI state.
+
+## Generation choices
+
+Choose a mode in the studio, or set `renderMode` in the private onboarding handoff:
+
+| Mode | Inputs and behavior |
+|---|---|
+| `auto` | Keeps the worker's configured direct MiniMax or fal provider. |
+| `fal-turbo-i2v` | H3 Max Turbo image to video through fal. Requires an HTTPS `initialImageUrl`; subsequent shots chain from the preceding clip's last frame. |
+| `fal-max-ref2v` | H3 Max reference to video through fal. Requires scene or character image references; can also use dialogue audio or a voice sample. |
+
+Both explicit fal modes require `FAL_KEY`, even if the worker also has a MiniMax key. An empty
+reference configuration fails before a generation request; it does not silently switch models.
+Turbo does not accept voice references. The renderer does not overlay ElevenLabs audio or add
+lip-sync processing. Ref2vid voice conditioning also does not guarantee an exact performance.
+
+For connected StoryKernel runs, `shotPlanner` supplies named `characters`, `sets`, optional
+`styleImageUrl`/`styleDescription`, `initialImageUrl`, and readable `markNames`. Each character
+may include `name`, `aliases`, `description`, `imageUrl`, and
+`voice: { "url": "https://…/sample.mp3", "durationSeconds": 4 }`. Use 2–15-second samples.
+The planner carries staging forward, binds references to the shot, and prefers usable exact DSS
+dialogue audio over a fallback voice sample. It maintains anchors for camera setups so independent
+reference shots can generate in parallel while playback remains ordered.
+
+`generationConcurrency` defaults to **2** (range 1–8). Turbo's frame dependency keeps its jobs
+sequential. `maxBufferedSeconds` defaults to **30** (range 5–120) and bounds generation lookahead;
+one shot can exceed the window when necessary to make progress. Generation overlaps playback.
+Larger buffers smooth playback but delay when audience input can affect the visible story.
+Completion acknowledgments still correspond to actual playback, not generation finishing.
+
+The imported/manual studio path supports both modes and Turbo last-frame chaining. It uses its
+existing shot descriptions and matched character references for ref2vid; camera-aware anchor
+planning belongs to the connected StoryKernel bridge. Editing generation settings is disabled
+while a run or generation job is active. Stop starts a fresh continuity chain on the next run.

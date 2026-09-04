@@ -1,3 +1,6 @@
+import type { RenderMode } from '../../server/render-mode';
+import type { ShotPlannerSettings } from '../../server/shot-planner';
+
 export interface ExternalRendererConnectionStatus {
   runId: string;
   state: 'connecting' | 'running' | 'ended' | 'stopped' | 'failed';
@@ -9,6 +12,13 @@ export interface ExternalRendererConnectionStatus {
 }
 
 export interface ExternalRendererStoryStart {
+  renderMode?: RenderMode;
+  initialImageUrl?: string;
+  generationConcurrency?: number;
+  maxBufferedSeconds?: number;
+  resolution?: '480P' | '768P';
+  clipDurationSeconds?: number;
+  shotPlanner?: ShotPlannerSettings;
   storyId: number;
   roomId: string;
   storyMessageChannelId: string;

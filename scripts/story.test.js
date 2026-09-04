@@ -11,7 +11,7 @@ const cli = fileURLToPath(new URL('./story.mjs', import.meta.url));
 const story = { storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'STORY', storyMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', roomMainMessageChannelId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' };
 const runId = '12345678-1234-4234-8234-123456789abc';
 describe('agent story lifecycle', () => {
-  it('provisions, returns a real watch URL, persists no secrets and stops both worker and kernel', async () => {
+  it.each(['auto', 'fal-turbo-i2v', 'fal-max-ref2v'])('provisions, returns a watch URL and stops both worker and kernel with %s', async (renderMode) => {
     const root = await mkdtemp(join(tmpdir(), 'renderer-cli-'));
     const calls = [];
     const server = createServer(async (req, res) => {
@@ -27,7 +27,7 @@ describe('agent story lifecycle', () => {
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
-    const handoff = { evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'private-setup', clientSecret: 'private-installation', services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example' } };
+    const handoff = { renderMode, initialImageUrl: 'https://images.example/scene.jpg', generationConcurrency: 3, maxBufferedSeconds: 25, shotPlanner: { styleDescription: 'Noir', characters: {} }, evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'private-setup', clientSecret: 'private-installation', services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example' } };
     const path = join(root, 'handoff.json');
     await writeFile(path, JSON.stringify(handoff));
     const options = { cwd: root, env: { ...process.env, PORT: String(port) } };
@@ -41,9 +41,33 @@ describe('agent story lifecycle', () => {
       const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
       expect(run.storyConfig.message_channel_ids).toEqual([story.storyMessageChannelId]);
       expect(run).not.toHaveProperty('setupToken');
+      expect(run).toMatchObject({ renderMode, initialImageUrl: handoff.initialImageUrl, generationConcurrency: 3, maxBufferedSeconds: 25, shotPlanner: handoff.shotPlanner });
       await exec(process.execPath, [cli, 'stop', '--handoff', path], options);
       expect(calls.some(c => c.method === 'DELETE' && c.path.endsWith(runId))).toBe(true);
       expect(calls.at(-1)).toMatchObject({ path: '/api/narrative/stop-show', body: { token: handoff.setupToken, shortlink: story.roomShortlink } });
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('explicit fal preflight', () => {
+  it('does not provision a story using only a direct MiniMax key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'renderer-cli-preflight-'));
+    const calls = [];
+    const server = createServer((req, res) => {
+      calls.push(req.url);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ minimaxKeyConfigured: true, falKeyConfigured: false }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const path = join(root, 'handoff.json');
+    await writeFile(path, JSON.stringify({ renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://images.example/scene.jpg', evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'fixture', clientSecret: 'fixture', services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example' } }));
+    try {
+      await expect(exec(process.execPath, [cli, 'start', '--handoff', path], { cwd: root, env: { ...process.env, PORT: String(server.address().port) } })).rejects.toMatchObject({ stderr: expect.stringContaining('requires FAL_KEY') });
+      expect(calls).toEqual(['/api/health']);
     } finally {
       server.closeAllConnections();
       await new Promise(resolve => server.close(resolve));

@@ -5,6 +5,10 @@ import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
 import { generateMiniMaxVideo } from './minimax.js';
+import { parseRenderMode, parseInitialImageUrl, type RenderMode } from './render-mode.js';
+import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot } from './shot-planner.js';
+import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
+import { extractVideoFrame } from './video-frame.js';
 import type { PlayoutManager, PlayoutSession } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
@@ -30,6 +34,11 @@ interface ExternalRendererRunConfig {
   resolution: '480P' | '768P';
   clipDurationSeconds: number;
   resumeExistingStory: boolean;
+  renderMode: RenderMode;
+  initialImageUrl?: string;
+  generationConcurrency: number;
+  maxBufferedSeconds: number;
+  shotPlanner: ShotPlannerSettings;
 }
 
 interface VideoProvider {
@@ -172,6 +181,18 @@ function uuid(value: unknown, label: string): string {
 export function parseExternalRendererRunConfig(value: unknown): ExternalRendererRunConfig {
   const body = asObject(value, 'run config');
   const environment = requiredString(body.environment ?? 'edge', 'environment');
+  const renderMode = parseRenderMode(body.renderMode);
+  const initialImageUrl = parseInitialImageUrl(body.initialImageUrl);
+  if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('fal-turbo-i2v requires initialImageUrl');
+  const generationConcurrency = positiveInteger(body.generationConcurrency, 2, 'generationConcurrency');
+  const maxBufferedSeconds = positiveInteger(body.maxBufferedSeconds, 30, 'maxBufferedSeconds');
+  if (generationConcurrency > 8 || maxBufferedSeconds > 120) throw new Error('generationConcurrency must be at most 8 and maxBufferedSeconds at most 120');
+  const shotPlanner = { ...asObject(body.shotPlanner ?? {}, 'shotPlanner') } as ShotPlannerSettings;
+  if (body.includeDialogueAudioReferences !== undefined) {
+    if (typeof body.includeDialogueAudioReferences !== 'boolean') throw new Error('includeDialogueAudioReferences must be boolean');
+    shotPlanner.useDialogueAudioReferences = body.includeDialogueAudioReferences;
+  }
+  if (renderMode !== 'auto') new DssShotPlanner(shotPlanner);
   const tier = environment === 'prod' || environment === 'demo' ? 'renderer-prod' : 'renderer-dev';
   const validateChannels = body.roomMainMessageChannelId !== undefined;
   const fallbackStoryChannel = '00000000-0000-4000-8000-000000000001';
@@ -197,6 +218,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     baseUrl: requiredUrl(body.baseUrl ?? 'https://edge.pickford.ai', 'baseUrl', environment),
     environment,
     tier,
+    renderMode, initialImageUrl, generationConcurrency, maxBufferedSeconds, shotPlanner,
     websocketUrl: body.websocketUrl === undefined ? null : requiredWebSocketUrl(body.websocketUrl, 'websocketUrl', environment),
     registerManifest: body.registerManifest !== false,
     rendererId,
@@ -582,6 +604,8 @@ function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
+interface GeneratedShot { videoUrl: string; continuityFrame?: string }
+
 class ExternalRendererRun {
   readonly runId = randomUUID();
   readonly status: ExternalRendererRunStatus;
@@ -593,12 +617,19 @@ class ExternalRendererRun {
   private heartbeat: NodeJS.Timeout | null = null;
   private readonly seenDss = new Set<string>();
   private readonly abortController = new AbortController();
+  private readonly shotPlanner: DssShotPlanner;
+  private readonly scheduler: ShotScheduler<GeneratedShot>;
+  private readonly anchorShots = new Map<string, ScheduledShot<GeneratedShot>>();
+  private readonly sceneTails = new Map<string, ScheduledShot<GeneratedShot>>();
+  private assignmentKey: string | null = null;
 
   constructor(
     private readonly config: ExternalRendererRunConfig,
     private readonly playoutManager: PlayoutManager,
     private readonly provider: VideoProvider,
   ) {
+    this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds });
+    this.scheduler = new ShotScheduler(config.generationConcurrency, config.maxBufferedSeconds, this.abortController.signal);
     this.status = {
       runId: this.runId,
       state: 'connecting',
@@ -645,6 +676,7 @@ class ExternalRendererRun {
     this.heartbeat = null;
     if (this.socket) await closeSocket(this.socket);
     if (this.playout) await this.playoutManager.stop(this.playout.sessionId);
+    await this.scheduler.drain();
   }
 
   private progressEvent(frame: DssFrame, group: DssGroup, current: number, total: number): JsonObject {
@@ -683,12 +715,97 @@ class ExternalRendererRun {
     }
   }
 
+  private assertCurrentAssignment(frame: DssFrame): void {
+    this.abortController.signal.throwIfAborted();
+    if (this.assignmentKey !== `${frame.assignmentId}:${frame.assignmentGeneration}`) {
+      throw new Error('Renderer assignment changed; start a fresh run');
+    }
+  }
+
+  private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
+    const mode = this.config.renderMode;
+    const key = `${shot.setupKey}:${shot.continuityKey}`;
+    const dependency = mode === 'fal-turbo-i2v' ? this.sceneTails.get(shot.sceneKey) : this.anchorShots.get(key);
+    const handle = this.scheduler.add(shot.durationSeconds, async () => {
+      this.assertCurrentAssignment(frame);
+      const previous = dependency ? await dependency.result : undefined;
+      this.assertCurrentAssignment(frame);
+      const continuityFrame = previous?.continuityFrame;
+      if (dependency && !continuityFrame) throw new Error('Required shot continuity frame is unavailable');
+      const images = [...shot.referenceImageUrls];
+      let prompt = shot.prompt;
+      if (mode === 'fal-max-ref2v' && continuityFrame) {
+        images.push(continuityFrame);
+        prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
+      }
+      const generated = await generateVideo({
+        prompt, duration: shot.durationSeconds, resolution: this.config.resolution, aspectRatio: '16:9',
+        renderMode: mode,
+        initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.config.initialImageUrl : undefined,
+        referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
+        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
+      }, {
+        apiKey: this.provider.apiKey, queueBaseUrl: process.env.FAL_QUEUE_BASE_URL,
+        timeoutMs: 300_000, signal: this.abortController.signal,
+      });
+      this.assertCurrentAssignment(frame);
+      const nextFrame = mode === 'fal-turbo-i2v' || !dependency
+        ? await extractVideoFrame(generated.videoUrl, {
+          position: mode === 'fal-turbo-i2v' || shot.hasMovement ? 'last' : 'first', signal: this.abortController.signal,
+        })
+        : continuityFrame;
+      this.assertCurrentAssignment(frame);
+      return { videoUrl: generated.videoUrl, continuityFrame: nextFrame };
+    }, dependency?.result);
+    if (mode === 'fal-turbo-i2v') this.sceneTails.set(shot.sceneKey, handle);
+    else if (!dependency) this.anchorShots.set(key, handle);
+    return handle;
+  }
+
+  private async renderPlannedFrame(frame: DssFrame): Promise<void> {
+    this.assertCurrentAssignment(frame);
+    // Compile the entire accepted frame before submitting any of its paid work.
+    const groups = frame.groups.map(group => ({ group, plan: this.shotPlanner.planGroup(group.commands, group.id, frame.storyBlockId) }));
+    if (this.config.renderMode === 'fal-max-ref2v') {
+      for (const { plan } of groups) for (const shot of plan.shots) {
+        if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
+        if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > 11) throw new Error('fal-max-ref2v allows at most 11 configured image/audio references, reserving one slot for the camera anchor');
+      }
+    }
+    const scheduled = groups.map(({ group, plan }) => ({
+      group, plan, shots: frame.sequence === 0 ? [] : plan.shots.map(shot => ({ shot, job: this.scheduleShot(frame, shot) })),
+    }));
+    for (const { group, plan, shots } of scheduled) {
+      this.assertCurrentAssignment(frame);
+      let seconds = 0;
+      // No generation-side progress events: future sequences must not advance the kernel high-water mark.
+      for (const { shot, job } of shots) {
+        const generated = await job.result;
+        this.assertCurrentAssignment(frame);
+        const position = this.clipPosition++;
+        this.playout!.enqueue({ position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds });
+        this.status.clipsRendered += 1;
+        await this.waitForPlayback(position);
+        this.assertCurrentAssignment(frame);
+        job.release();
+        seconds += shot.durationSeconds;
+      }
+      const delay = frame.sequence === 0 ? 0 : plan.delaySeconds;
+      if (delay > 0) await abortable(new Promise(resolve => setTimeout(resolve, delay * 1_000)), this.abortController.signal);
+      this.assertCurrentAssignment(frame);
+      send(this.socket!, this.completedEvent(frame, group, seconds + delay));
+      this.status.dssCommandsRendered += group.commands.length;
+    }
+    this.status.firstDssAcknowledgedAt ??= new Date().toISOString();
+  }
+
   private async renderFrame(frame: DssFrame): Promise<void> {
-    const dedupeKey = `${frame.assignmentGeneration}:${frame.sequence}`;
+    const dedupeKey = `${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`;
     if (this.seenDss.has(dedupeKey)) return;
     this.seenDss.add(dedupeKey);
     this.status.firstAssignmentAt ??= new Date().toISOString();
     this.status.dssSequences.push(frame.sequence);
+    if (this.config.renderMode !== 'auto') { await this.renderPlannedFrame(frame); return; }
     const groupsWithCommands = frame.groups.filter((group) => group.commands.length > 0);
     if (groupsWithCommands.length === 0) {
       frame.groups.forEach((group) => send(this.socket!, this.completedEvent(frame, group, 0)));
@@ -803,7 +920,7 @@ class ExternalRendererRun {
         type: 'renderer.hello',
         protocol_version: PROTOCOL_VERSION,
         stream_id: this.config.rendererId,
-        renderer_kind: this.provider.kind === 'minimax-direct' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
+        renderer_kind: this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
         instance_id: `video-renderer-${this.runId}`,
         assignment_id: '',
       });
@@ -825,7 +942,12 @@ class ExternalRendererRun {
         const assetJson = {
           renderer_version: this.config.rendererVersion,
           provider: this.provider.kind,
-          model: this.provider.kind === 'minimax-direct'
+          render_mode: this.config.renderMode,
+          model: this.config.renderMode === 'fal-turbo-i2v'
+            ? 'minimax/h3-max-turbo/image-to-video'
+            : this.config.renderMode === 'fal-max-ref2v'
+              ? 'minimax/h3-max/reference-to-video'
+              : this.provider.kind === 'minimax-direct'
             ? process.env.MINIMAX_VIDEO_MODEL_ID ?? 'MiniMax-H3-Max'
             : process.env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',
           output: { owner: 'external_renderer', protocol: 'hls' },
@@ -878,7 +1000,17 @@ class ExternalRendererRun {
             this.status.lastHeartbeatAt = new Date().toISOString();
             continue;
           }
-          if (message.script) dssMessages.push(message);
+          if (message.script) {
+            if (this.config.renderMode !== 'auto') {
+              if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
+              const frame = parseDssFrame(message);
+              if (!frame.assignmentId || !Number.isInteger(frame.assignmentGeneration) || frame.assignmentGeneration < 1) throw new Error('DSS assignment identity is required');
+              const key = `${frame.assignmentId}:${frame.assignmentGeneration}`;
+              if (this.assignmentKey && this.assignmentKey !== key) throw new Error('Renderer assignment changed; start a fresh run');
+              this.assignmentKey = key;
+            }
+            dssMessages.push(message);
+          }
         }
         dssMessages.push({ type: 'websocket.closed' });
       })().catch(error => {
@@ -917,13 +1049,16 @@ export class ExternalRendererRunManager {
     for (const [id, run] of this.runs) {
       if (['stopped', 'failed', 'ended'].includes(run.status.state)) this.runs.delete(id);
     }
+    const config = parseExternalRendererRunConfig(value);
     const minimaxKey = process.env.MINIMAX_API_KEY;
     const falKey = process.env.FAL_KEY || process.env.FAL_API_KEY;
-    const provider: VideoProvider | null = minimaxKey
+    const provider: VideoProvider | null = config.renderMode !== 'auto'
+      ? falKey ? { kind: 'fal', apiKey: falKey } : null
+      : minimaxKey
       ? { kind: 'minimax-direct', apiKey: minimaxKey }
       : falKey ? { kind: 'fal', apiKey: falKey } : null;
-    if (!provider) throw new Error('MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server');
-    const run = new ExternalRendererRun(parseExternalRendererRunConfig(value), this.playoutManager, provider);
+    if (!provider) throw new Error(config.renderMode === 'auto' ? 'MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server' : 'Explicit fal rendering requires FAL_KEY; no provider fallback is used');
+    const run = new ExternalRendererRun(config, this.playoutManager, provider);
     this.runs.set(run.runId, run);
     this.activeRunId = run.runId;
     void run.start();
@@ -950,6 +1085,10 @@ export class ExternalRendererRunManager {
       roomId: prepared.roomId,
       storyMessageChannelId: prepared.storyMessageChannelId,
       storyConfig: prepared.storyConfig,
+      renderMode: prepared.renderMode, initialImageUrl: prepared.initialImageUrl,
+      generationConcurrency: prepared.generationConcurrency, maxBufferedSeconds: prepared.maxBufferedSeconds,
+      shotPlanner: prepared.shotPlanner,
+      includeDialogueAudioReferences: prepared.includeDialogueAudioReferences,
       storyStatusBaseUrl: prepared.storyStatusBaseUrl,
       storyStatusToken: prepared.storyStatusToken,
       resumeExistingStory: false,

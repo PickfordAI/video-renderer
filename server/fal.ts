@@ -1,3 +1,5 @@
+import { parseRenderMode, type RenderMode } from './render-mode.js';
+
 const TERMINAL_ERROR_STATUSES = new Set(['ERROR', 'FAILED', 'CANCELLED']);
 
 export interface GenerateVideoInput {
@@ -7,13 +9,16 @@ export interface GenerateVideoInput {
   aspectRatio: '16:9';
   referenceImageUrls?: string[];
   referenceAudioUrls?: string[];
+  renderMode?: RenderMode;
+  /** Explicit first frame, including an internally extracted continuity frame. */
+  initialImageUrl?: string;
 }
 
 export interface GenerateVideoResult {
   requestId: string;
   videoUrl: string;
   expandedPrompt: string | null;
-  generationMode: 'text' | 'reference';
+  generationMode: 'text' | 'reference' | 'image';
   timings: {
     submitSeconds: number;
     queueSeconds: number;
@@ -98,10 +103,34 @@ export async function generateVideo(
   },
 ): Promise<GenerateVideoResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const generationMode = input.referenceImageUrls?.length || input.referenceAudioUrls?.length ? 'reference' : 'text';
-  const modelId = generationMode === 'reference'
-    ? options.referenceModelId ?? 'minimax/h3-max/reference-to-video'
-    : options.modelId ?? 'minimax/h3-max-turbo/text-to-video';
+  const renderMode = parseRenderMode(input.renderMode);
+  const imageUrls = [...(input.referenceImageUrls ?? [])];
+  if (renderMode === 'fal-max-ref2v' && input.initialImageUrl && !imageUrls.includes(input.initialImageUrl)) {
+    imageUrls.push(input.initialImageUrl);
+  }
+  const audioUrls = (input.referenceAudioUrls ?? []).map(url => url.replace(/^data:audio\/mpeg;/, 'data:audio/mp3;'));
+  if (renderMode === 'fal-turbo-i2v' && !input.initialImageUrl) {
+    throw new FalVideoError('H3 Max Turbo image-to-video requires an initial image or a previous clip frame');
+  }
+  if (renderMode === 'fal-max-ref2v' && imageUrls.length === 0) {
+    throw new FalVideoError('H3 Max reference-to-video requires a character, scene, or camera reference image');
+  }
+  if (renderMode !== 'fal-turbo-i2v' && imageUrls.length + audioUrls.length > 12) {
+    throw new FalVideoError('Reference inputs exceed the image/audio limits');
+  }
+  if (renderMode !== 'fal-turbo-i2v' && audioUrls.length && !imageUrls.length) {
+    throw new FalVideoError('Audio references require at least one image reference');
+  }
+  const generationMode: GenerateVideoResult['generationMode'] = renderMode === 'fal-turbo-i2v'
+    ? 'image'
+    : renderMode === 'fal-max-ref2v' || imageUrls.length || audioUrls.length ? 'reference' : 'text';
+  const modelId = renderMode === 'fal-turbo-i2v'
+    ? 'minimax/h3-max-turbo/image-to-video'
+    : renderMode === 'fal-max-ref2v'
+      ? 'minimax/h3-max/reference-to-video'
+      : generationMode === 'reference'
+        ? options.referenceModelId ?? 'minimax/h3-max/reference-to-video'
+        : options.modelId ?? 'minimax/h3-max-turbo/text-to-video';
   const queueBaseUrl = (options.queueBaseUrl ?? 'https://queue.fal.run').replace(/\/$/, '');
   const headers = {
     Authorization: `Key ${options.apiKey}`,
@@ -120,11 +149,15 @@ export async function generateVideo(
         prompt: input.prompt,
         duration: input.duration,
         resolution: input.resolution,
-        aspect_ratio: input.aspectRatio,
+        ...(generationMode !== 'image' ? { aspect_ratio: input.aspectRatio } : {}),
         prompt_expansion_mode: 'balanced',
         enable_safety_checker: true,
-        ...(input.referenceImageUrls?.length ? { reference_image_urls: input.referenceImageUrls } : {}),
-        ...(input.referenceAudioUrls?.length ? { reference_audio_urls: input.referenceAudioUrls } : {}),
+        ...(generationMode === 'image'
+          ? { image_url: input.initialImageUrl }
+          : {
+              ...(imageUrls.length ? { reference_image_urls: imageUrls } : {}),
+              ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
+            }),
       }),
     });
     const handle = await readFalJson<FalQueueHandle>(submit, 'fal submit');
@@ -181,6 +214,7 @@ export async function generateVideo(
         await fetchImpl(`${queueBaseUrl}/${modelId}/requests/${requestId}/cancel`, {
           method: 'PUT',
           headers,
+          signal: AbortSignal.timeout(5_000),
         });
       } catch {
         // Cancellation is best effort; preserve the original abort reason.

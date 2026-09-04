@@ -145,4 +145,23 @@ describe('RenderPipeline', () => {
     expect(completed).toEqual([]);
     expect(pipeline.snapshot()).toEqual({ queuedIds: [], activeIds: [], failedIds: [] });
   });
+  it('waits at the lookahead limit and resumes when playback frees capacity', async () => {
+    const started: string[] = [];
+    let buffered = 0;
+    const pipeline = new RenderPipeline({
+      concurrency: () => 1,
+      canStart: () => buffered < 1,
+      render: async next => { started.push(next.storyBlockId); buffered += 1; return clip(next.storyBlockId); },
+      onClip: () => {}, onError: () => {},
+    });
+    pipeline.enqueue([beat('one'), beat('two')]);
+    await flush();
+    expect(started).toEqual(['one']);
+    expect(pipeline.snapshot().queuedIds).toEqual(['two']);
+    buffered = 0;
+    pipeline.resume();
+    await flush();
+    expect(started).toEqual(['one', 'two']);
+  });
+
 });

@@ -78,3 +78,33 @@ setup context without video jobs, approximates observed UE controls by timing, a
 ordered dialogue groups after playout. Authoritative story-status polling distinguishes ended and
 failed runs where the caller provides the status origin and setup token. CLI and studio flows remain
 separate acceptance surfaces; the integration merge has offline validation only.
+
+
+## Explicit fal continuity modes
+
+`renderMode=auto` preserves the configured direct MiniMax/fal adapter. Explicit
+`fal-turbo-i2v` and `fal-max-ref2v` require a fal credential even when a direct MiniMax key is
+present; failures never switch providers. Run settings accept an HTTPS `initialImageUrl`,
+`shotPlanner` reference/style settings, `generationConcurrency` (default 2, at most 8), and
+`maxBufferedSeconds` (default 30, at most 120).
+
+New modes compile each accepted DSS frame in order into immutable shot/group plans before
+submitting its video jobs. Turbo image-to-video requires an initial image and chains each scene's
+next shot from the previous clip's last frame. Reference-to-video uses configured character/set
+references for the first shot of each camera/continuity setup, then adds that anchor clip's first
+frame to later matching shots (the last frame instead when the anchor shot contains movement, preserving its resulting pose). One of the 12 total reference slots is reserved for the continuity anchor before any submissions. Independent camera setups can generate concurrently; dependent
+shots wait for their anchor generation/frame extraction, not for playback. Failed anchors fail
+their dependents instead of silently removing references.
+
+The scheduler reserves unplayed video duration in playback order, including dependency waits,
+so later jobs cannot starve an earlier dependent shot. One shot larger than the configured budget
+may occupy an otherwise empty buffer. Generation can overlap playback within the accepted frame;
+frames remain serial at story boundaries. Enqueue and group completion stay in DSS order. Control
+waits complete before their group acknowledgement; generation progress does not advance the
+kernel's sequence high-water mark. Stop aborts provider and frame-extraction jobs and drains them.
+A changed assignment terminates the run; it cannot enqueue stale results or silently resume.
+
+The private operator `POST /api/video-frame` extracts first/last continuity frames. The public
+viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded
+size/time and cancellation; resulting JPEG data stays internal to the rendering flow.
+These additions have offline mocked validation until separately exercised with real providers.
