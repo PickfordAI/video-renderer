@@ -44,6 +44,16 @@ function isLoopbackRequest(request: IncomingMessage): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+function isLocalUiRequest(request: IncomingMessage): boolean {
+  const host = (request.headers.host ?? '').split(':', 1)[0];
+  const source = request.headers.origin ?? request.headers.referer;
+  const origin = source ? new URL(source) : null;
+  return ['localhost', '127.0.0.1'].includes(host)
+    && origin !== null
+    && ['localhost', '127.0.0.1'].includes(origin.hostname)
+    && request.headers['sec-fetch-site'] === 'same-origin';
+}
+
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -79,6 +89,12 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
         : process.env.FAL_REFERENCE_VIDEO_MODEL_ID ?? 'minimax/h3-max/reference-to-video',
       falKeyConfigured: Boolean(process.env.FAL_KEY || process.env.FAL_API_KEY),
       minimaxKeyConfigured: Boolean(process.env.MINIMAX_API_KEY),
+      rendererPlatformConfigured: Boolean(
+        process.env.RENDERER_PLATFORM_BASE_URL
+        && process.env.RENDERER_ID
+        && process.env.RENDERER_CREDENTIAL_ID
+        && process.env.RENDERER_CLIENT_SECRET,
+      ),
     });
     return true;
   }
@@ -102,6 +118,43 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : 'invalid external renderer run' });
     }
+    return true;
+  }
+  if (pathname === '/api/external-renderer/connection') {
+    if (!isLocalUiRequest(request)) {
+      sendJson(response, 403, { error: 'renderer connection control requires the same-origin local UI' });
+      return true;
+    }
+    try {
+      if (request.method === 'POST') {
+        await externalRendererRuns.stopActive();
+        sendJson(response, 202, externalRendererRuns.startConfigured(await readJson(request)));
+      } else if (request.method === 'GET') {
+        const active = externalRendererRuns.active();
+        sendJson(response, active ? 200 : 404, active ?? { error: 'renderer connection is not active' });
+      } else if (request.method === 'DELETE') {
+        const stopped = await externalRendererRuns.stopActive();
+        sendJson(response, stopped ? 200 : 404, stopped ?? { error: 'renderer connection is not active' });
+      } else {
+        sendJson(response, 405, { error: 'method not allowed' });
+      }
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : 'renderer connection failed' });
+    }
+    return true;
+  }
+  const connectionMatch = pathname.match(/^\/api\/external-renderer\/connection\/([0-9a-f-]{36})$/i);
+  if (connectionMatch) {
+    if (!isLocalUiRequest(request)) {
+      sendJson(response, 403, { error: 'renderer connection control requires the same-origin local UI' });
+      return true;
+    }
+    if (request.method !== 'DELETE') {
+      sendJson(response, 405, { error: 'method not allowed' });
+      return true;
+    }
+    const stopped = await externalRendererRuns.stopActive(connectionMatch[1]);
+    sendJson(response, stopped ? 200 : 404, stopped ?? { error: 'renderer connection is not active' });
     return true;
   }
   const externalRunMatch = pathname.match(/^\/api\/external-renderer\/runs\/([0-9a-f-]{36})$/i);
@@ -243,7 +296,7 @@ if (isDevelopment) {
 }
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`H3 Director listening at http://localhost:${port}`);
+  console.log(`MiniMax Renderer listening at http://localhost:${port}`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

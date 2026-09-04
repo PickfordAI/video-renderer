@@ -121,6 +121,74 @@ async function proxyStartShow(request: IncomingMessage, response: ServerResponse
   }
   const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
   const headers = narrativeHeaders(token);
+  const created = await requireUpstreamJson(await fetch(`${baseUrl}/room/`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: roomName, visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: storyType }),
+  }), response);
+  if (!created) return;
+  const roomId = requiredString(created.id, 'created room id');
+  const shortlink = requiredString(created.shortlink, 'created room code');
+  if (!await requireUpstreamJson(await fetch(`${baseUrl}/room/join`, {
+    method: 'POST', headers, body: JSON.stringify({ shortlink }),
+  }), response)) return;
+  const playback = await fetch(`${baseUrl}/room/playback-mode`, {
+    method: 'PATCH', headers, body: JSON.stringify({ room_id: roomId, mode: 'video' }),
+  });
+  if (!playback.ok) { await forwardResponse(playback, response); return; }
+  await playback.body?.cancel();
+  const started = await requireUpstreamJson(await fetch(`${baseUrl}/show/start`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ evd_id: evdId, room_shortlink: shortlink, character_ids: [], config: {} }),
+  }), response);
+  if (!started) return;
+  const room = await requireUpstreamJson(await fetch(
+    `${baseUrl}/room/?shortlink=${encodeURIComponent(shortlink)}&include_most_recent_story=true`,
+    { headers },
+  ), response);
+  if (!room) return;
+  sendJson(response, 200, { room, show: started });
+}
+
+async function proxyPrepareShow(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const raw = await readJson(request);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('request body must be an object');
+  const body = raw as Record<string, unknown>;
+  const baseUrl = serviceBaseUrl(body.baseUrl);
+  const token = requiredString(body.token, 'session token');
+  const roomName = requiredString(body.roomName, 'room name');
+  const evdId = requiredString(body.evdId, 'Narrative Engine EVD ID');
+  if (!uuidPattern.test(evdId)) {
+    sendJson(response, 400, { error: 'EVD ID must be a UUID from Narrative Engine, not a local episode label.' });
+    return;
+  }
+  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
+  const headers = narrativeHeaders(token);
+  let storyPremise: string | null = null;
+  if (storyType === 'CREATOR') {
+    const authoringBaseUrl = serviceBaseUrl(body.authoringBaseUrl);
+    const evd = await requireUpstreamJson(await fetch(
+      `${authoringBaseUrl}/admin/evds/${encodeURIComponent(evdId)}`,
+      { headers },
+    ), response);
+    if (!evd) return;
+    const cvdId = requiredString(evd.cvd_id, 'Creator CVD id');
+    const document = await requireUpstreamJson(await fetch(
+      `${authoringBaseUrl}/admin/cvds/${encodeURIComponent(cvdId)}/document`,
+      { headers },
+    ), response);
+    if (!document) return;
+    const documentBody = document.document;
+    if (!documentBody || typeof documentBody !== 'object' || Array.isArray(documentBody)) {
+      throw new Error('Creator CVD document is invalid');
+    }
+    const metadata = (documentBody as Record<string, unknown>).metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new Error('Creator CVD metadata is invalid');
+    }
+    storyPremise = requiredString((metadata as Record<string, unknown>).premise, 'Creator story premise');
+  }
 
   const created = await requireUpstreamJson(await fetch(`${baseUrl}/room/`, {
     method: 'POST',
@@ -155,24 +223,61 @@ async function proxyStartShow(request: IncomingMessage, response: ServerResponse
   }
   await playback.body?.cancel();
 
-  const started = await requireUpstreamJson(await fetch(`${baseUrl}/show/start`, {
+  const story = await requireUpstreamJson(await fetch(`${baseUrl}/story/`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
+      room_id: roomId,
       evd_id: evdId,
-      room_shortlink: shortlink,
-      character_ids: [],
-      config: {},
+      active: false,
     }),
   }), response);
-  if (!started) return;
+  if (!story) return;
+  const storyId = Number(story.id);
+  if (!Number.isInteger(storyId) || storyId <= 0) throw new Error('created story id is invalid');
 
-  const room = await requireUpstreamJson(await fetch(
-    `${baseUrl}/room/?shortlink=${encodeURIComponent(shortlink)}&include_most_recent_story=true`,
-    { headers },
-  ), response);
-  if (!room) return;
-  sendJson(response, 200, { room, show: started });
+  const channelsResponse = await fetch(`${baseUrl}/message_channel/?story_id=${storyId}`, { headers });
+  if (!channelsResponse.ok) {
+    await forwardResponse(channelsResponse, response);
+    return;
+  }
+  const existingChannels = await channelsResponse.json() as unknown;
+  if (!Array.isArray(existingChannels)) throw new Error('story message-channel response is invalid');
+  let storyChannel = existingChannels.find((value) => (
+    value && typeof value === 'object' && !Array.isArray(value)
+    && (value as Record<string, unknown>).state === 'ACTIVE'
+  )) as Record<string, unknown> | undefined;
+  if (!storyChannel) {
+    storyChannel = await requireUpstreamJson(await fetch(`${baseUrl}/message_channel/`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: `${roomName} story`,
+        story_id: storyId,
+        room_id: roomId,
+        state: 'ACTIVE',
+      }),
+    }), response) ?? undefined;
+  }
+  if (!storyChannel) return;
+  const storyMessageChannelId = requiredString(storyChannel.id, 'story message-channel id');
+  const storyConfig = {
+    base_structure: storyType,
+    evd_id: evdId,
+    character_ids: [],
+    message_channel_ids: [storyMessageChannelId],
+    ...(storyPremise ? { story_premise: storyPremise } : {}),
+  };
+  sendJson(response, 200, {
+    room: {
+      ...created,
+      active_story_id: storyId,
+      message_channels: [storyChannel],
+    },
+    storyId,
+    storyMessageChannelId,
+    storyConfig,
+  });
 }
 
 async function proxyExternalPlaybackState(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -359,18 +464,21 @@ export async function handleNarrativeEngineApi(
   const requestUrl = new URL(request.url ?? '/', 'http://renderer.local');
   const isRoom = requestUrl.pathname === '/api/narrative/room';
   const isStartShow = requestUrl.pathname === '/api/narrative/start-show';
+  const isPrepareShow = requestUrl.pathname === '/api/narrative/prepare-show';
   const isStopShow = requestUrl.pathname === '/api/narrative/stop-show';
   const isExternalPlayback = requestUrl.pathname === '/api/narrative/external-playback-state';
   const isAvailableEvds = requestUrl.pathname === '/api/narrative/available-evds';
   const isDss = requestUrl.pathname === '/api/narrative/dss-events';
-  if (!isRoom && !isStartShow && !isStopShow && !isExternalPlayback && !isAvailableEvds && !isDss) return false;
+  if (!isRoom && !isStartShow && !isPrepareShow && !isStopShow && !isExternalPlayback && !isAvailableEvds && !isDss) return false;
 
   try {
-    if (isRoom || isStartShow || isStopShow || isExternalPlayback || isAvailableEvds) {
+    if (isRoom || isStartShow || isPrepareShow || isStopShow || isExternalPlayback || isAvailableEvds) {
       if (request.method !== 'POST') {
         sendJson(response, 405, { error: 'method not allowed' });
       } else if (isStartShow) {
         await proxyStartShow(request, response);
+      } else if (isPrepareShow) {
+        await proxyPrepareShow(request, response);
       } else if (isStopShow) {
         await proxyStopShow(request, response);
       } else if (isExternalPlayback) {

@@ -8,9 +8,15 @@ import {
 import { buildStoryShots, createDssShotPlannerState, dssEventKey } from './lib/dss';
 import { matchImportedEpisode, parseCvdOrEvdExport } from './lib/evd';
 import { desiredRunwaySeconds, ExternalPlaybackTracker, percentile90 } from './lib/external-playback';
+import {
+  getExternalRendererConnection,
+  startExternalRendererConnection,
+  stopExternalRendererConnection,
+} from './lib/external-renderer';
 import { playMediaMuted, playMediaWithSound, unlockMediaPlayback } from './lib/media-unlock';
 import {
   createAndStartShow,
+  prepareRendererShow,
   joinAndReadRoom,
   listAvailableEvds,
   openChat,
@@ -24,7 +30,6 @@ import {
   attachHlsPlayer,
   enqueuePlayoutClip,
   getPlayoutStatus,
-  skipPlayoutPosition,
   startPlayout,
   stopPlayout,
   type PlayoutStatus,
@@ -160,6 +165,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [falConfigured, setFalConfigured] = useState<boolean | null>(null);
   const [videoProvider, setVideoProvider] = useState<'minimax-direct' | 'fal' | null>(null);
+  const [rendererPlatformConfigured, setRendererPlatformConfigured] = useState(false);
+  const [platformRunId, setPlatformRunId] = useState<string | null>(null);
   const [showStartGate, setShowStartGate] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [masterVolume, setMasterVolume] = useState(0.85);
@@ -175,6 +182,7 @@ export function App() {
   const playbackCursorRef = useRef(0);
   const streamVideoRef = useRef<HTMLVideoElement | null>(null);
   const playoutSessionIdRef = useRef<string | null>(null);
+  const platformRunIdRef = useRef<string | null>(null);
   const enqueuedPlayoutBeatsRef = useRef(new Set<string>());
   const lastPlayedPlayoutPositionRef = useRef(-1);
   const pipelineRef = useRef<RenderPipeline | null>(null);
@@ -204,6 +212,7 @@ export function App() {
     settings.resolution,
     selectedBeatReferences.length > 0,
   );
+  const configuredModelLabel = videoProvider === 'minimax-direct' ? 'MiniMax H3 Max direct' : 'MiniMax H3 Max Turbo via fal';
   const needsPlaybackStart = !playbackActivated;
   const hlsAttachmentKey = playoutStatus?.hlsUrl
     ? `${playoutStatus.hlsUrl}:hlsjs-first`
@@ -244,9 +253,10 @@ export function App() {
   useEffect(() => {
     void fetch('/api/health')
       .then((response) => response.json())
-      .then((body: { provider?: 'minimax-direct' | 'fal'; falKeyConfigured?: boolean; minimaxKeyConfigured?: boolean }) => {
+      .then((body: { provider?: 'minimax-direct' | 'fal'; falKeyConfigured?: boolean; minimaxKeyConfigured?: boolean; rendererPlatformConfigured?: boolean }) => {
         setVideoProvider(body.provider ?? null);
         setFalConfigured(Boolean(body.falKeyConfigured || body.minimaxKeyConfigured));
+        setRendererPlatformConfigured(Boolean(body.rendererPlatformConfigured));
       })
       .catch(() => setFalConfigured(false));
   }, []);
@@ -394,7 +404,7 @@ export function App() {
 
   useEffect(() => {
     const sessionId = playoutStatus?.sessionId;
-    if (!sessionId) return undefined;
+    if (!sessionId || sessionId.startsWith('external:')) return undefined;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -440,9 +450,44 @@ export function App() {
   }, [playoutStatus?.sessionId]);
 
   useEffect(() => {
+    if (!platformRunId) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await getExternalRendererConnection();
+        if (cancelled || status.runId !== platformRunId) return;
+        if (status.state === 'failed') {
+          setError(status.failures.at(-1) ?? 'Renderer Platform bridge failed');
+          setDssState('error');
+          return;
+        }
+        setDssState(status.state === 'running' ? 'connected' : 'idle');
+        if (status.hlsUrl) {
+          setPlayoutStatus({
+            sessionId: `external:${status.runId}`,
+            hlsUrl: status.hlsUrl,
+            state: status.clipsRendered > 0 ? 'streaming' : 'buffering',
+            normalizedClips: status.clipsRendered,
+            pendingClips: 0,
+            currentPosition: null,
+            playedThroughPosition: status.clipsRendered - 1,
+            outputSeconds: 0,
+            error: null,
+          });
+        }
+      } catch (statusError) {
+        if (!cancelled) setError(statusError instanceof Error ? statusError.message : 'Could not read Renderer Platform status');
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 750);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [platformRunId]);
+
+  useEffect(() => {
     const pipeline = new RenderPipeline({
       concurrency: 3,
-      retries: 1,
+      retries: 0,
       render: (beat, signal) => renderBeat(beat, settingsRef.current, signal),
       onClip: (_beat, clip) => {
         clipByBeatRef.current.set(clip.storyBlockId, clip);
@@ -452,18 +497,8 @@ export function App() {
         queueExternalPlaybackReport();
       },
       onError: (beat, renderError) => {
-        setError(`H3 Max failed twice for ${beat.title ?? beat.storyBlockId}: ${renderError.message}`);
-        const sessionId = playoutSessionIdRef.current;
-        const position = liveTimelineRef.current.findIndex((item) => item.storyBlockId === beat.storyBlockId);
-        if (sessionId && position >= 0) {
-          void skipPlayoutPosition(sessionId, position)
-            .then((status) => setPlayoutStatus(status))
-            .catch((playoutError: unknown) => {
-              setError(playoutError instanceof Error
-                ? `Could not skip failed scene in continuous playout: ${playoutError.message}`
-                : 'Could not skip failed scene in continuous playout.');
-            });
-        }
+        setError(`Video generation failed for ${beat.title ?? beat.storyBlockId}: ${renderError.message}`);
+        pipelineRef.current?.clear();
       },
       onState: (snapshot) => {
         setPipelineState(snapshot);
@@ -484,6 +519,7 @@ export function App() {
       const sessionId = playoutSessionIdRef.current;
       playoutSessionIdRef.current = null;
       if (sessionId) void stopPlayout(sessionId).catch(() => undefined);
+      if (platformRunIdRef.current) void stopExternalRendererConnection(platformRunIdRef.current).catch(() => undefined);
     };
   }, []);
 
@@ -499,6 +535,9 @@ export function App() {
     const playoutSessionId = playoutSessionIdRef.current;
     playoutSessionIdRef.current = null;
     if (playoutSessionId) void stopPlayout(playoutSessionId).catch(() => undefined);
+    if (platformRunIdRef.current) void stopExternalRendererConnection(platformRunIdRef.current).catch(() => undefined);
+    platformRunIdRef.current = null;
+    setPlatformRunId(null);
     setPlayoutStatus(null);
     enqueuedPlayoutBeatsRef.current.clear();
     lastPlayedPlayoutPositionRef.current = -1;
@@ -525,11 +564,15 @@ export function App() {
     if (stoppingShow) return;
     setStoppingShow(true);
     setError(null);
+    let stopFailure: unknown = null;
     try {
       const connectedRoomSettings = connectedRoomSettingsRef.current;
       if (connectedRoomSettings) {
         await stopStartedShow(connectedRoomSettings);
       }
+    } catch (stopError) {
+      stopFailure = stopError;
+    } finally {
       startedShowSettingsRef.current = null;
       disconnect();
       setBeats(new Map());
@@ -541,10 +584,10 @@ export function App() {
       setImportedEpisodeId('');
       setImportedSource(null);
       setShowSettings(true);
-    } catch (stopError) {
-      setError(stopError instanceof Error ? `Could not stop the Narrative Engine show: ${stopError.message}` : 'Could not stop the Narrative Engine show.');
-    } finally {
       setStoppingShow(false);
+    }
+    if (stopFailure) {
+      setError(stopFailure instanceof Error ? `Could not stop the Narrative Engine show: ${stopFailure.message}` : 'Could not stop the Narrative Engine show.');
     }
   };
 
@@ -624,6 +667,10 @@ export function App() {
 
   const generate = async (beat: StoryBeat) => {
     if (generatingBeatId) return;
+    if (platformRunIdRef.current || connectionState === 'connecting') {
+      setError('Manual rendering is disabled while the Renderer Platform run is active.');
+      return;
+    }
     if (!falConfigured) {
       setError('A MiniMax or fal API key is not configured on the local renderer server.');
       return;
@@ -634,8 +681,13 @@ export function App() {
     manualRenderControllerRef.current = controller;
     try {
       const clip = await renderBeat(beat, settings, controller.signal);
+      if (controller.signal.aborted || manualRenderControllerRef.current !== controller) return;
       if (!playoutSessionIdRef.current) {
         const initialPlayoutStatus = await startPlayout(1);
+        if (controller.signal.aborted || manualRenderControllerRef.current !== controller) {
+          await stopPlayout(initialPlayoutStatus.sessionId).catch(() => undefined);
+          return;
+        }
         playoutSessionIdRef.current = initialPlayoutStatus.sessionId;
         setPlayoutStatus(initialPlayoutStatus);
       }
@@ -677,7 +729,7 @@ export function App() {
     if (settings.setupMode === 'create' && !isUuid(settings.evdId)) {
       return 'Choose a Narrative Engine EVD. Local labels such as episode-0 cannot start a show.';
     }
-    if (settings.setupMode === 'create' && !settings.autoRender) {
+    if (settings.setupMode === 'create' && !settings.autoRender && !rendererPlatformConfigured) {
       return 'Enable continuous auto-render before starting a live H3 Max show.';
     }
     if (settings.setupMode === 'create' && !falConfigured) {
@@ -712,13 +764,18 @@ export function App() {
       disconnect();
       saveSettings(settings);
       setConnectionState('connecting');
-      const initialPlayoutStatus = await startPlayout();
-      playoutSessionIdRef.current = initialPlayoutStatus.sessionId;
-      setPlayoutStatus(initialPlayoutStatus);
+      const usePlatformBridge = settings.setupMode === 'create' && rendererPlatformConfigured;
+      if (!usePlatformBridge) {
+        const initialPlayoutStatus = await startPlayout();
+        playoutSessionIdRef.current = initialPlayoutStatus.sessionId;
+        setPlayoutStatus(initialPlayoutStatus);
+      }
       let connectedSettings = settings;
       let joinedRoom: NarrativeRoom;
       if (settings.setupMode === 'create') {
-        const started = await createAndStartShow(settings);
+        const started = usePlatformBridge
+          ? await prepareRendererShow(settings)
+          : await createAndStartShow(settings);
         const shortlink = started.room.shortlink?.trim();
         if (!shortlink) throw new Error('Narrative Engine created a room without a room code.');
         connectedSettings = { ...settings, roomShortlink: shortlink };
@@ -726,7 +783,31 @@ export function App() {
         saveSettings(connectedSettings);
         joinedRoom = started.room;
         startedShowSettingsRef.current = connectedSettings;
-        externalPlaybackEnabledRef.current = true;
+        externalPlaybackEnabledRef.current = !usePlatformBridge;
+        if (usePlatformBridge) {
+          const prepared = started as Awaited<ReturnType<typeof prepareRendererShow>>;
+          const bridge = await startExternalRendererConnection({
+            storyId: prepared.storyId,
+            roomId: prepared.room.id,
+            storyMessageChannelId: prepared.storyMessageChannelId,
+            storyConfig: prepared.storyConfig,
+            storyStatusBaseUrl: settings.narrativeEngineUrl.trim().replace(/\/$/, '').replace('localhost', 'host.docker.internal'),
+            storyStatusToken: settings.sessionToken,
+          });
+          platformRunIdRef.current = bridge.runId;
+          setPlatformRunId(bridge.runId);
+          setPlayoutStatus(bridge.hlsUrl ? {
+            sessionId: `external:${bridge.runId}`,
+            hlsUrl: bridge.hlsUrl,
+            state: 'buffering',
+            normalizedClips: 0,
+            pendingClips: 0,
+            currentPosition: null,
+            playedThroughPosition: -1,
+            outputSeconds: 0,
+            error: null,
+          } : null);
+        }
       } else {
         joinedRoom = await joinAndReadRoom(settings);
         startedShowSettingsRef.current = null;
@@ -748,7 +829,7 @@ export function App() {
       selectClip(null);
       dssPlannerRef.current = createDssShotPlannerState();
 
-      dssRef.current = openDssEvents(
+      dssRef.current = usePlatformBridge ? null : openDssEvents(
         connectedSettings,
         (dssEvent) => {
           try {
@@ -782,6 +863,7 @@ export function App() {
         },
         (state) => setDssState(state),
       );
+      if (usePlatformBridge) setDssState('connected');
 
       if (channel) {
         chatRef.current = openChat(
@@ -797,6 +879,11 @@ export function App() {
       setShowSettings(false);
       queueExternalPlaybackReport();
     } catch (connectError) {
+      if (platformRunIdRef.current) {
+        void stopExternalRendererConnection(platformRunIdRef.current).catch(() => undefined);
+        platformRunIdRef.current = null;
+        setPlatformRunId(null);
+      }
       const playoutSessionId = playoutSessionIdRef.current;
       playoutSessionIdRef.current = null;
       if (playoutSessionId) void stopPlayout(playoutSessionId).catch(() => undefined);
@@ -862,7 +949,7 @@ export function App() {
             <h1>Start a real live show.</h1>
             <p>
               Create and join a private room, start a draft or published EVD, then turn its DSS commands into an
-              ordered H3 Max Turbo / H3 Max reference reel. You can also attach to a room that is already running.
+              ordered {configuredModelLabel} reel. You can also attach to a room that is already running.
             </p>
           </div>
           <form className="setup-form" onSubmit={requestConnection}>
@@ -1058,7 +1145,7 @@ export function App() {
                     </article>
                   ))}
                   <small className="reference-help">
-                    Local default images are bundled with this renderer. External images and all audio samples must use public HTTPS URLs. H3 Max receives only the characters matched to each shot.
+                    Local default images are bundled with this renderer. External images and all audio samples must use public HTTPS URLs. MiniMax receives only the characters matched to each shot.
                   </small>
                 </div>
               )}
@@ -1067,8 +1154,8 @@ export function App() {
               <label>
                 <span>Resolution</span>
                 <select value={settings.resolution} onChange={(event) => setSettings({ ...settings, resolution: event.target.value as '480P' | '768P' })}>
-                  <option value="768P">768P · Turbo from $0.04/sec</option>
-                  <option value="480P">480P · Turbo from $0.025/sec</option>
+                  <option value="768P">768P{videoProvider === 'fal' ? ' · fal Turbo from $0.04/sec' : ''}</option>
+                  <option value="480P">480P{videoProvider === 'fal' ? ' · fal Turbo from $0.025/sec' : ''}</option>
                 </select>
               </label>
               <label>
@@ -1090,7 +1177,7 @@ export function App() {
               </label>
               <label className="toggle-label">
                 <input type="checkbox" checked={settings.autoRender} onChange={(event) => setSettings({ ...settings, autoRender: event.target.checked })} />
-                <span><b>Continuous auto-render</b><small>One DSS line per shot · expands through 15s · from ~${baselineSpendPerClip}/clip</small></span>
+                <span><b>Continuous auto-render</b><small>One DSS line per shot · expands through 15s{videoProvider === 'fal' ? ` · from ~${baselineSpendPerClip}/clip` : ''}</small></span>
               </label>
             </div>
             <div className="setup-actions">
@@ -1189,7 +1276,7 @@ export function App() {
                           ? 'Reconnecting to the continuous live stream…'
                         : pipelineState.activeIds.length > 0
                           ? `Rendering ${pipelineState.activeIds.length} scenes ahead…`
-                          : latestBeat ? 'A narrative beat is ready to render.' : 'Incoming DSS commands become cinematic H3 Max prompts here.'}</p>
+                          : latestBeat ? 'A narrative beat is ready to render.' : `Incoming DSS commands become cinematic ${configuredModelLabel} prompts here.`}</p>
                   </>
                 )}
               </div>
@@ -1226,20 +1313,22 @@ export function App() {
                 <h3>{latestBeat?.title ?? (latestBeat ? `Scene ${latestBeat.sceneIndex + 1} · Beat ${latestBeat.blockIndex + 1}` : 'Sample establishing beat')}</h3>
                 <small className="reference-status">
                   {selectedBeatReferences.length > 0
-                    ? `H3 Max reference-to-video · ${selectedBeatReferences.map((reference) => `${reference.characterName} (${[reference.assetKey || reference.imageUrl ? 'image' : '', reference.audioUrl ? 'audio' : ''].filter(Boolean).join(' + ')})`).join(' · ')}`
-                    : 'H3 Max Turbo text-to-video · no matched character reference'}
+                    ? `${configuredModelLabel} reference-to-video · ${selectedBeatReferences.map((reference) => `${reference.characterName} (${[reference.assetKey || reference.imageUrl ? 'image' : '', reference.audioUrl ? 'audio' : ''].filter(Boolean).join(' + ')})`).join(' · ')}`
+                    : `${configuredModelLabel} text-to-video · no matched character reference`}
                 </small>
               </div>
               <button
                 className="render-button"
                 disabled={
                   Boolean(generatingBeatId) ||
+                  Boolean(platformRunId) ||
+                  connectionState === 'connecting' ||
                   pipelineState.activeIds.includes(latestBeat?.storyBlockId ?? '') ||
                   pipelineState.queuedIds.includes(latestBeat?.storyBlockId ?? '')
                 }
                 onClick={() => void generate(latestBeat ?? SAMPLE_BEAT)}
               >
-                {generatingBeatId ? <><span className="spinner" />Generating…</> : <>Render {selectedBeatDuration}s beat <span>~${selectedBeatSpend}</span></>}
+                {generatingBeatId ? <><span className="spinner" />Generating…</> : <>Render {selectedBeatDuration}s beat{videoProvider === 'fal' && <span>~${selectedBeatSpend}</span>}</>}
               </button>
             </div>
             <p className="prompt-copy">{latestBeat?.prompt ?? SAMPLE_BEAT.prompt}</p>
@@ -1248,7 +1337,7 @@ export function App() {
           <div className="clip-rail">
             <div className="section-heading"><span>Generated reel</span><small>{clips.length} ready · {pipelineState.activeIds.length} rendering · {pipelineState.queuedIds.length} queued</small></div>
             <div className="clip-list">
-              {clips.length === 0 && <div className="empty-rail">Generated H3 Max clips will collect here.</div>}
+              {clips.length === 0 && <div className="empty-rail">Generated MiniMax clips will collect here.</div>}
               {clips.map((clip, index) => (
                 <button
                   key={clip.id}
@@ -1303,7 +1392,7 @@ export function App() {
                 return (
                   <button key={beat.storyBlockId} className={`beat-row ${lastBeatId === beat.storyBlockId ? 'selected' : ''}`} onClick={() => setLastBeatId(beat.storyBlockId)}>
                     <span className={clip ? 'beat-index rendered' : 'beat-index'}>{clip ? '✓' : beat.blockIndex + 1}</span>
-                    <span><b>{beat.title ?? `Scene ${beat.sceneIndex + 1} · Beat ${beat.blockIndex + 1}`}</b><small>{clip ? `${clip.durationSeconds}s clip ready` : isRendering ? `Rendering ${plannedDuration(beat, settings.duration)}s with H3 Max…` : isQueued ? `${plannedDuration(beat, settings.duration)}s queued` : failed ? 'Render failed' : beat.source === 'imported' ? `Scene ${beat.sceneIndex + 1} · Beat ${beat.blockIndex + 1}` : `${plannedDuration(beat, settings.duration)}s · ready to render`}</small></span>
+                    <span><b>{beat.title ?? `Scene ${beat.sceneIndex + 1} · Beat ${beat.blockIndex + 1}`}</b><small>{clip ? `${clip.durationSeconds}s clip ready` : isRendering ? `Rendering ${plannedDuration(beat, settings.duration)}s with ${configuredModelLabel}…` : isQueued ? `${plannedDuration(beat, settings.duration)}s queued` : failed ? 'Render failed' : beat.source === 'imported' ? `Scene ${beat.sceneIndex + 1} · Beat ${beat.blockIndex + 1}` : `${plannedDuration(beat, settings.duration)}s · ready to render`}</small></span>
                     <span>{lastBeatId === beat.storyBlockId ? '●' : '→'}</span>
                   </button>
                 );

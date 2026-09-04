@@ -43,6 +43,19 @@ export interface StartedShowRoom {
   show: StartedShow;
 }
 
+export interface PreparedRendererShow {
+  room: NarrativeRoom;
+  storyId: number;
+  storyMessageChannelId: string;
+  storyConfig: {
+    base_structure: 'WHISPERS' | 'CREATOR';
+    evd_id: string;
+    character_ids: string[];
+    message_channel_ids: string[];
+    story_premise?: string;
+  };
+}
+
 export interface AvailableEvd {
   id: string;
   cvd_id: string;

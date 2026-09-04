@@ -5,6 +5,7 @@ import type {
   NarrativeRoom,
   AvailableEvd,
   RendererSettings,
+  PreparedRendererShow,
   StartedShowRoom,
   ExternalRendererPlaybackState,
   ExternalRendererPlaybackStateResult,
@@ -52,6 +53,22 @@ export async function joinAndReadRoom(settings: RendererSettings): Promise<Narra
     }),
   });
   return readResponse<NarrativeRoom>(response);
+}
+
+export async function prepareRendererShow(settings: RendererSettings): Promise<PreparedRendererShow> {
+  const response = await fetch('/api/narrative/prepare-show', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      baseUrl: trimUrl(settings.narrativeEngineUrl),
+      authoringBaseUrl: trimUrl(settings.narrativeAuthoringUrl),
+      token: settings.sessionToken,
+      roomName: settings.roomName,
+      evdId: settings.evdId,
+      storyType: settings.storyType,
+    }),
+  });
+  return readResponse<PreparedRendererShow>(response);
 }
 
 export async function createAndStartShow(settings: RendererSettings): Promise<StartedShowRoom> {

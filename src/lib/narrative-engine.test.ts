@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createAndStartShow,
+  prepareRendererShow,
   joinAndReadRoom,
   listAvailableEvds,
   openDssEvents,
@@ -100,6 +101,26 @@ describe('same-origin Narrative Engine transport', () => {
       evdId: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
       storyType: 'WHISPERS',
     });
+  });
+
+  it('prepares a renderer-owned show through the local server', async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl = '';
+    globalThis.fetch = (async (input) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({
+        room: { id: 'room-1', shortlink: 'renderer-room' },
+        storyId: 42,
+        storyMessageChannelId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        storyConfig: { message_channel_ids: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'] },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      await expect(prepareRendererShow(settings)).resolves.toMatchObject({ storyId: 42 });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(requestUrl).toBe('/api/narrative/prepare-show');
   });
 
   it('loads available EVDs through the renderer server without putting the token in a URL', async () => {

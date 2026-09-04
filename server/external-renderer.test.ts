@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createCommandProgressEvent,
   createGroupFinishedEvent,
+  classifyStoryLifecycle,
   planGroupClips,
   parseExternalRendererRunConfig,
 } from './external-renderer.js';
@@ -24,6 +25,7 @@ function config() {
     storyMessageChannelId: storyChannelId,
     roomMainMessageChannelId: roomChannelId,
     storyConfig: { message_channel_ids: [storyChannelId] },
+    enableAudience: true,
   };
 }
 
@@ -35,6 +37,22 @@ describe('external renderer run configuration', () => {
     expect(parsed.chatBaseUrl).toBe('https://chat.edge.pickford.ai');
     expect(parsed.audienceMessages).toBe(100);
     expect(parsed.resolution).toBe('480P');
+  });
+
+  it('accepts a local bridge without audience-only room metadata', () => {
+    const parsed = parseExternalRendererRunConfig({
+      environment: 'local',
+      baseUrl: 'http://host.docker.internal:8193',
+      websocketUrl: 'ws://host.docker.internal:8193/api/v1/renderer-bridge/ws',
+      rendererId,
+      credentialId,
+      clientSecret: 'test-only-secret',
+      rendererVersion: 'minimax.20260904.local.1',
+      resumeExistingStory: true,
+    });
+
+    expect(parsed.enableAudience).toBe(false);
+    expect(parsed.tier).toBe('renderer-dev');
   });
 
   it('rejects the room-main channel in story configuration', () => {
@@ -51,6 +69,26 @@ describe('external renderer run configuration', () => {
     value.roomMainMessageChannelId = storyChannelId;
 
     expect(() => parseExternalRendererRunConfig(value)).toThrow('story and room-main channels must be distinct');
+  });
+});
+
+describe('story lifecycle observation', () => {
+  it('does not treat the initially inactive prepared story as completed', () => {
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, false, false).state).toBe('running');
+  });
+
+  it('reports authoritative end only after running or receiving an assignment', () => {
+    const running = classifyStoryLifecycle({ active: true, running_key: 'story-key', errors: null }, false, false);
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, running.observedRunning, false).state).toBe('ended');
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, false, true).state).toBe('ended');
+  });
+
+  it('reports persisted story errors as failures', () => {
+    expect(classifyStoryLifecycle({
+      active: false,
+      running_key: null,
+      errors: { story_error_type: 'renderer_unavailable' },
+    }, true, false)).toMatchObject({ state: 'failed', failure: 'renderer_unavailable' });
   });
 });
 
@@ -108,7 +146,7 @@ describe('createCommandProgressEvent', () => {
 });
 
 describe('planGroupClips', () => {
-  it('keeps a command group together in one ordered video clip', () => {
+  it('keeps dialogue turns as ordered child clips in one command group', () => {
     const clips = planGroupClips(
       {
         raw: {},
@@ -129,7 +167,8 @@ describe('planGroupClips', () => {
       6,
     );
 
-    expect(clips).toHaveLength(1);
-    expect(clips[0]?.prompt).toContain('June speaks: “First line.” Then Marcus speaks: “Second line.”');
+    expect(clips).toHaveLength(2);
+    expect(clips[0]?.prompt).toContain('June speaks: “First line.”');
+    expect(clips[1]?.prompt).toContain('Marcus speaks: “Second line.”');
   });
 });
