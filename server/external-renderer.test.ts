@@ -211,3 +211,29 @@ describe('StoryKernel setup and transition commands', () => {
     ] }, 5)).toThrow('Unsupported DSS command: unsupported movement');
   });
 });
+
+
+describe('StoryKernel look direction', () => {
+  const frame = { raw: {}, sequence: 1, assignmentId: 'assignment-1', assignmentGeneration: 1, storyBlockId: roomId, groups: [] };
+
+  it('includes a look command following dialogue in the same shot and retains gaze context', () => {
+    const context: string[] = [];
+    const clips = planGroupClips(frame, { id: 'talk-look', commands: [
+      { command: 'talk', args: { character: 'Richard Cho', dialogue: 'A truly lamentable situation.', respondent: 'Lily Song' } },
+      { command: 'look', args: { character: 'Richard Cho', target: { type: 'Character', name: 'Lily Song', bias: 'eyes' } } },
+    ] }, 5, context);
+    expect(clips).toHaveLength(1);
+    expect(clips[0]?.prompt).toContain('Richard Cho looks toward Lily Song, making eye contact.');
+    expect(clips[0]?.prompt).toContain('A truly lamentable situation.');
+    const next = planGroupClips(frame, { id: 'next', commands: [
+      { command: 'talk', args: { character: 'Lily Song', dialogue: 'Indeed.' } },
+    ] }, 5, context);
+    expect(next[0]?.prompt).toContain('Richard Cho looks toward Lily Song');
+  });
+
+  it('rejects a malformed gaze target rather than acknowledging it silently', () => {
+    expect(() => planGroupClips(frame, { id: 'bad-look', commands: [
+      { command: 'look', args: { character: 'Richard Cho', target: { type: 'Character' } } },
+    ] }, 5)).toThrow('look target name');
+  });
+});

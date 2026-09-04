@@ -406,7 +406,7 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
   for (const command of group.commands) {
     const name = commandName(command);
     const compact = name.replace(/\s/g, '');
-    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation'].includes(compact)) {
+    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation', 'look'].includes(compact)) {
       throw new Error(`Unsupported DSS command: ${name || '(missing command)'}`);
     }
     const character = textArg(command, 'character') ?? textArg(command, 'name');
@@ -434,6 +434,18 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
         if (!sceneContext.includes(description)) sceneContext.push(description);
         if (!visual.includes(description)) visual.push(description);
       }
+    } else if (compact === 'look') {
+      const target = asObject(commandArgs(command).target, 'look target');
+      const targetName = requiredString(target.name, 'look target name');
+      if (!character) throw new Error('look character is required');
+      const prefix = `${character} looks toward `;
+      const direction = `${prefix}${targetName}${target.bias === 'eyes' ? ', making eye contact' : ''}.`;
+      for (const context of [sceneContext, visual]) {
+        const previous = context.findIndex((value) => value.startsWith(prefix));
+        if (previous >= 0) context.splice(previous, 1);
+        context.push(direction);
+      }
+      hasVisualAction = true;
     } else if (compact === 'setemotion') {
       const emotion = textArg(command, 'emotion');
       if (character && emotion) { visual.push(`${character}'s expression is ${emotion}.`); hasVisualAction = true; }
