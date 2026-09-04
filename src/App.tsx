@@ -800,7 +800,7 @@ export function App() {
             roomId: prepared.room.id,
             storyMessageChannelId: prepared.storyMessageChannelId,
             storyConfig: prepared.storyConfig,
-            storyStatusBaseUrl: settings.narrativeEngineUrl.trim().replace(/\/$/, '').replace('localhost', 'host.docker.internal'),
+            storyStatusBaseUrl: settings.narrativeEngineUrl.trim().replace(/\/$/, ''),
             storyStatusToken: settings.sessionToken,
           });
           platformRunIdRef.current = bridge.runId;
