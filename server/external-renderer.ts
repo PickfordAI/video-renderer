@@ -343,14 +343,24 @@ const NO_VIDEO_CONTROL_COMMANDS = new Set([
   'showcredits',
   'credits',
   'delay',
+  'fade',
+  'showdebug',
+  'setfps',
+  'setstorymode',
+  'setchannelvolume',
+  'depthoffield',
+  'stopaudio',
 ]);
 
-function controlGroupDurationSeconds(group: DssGroup): number | null {
+export function controlGroupDurationSeconds(group: DssGroup): number | null {
   if (!group.commands.every((command) => NO_VIDEO_CONTROL_COMMANDS.has(commandName(command).replace(/\s/g, '')))) return null;
   return group.commands.reduce((maximum, command) => {
-    const values = [command.delay, commandArgs(command).duration, commandArgs(command).seconds];
-    const duration = values.map(Number).find((value) => Number.isFinite(value) && value >= 0) ?? 0;
-    return Math.max(maximum, duration);
+    const args = commandArgs(command);
+    const durations = [args.duration, args.duration_seconds, args.seconds]
+      .filter((value) => value !== undefined && value !== null)
+      .map(Number).filter((value) => Number.isFinite(value) && value >= 0);
+    const delay = Number(command.delay ?? 0);
+    return Math.max(maximum, (Number.isFinite(delay) ? Math.max(0, delay) : 0) + Math.max(0, ...durations));
   }, 0);
 }
 
@@ -389,12 +399,16 @@ function parseDssFrame(raw: JsonObject): DssFrame {
   };
 }
 
-export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds: number): PlannedClip[] {
-  const visual: string[] = [];
+export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds: number, sceneContext: string[] = []): PlannedClip[] {
+  const visual: string[] = [...sceneContext];
+  let hasVisualAction = false;
   const dialogue: Array<{ direction: string; words: string[] }> = [];
   for (const command of group.commands) {
     const name = commandName(command);
     const compact = name.replace(/\s/g, '');
+    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation'].includes(compact)) {
+      throw new Error(`Unsupported DSS command: ${name || '(missing command)'}`);
+    }
     const character = textArg(command, 'character') ?? textArg(command, 'name');
     if (compact === 'talk' || compact === 'charactertalk') {
       const line = textArg(command, 'dialogue');
@@ -410,20 +424,27 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
     }
     if (compact === 'enableset') {
       const setName = textArg(command, 'set');
-      if (setName) visual.push(`Setting: ${setName}.`);
+      if (setName) {
+        sceneContext.splice(0, sceneContext.length, `Setting: ${setName}.`);
+        visual.splice(0, visual.length, ...sceneContext);
+      }
     } else if (compact === 'addcharacter' || compact === 'spawncharacter') {
-      if (character) visual.push(`${character} is present in the scene.`);
+      if (character) {
+        const description = `${character} is present in the scene.`;
+        if (!sceneContext.includes(description)) sceneContext.push(description);
+        if (!visual.includes(description)) visual.push(description);
+      }
     } else if (compact === 'setemotion') {
       const emotion = textArg(command, 'emotion');
-      if (character && emotion) visual.push(`${character}'s expression is ${emotion}.`);
+      if (character && emotion) { visual.push(`${character}'s expression is ${emotion}.`); hasVisualAction = true; }
     } else if (compact === 'playanimation') {
       const animation = textArg(command, 'animation');
-      if (character && animation) visual.push(`${character} performs ${animation}.`);
+      if (character && animation) { visual.push(`${character} performs ${animation}.`); hasVisualAction = true; }
     } else if (compact === 'cutscene') {
       continue;
     }
   }
-  if (dialogue.length === 0 && visual.length === 0) return [];
+  if (dialogue.length === 0 && !hasVisualAction) return [];
   const chunks: Array<{ text: string; duration: number }> = [];
   for (const line of dialogue) {
     const wordsPerClip = Math.max(1, Math.floor((15 - 1.25) * 2.3));
@@ -597,6 +618,7 @@ class ExternalRendererRun {
   private playout: PlayoutSession | null = null;
   private stopped = false;
   private clipPosition = 0;
+  private readonly sceneContext: string[] = [];
   private heartbeat: NodeJS.Timeout | null = null;
   private audienceTask: Promise<void> | null = null;
   private readonly relayResults = new Map<string, (value: JsonObject) => void>();
@@ -712,11 +734,14 @@ class ExternalRendererRun {
         send(this.socket!, this.completedEvent(frame, group, 0));
         continue;
       }
-      const planned = planGroupClips(frame, group, this.config.clipDurationSeconds);
+      const planned = planGroupClips(frame, group, this.config.clipDurationSeconds, this.sceneContext);
       if (planned.length === 0) {
         const controlDuration = controlGroupDurationSeconds(group);
         if (controlDuration === null) throw new Error(`DSS group ${group.id} contains no supported renderable commands`);
-        if (controlDuration > 0) await new Promise((resolve) => setTimeout(resolve, controlDuration * 1_000));
+        if (controlDuration > 0) await abortable(
+          new Promise((resolve) => setTimeout(resolve, controlDuration * 1_000)), this.abortController.signal,
+        );
+        if (this.stopped) throw this.abortController.signal.reason;
         send(this.socket!, this.completedEvent(frame, group, controlDuration));
         this.status.dssCommandsRendered += group.commands.length;
         continue;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  controlGroupDurationSeconds,
   createCommandProgressEvent,
   createGroupFinishedEvent,
   classifyStoryLifecycle,
@@ -170,5 +171,43 @@ describe('planGroupClips', () => {
     expect(clips).toHaveLength(2);
     expect(clips[0]?.prompt).toContain('June speaks: “First line.”');
     expect(clips[1]?.prompt).toContain('Marcus speaks: “Second line.”');
+  });
+});
+
+
+describe('StoryKernel setup and transition commands', () => {
+  const frame = { raw: {}, sequence: 1, assignmentId: 'assignment-1', assignmentGeneration: 1, storyBlockId: roomId, groups: [] };
+
+  it('carries setup context to dialogue without generating setup clips', () => {
+    const context: string[] = [];
+    const setup = { id: 'setup', commands: [
+      { command: 'enable set', args: { set: 'hotel lobby' } },
+      { command: 'cutscene', args: { duration_seconds: 10 } },
+      { command: 'show debug', args: { show: false } },
+      { command: 'set fps', args: { fps: 24 } },
+      { command: 'add character', args: { character: 'marcus' } },
+    ] };
+    expect(planGroupClips(frame, setup, 5, context)).toEqual([]);
+    expect(controlGroupDurationSeconds(setup)).toBe(10);
+    const clips = planGroupClips(frame, { id: 'dialogue', commands: [
+      { command: 'talk', args: { character: 'marcus', dialogue: 'We meet again.' } },
+    ] }, 5, context);
+    expect(clips).toHaveLength(1);
+    expect(clips[0]?.prompt).toContain('Setting: hotel lobby.');
+    expect(clips[0]?.prompt).toContain('marcus is present');
+    expect(clips[0]?.prompt).toContain('We meet again.');
+  });
+
+  it('honors transition duration even when transport delay is zero', () => {
+    const group = { id: 'fade', commands: [{ command: 'fade', delay: 0, blocking: true, args: { wait: true, duration: 2, 'fade in': true } }] };
+    expect(planGroupClips(frame, group, 5)).toEqual([]);
+    expect(controlGroupDurationSeconds(group)).toBe(2);
+  });
+
+  it('does not silently accept unknown commands alongside valid dialogue', () => {
+    expect(() => planGroupClips(frame, { id: 'unknown', commands: [
+      { command: 'talk', args: { dialogue: 'Hello.' } },
+      { command: 'unsupported movement', args: {} },
+    ] }, 5)).toThrow('Unsupported DSS command: unsupported movement');
   });
 });
