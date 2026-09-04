@@ -1,130 +1,134 @@
 # Pickford Video Renderer
 
-A standalone MiniMax H3 video renderer for the Narrative Engine (Story Kernel). This repository
-contains its own browser application, Node server, fal integration, FFmpeg playout pipeline, and
-local MediaMTX relay. It imports no code or packages from the `unrendered` monorepo.
+An open-source renderer for **DSS**, the story format emitted by the Pickford Story Kernel.
+It turns ordered story commands into MiniMax H3 video through [fal](https://fal.ai), then uses
+FFmpeg and MediaMTX to play a continuous HLS stream. It is a standalone repository: no kernel
+source code, monorepo packages, or database access is required.
 
-## External service boundary
+Choose how to watch:
 
-The renderer uses only public network interfaces:
+1. **Locally:** the worker and player run on your computer. Only you can access them.
+2. **With friends:** the worker and viewer deploy together to your chosen host—Fly.io, Render,
+   or a Docker VM on AWS, GCP, or another provider. Share the watch link; your computer can go offline.
 
-- Narrative Engine: room creation/joining, playback mode, show start/stop, and renderer playback state.
-- Narrative Authoring: caller-visible CVDs and EVDs.
-- Realtime Gateway: authenticated DSS events.
-- Chat Messaging: the room WebSocket.
-- fal: MiniMax video generation through this app's server-side proxy.
+The Story Kernel runs separately. A compatible kernel installation, a fal account, and an
+onboarding handoff are required to render a live story. You can build and test without any keys.
 
-The browser sends Narrative Engine, Narrative Authoring, and Realtime requests through narrow
-same-origin proxy routes on the renderer server, avoiding browser CORS coupling. Chat remains a
-direct browser WebSocket connection. Service URLs and the session token are supplied by the user
-in the setup screen; the Narrative Engine is not started or imported by this repository.
+## Let an agent set it up
 
-For deployed Story Kernel environments, the server also exposes a loopback-only external-renderer
-run API at `POST /api/external-renderer/runs`. It logs in through the public renderer endpoint,
-connects the query-free bridge WebSocket with a bearer header, registers an immutable manifest,
-starts a renderer-pinned story, renders and plays every ordered DSS group, keeps the lease alive,
-and exercises two independent public audience connections. Renderer credentials are accepted only
-in the local request body, retained in memory for the run, and omitted from status responses.
+Give your agent this repository and [the agent runbook](docs/agents.md). The agent can discover
+local Docker ports, consume the kernel's onboarding handoff, configure the worker, start the
+story, and return a watch link. The user only chooses where to watch and connects the required
+accounts. The agent returns a watch link on the same host; no second hosting tool is needed.
+Credentials never enter the viewer or watch link.
 
-Poll `GET /api/external-renderer/runs/<run-id>` for sanitized evidence and stop the connection with
-`DELETE /api/external-renderer/runs/<run-id>`. The caller must provide distinct, authoritative room
-main and story-scoped channel IDs; the server rejects a configuration that routes story Chat to the
-room channel.
+## Local quick start
 
-## How playback works
+Requires **Node.js 22+**, FFmpeg, and Docker. Start your Story Kernel stack first.
 
-Incoming DSS command groups become ordered shots. Up to three fal jobs may run concurrently, but
-completed clips wait for their story position. FFmpeg normalizes the clips into one continuous
-H.264/AAC timeline, publishes it over RTSP to MediaMTX, and every viewer watches the same stable HLS
-URL in a single video element. When generation falls behind, the stream holds the last frame rather
-than replacing the player.
-
-Text-only rendering uses `minimax/h3-max-turbo/text-to-video` by default. Character-reference mode
-is optional and uses `minimax/h3-max/reference-to-video`. The bundled Whispers portraits and voice
-samples are editable defaults; only media matched to a shot is sent to fal.
-
-## Local development
-
-Requirements:
-
-- Node.js 22+
-- FFmpeg available as `ffmpeg`
-- Docker for the local MediaMTX relay
-- A fal API key
-- Separately running or remotely hosted Narrative Engine services
-
-Set up and start the renderer:
-
-```bash
-cp .env.example .env
-# Put your FAL_KEY in .env.
+```sh
 npm ci
+cp .env.example .env
+# Set FAL_KEY in .env, or provide it through the process environment.
+npm run setup
+npm run build
 docker compose up -d media-relay
-npm run dev
+npm start
 ```
 
-Open `http://localhost:4173`. Do not open `index.html` through a `file://` URL—the Node process
-serves both the Vite application and the renderer's server-side API.
+In another terminal:
 
-The setup screen defaults to the standard local Narrative Engine stack:
-
-| Service | URL |
-|---|---|
-| Narrative Engine / Show API | `http://localhost:8081` |
-| Narrative Authoring API | `http://localhost:8091` |
-| Realtime Gateway | `http://localhost:8092` |
-| Chat Messaging | `http://localhost:8080` |
-
-Use **Create & start show** for a new room or **Join existing room** for a room started elsewhere.
-The create flow creates the room, joins it as host, selects `external_renderer` playback, starts the
-chosen EVD, and connects DSS and chat. A verified user session token and a Narrative Engine EVD UUID
-are required. **Load my shows** retrieves available EVDs from Narrative Authoring.
-
-The session token is kept in `sessionStorage`; endpoint preferences are kept in `localStorage`.
-`FAL_KEY` remains on the renderer server and never enters the browser bundle.
-
-Stop local services with:
-
-```bash
-docker compose down
+```sh
+npm run doctor
+npm run story -- start --handoff /absolute/path/to/handoff.json
+npm run story -- status
 ```
 
-## Containerized renderer
+Open the returned `watchUrl`. The first scene can take a few minutes. The agent uses
+[the handoff contract](docs/agents.md#handoff-contract) to obtain the episode and renderer
+credentials from earlier onboarding steps. `npm run setup` discovers published Docker ports
+and writes a private `.renderer/services.json`; it never asks for container IP addresses.
+When multiple kernel stacks are running, specify `npm run setup -- --project <compose-project>`.
 
-To run both the renderer and relay in containers:
+Stop generation, playout, and the kernel story:
 
-```bash
-export FAL_KEY=key_id:key_secret
+```sh
+npm run story -- stop --handoff /absolute/path/to/handoff.json
+```
+
+Then stop the worker with Ctrl+C. `docker compose down` stops this repository's relay.
+Stopping a story does not delete its room or change another room's state.
+
+## Host for friends
+
+Follow [the deployment guide](docs/deployment.md). **One Docker image serves the worker and
+viewer from one HTTPS address.** Choose Fly.io for the included CLI deployment, Render for a
+single-service Blueprint, or the Compose/Caddy template for an existing AWS/GCP/Docker VM.
+The agent resolves service URLs and returns the watch link automatically.
+
+```sh
+# Fly example; FAL_KEY is already available to the agent.
+npm run deploy:fly -- --app <existing-fly-app>
+npm run hosted:connect
+# In another managed terminal:
+npm run story -- start --hosted --handoff /absolute/path/to/handoff.json
+npm run share -- --hosted
+```
+
+Render and VM deployments use the same story/share commands. Vercel remains an optional separate
+viewer for existing deployments; it is not required for any of the combined hosting options.
+
+Anyone with a watch link can watch while that story is running. The viewer has playback controls;
+it does not expose generation controls, kernel credentials, or audience chat. Hosting and fal
+usage are billed by their providers. Stop or destroy an unused hosted worker to stop compute costs.
+
+## Developer studio
+
+`npm run dev` serves the existing studio at `http://localhost:4173`. Use it to inspect DSS,
+preview imported CVD/EVD exports, configure your own character references, and render manually.
+The studio's legacy room/SSE/chat connection is separate from the agent's renderer-credential
+bridge. Use one rendering flow at a time. `/external-run.html` is the advanced protocol test page.
+All operator pages stay private; the public listener serves only the viewer and its media.
+
+The studio stores service preferences in localStorage and its user token in sessionStorage.
+Agent-started stories keep runtime credentials in worker memory. Handoff files remain wherever
+the caller stored them. There are no bundled character portraits or remote voice samples; supply
+media you have permission to use. The studio supports character-reference generation; the agent
+bridge currently renders text prompts.
+
+For the entire local renderer in Docker, including FFmpeg:
+
+```sh
 docker compose --profile full up --build
 ```
 
-When the Narrative Engine stack runs on the host, use `http://host.docker.internal:<port>` for the
-three HTTP service URLs in the renderer setup screen. Chat is opened by the browser, so its URL can
-remain `http://localhost:8080`. `MEDIA_RELAY_PUBLIC_HLS_BASE_URL` can override the browser-visible
-relay origin when the viewer is not on the Docker host.
+Set `FAL_KEY` in `.env` first. This starts the operator on loopback port 4173 and the viewer/media
+port on loopback port 4174. Host-based discovery generates host URLs; when the worker runs inside
+Docker, supply `services` in the handoff using `http://host.docker.internal:<published-port>` for
+the Show API and **HTTPS** for Renderer Platform, or run the agent bridge worker on the host.
+The supported zero-plumbing local agent path is `npm start` plus the relay container.
 
-## Configuration
+## Configuration and validation
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `FAL_KEY` | required | Server-side fal credential |
-| `PORT` | `4173` | Renderer HTTP port |
-| `FAL_VIDEO_MODEL_ID` | `minimax/h3-max-turbo/text-to-video` | Text-only model |
-| `FAL_REFERENCE_VIDEO_MODEL_ID` | `minimax/h3-max/reference-to-video` | Reference model |
-| `FAL_QUEUE_BASE_URL` | `https://queue.fal.run` | fal queue origin |
-| `FFMPEG_PATH` | `ffmpeg` | FFmpeg executable |
-| `MEDIA_RELAY_RTSP_BASE_URL` | `rtsp://127.0.0.1:8554` | Server-side relay ingest |
-| `MEDIA_RELAY_HLS_BASE_URL` | `http://127.0.0.1:8888` | Browser-visible HLS origin |
-| `MEDIA_RELAY_AUDIENCE_DELAY_SECONDS` | `3` | Estimated HLS audience delay |
+See [.env.example](.env.example) for optional overrides and [architecture](docs/architecture.md)
+for the protocol and process boundaries.
 
-## Validate
-
-```bash
-npm test
-npm run typecheck
-npm run build
-docker compose config
+```sh
+npm run check          # tests, type checking, studio/server/viewer builds
+npm run build:viewer   # standalone viewer artifact; no credentials needed
+npm audit
+docker compose config --quiet
+docker build --target hosted -t pickford-video-renderer .
 ```
 
-The production image includes FFmpeg and serves the compiled browser and Node application on port
-4173.
+This is an early release with volatile live sessions: worker restarts, deployments, or bridge
+failures end the run. Start a fresh story after recovery; there is no durable resume or recording.
+One agent renderer run is allowed per worker. See [release checks](docs/releasing.md); `npm run release:source` creates a clean source archive.
+
+## License and contributions
+
+[MIT](LICENSE) for this repository's code and documentation. Third-party components retain their
+own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license does not grant
+rights to Story Kernel, user stories, media, provider output, or Pickford trademarks.
+
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).

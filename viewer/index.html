@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Watch a story · Pickford</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101216; color: #f4f1eb; }
+    body { margin: 0; padding: 5vh 24px; }
+    main { max-width: 1080px; margin: auto; }
+    h1 { font-size: clamp(26px, 5vw, 48px); letter-spacing: -.04em; margin-bottom: 12px; }
+    p { color: #b8b9bf; line-height: 1.6; }
+    video { width: 100%; aspect-ratio: 16/9; background: black; border-radius: 16px; }
+    button { background: #ff825e; color: #17110e; border: 0; border-radius: 8px; padding: 12px 18px; font: inherit; cursor: pointer; }
+    footer { margin-top: 32px; color: #8d9099; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Your story, on screen.</h1>
+    <p id="status" role="status">Connecting to the story…</p>
+    <video id="video" controls playsinline preload="none"></video>
+    <p><button id="play">Watch with sound</button></p>
+    <footer>Rendered with Pickford. This link works while the story is live.</footer>
+  </main>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

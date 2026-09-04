@@ -1,0 +1,10 @@
+.git
+.renderer
+.env*
+server
+server-dist
+public
+src
+media-relay
+Dockerfile
+fly.toml

@@ -1,3 +1,4 @@
+import { publicMediaBaseUrl } from './public-origin.js';
 import { createReadStream } from 'node:fs';
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
@@ -309,7 +310,7 @@ export class PlayoutSession {
     this.tempRoot = join(tmpdir(), `pickford-h3-playout-${sessionId}`);
     this.ffmpegPath = options.ffmpegPath ?? process.env.FFMPEG_PATH ?? 'ffmpeg';
     const rtspBase = (options.rtspBaseUrl ?? process.env.MEDIA_RELAY_RTSP_BASE_URL ?? 'rtsp://127.0.0.1:8554').replace(/\/$/, '');
-    const hlsBase = (options.hlsBaseUrl ?? process.env.MEDIA_RELAY_HLS_BASE_URL ?? 'http://127.0.0.1:8888').replace(/\/$/, '');
+    const hlsBase = (options.hlsBaseUrl ?? publicMediaBaseUrl()).replace(/\/$/, '');
     this.rtspUrl = `${rtspBase}/${this.pathName}`;
     this.hlsUrl = `${hlsBase}/${this.pathName}/index.m3u8`;
     this.startupBufferClips = Math.max(1, options.startupBufferClips ?? 2);

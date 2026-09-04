@@ -10,18 +10,23 @@ services:
 
   renderer:
     profiles: [full]
-    build: .
+    build:
+      context: .
+      target: runtime
     depends_on:
       - media-relay
     ports:
       - "127.0.0.1:4173:4173"
+      - "127.0.0.1:4174:4174"
     environment:
+      HOST: 0.0.0.0
+      MEDIA_HOST: 0.0.0.0
       FAL_KEY: "${FAL_KEY:-}"
       FAL_VIDEO_MODEL_ID: "${FAL_VIDEO_MODEL_ID:-minimax/h3-max-turbo/text-to-video}"
       FAL_REFERENCE_VIDEO_MODEL_ID: "${FAL_REFERENCE_VIDEO_MODEL_ID:-minimax/h3-max/reference-to-video}"
       FAL_QUEUE_BASE_URL: "${FAL_QUEUE_BASE_URL:-https://queue.fal.run}"
       MEDIA_RELAY_RTSP_BASE_URL: rtsp://media-relay:8554
-      MEDIA_RELAY_HLS_BASE_URL: "${MEDIA_RELAY_PUBLIC_HLS_BASE_URL:-http://localhost:8888}"
+      MEDIA_RELAY_HLS_BASE_URL: http://media-relay:8888
       MEDIA_RELAY_AUDIENCE_DELAY_SECONDS: "${MEDIA_RELAY_AUDIENCE_DELAY_SECONDS:-3}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
