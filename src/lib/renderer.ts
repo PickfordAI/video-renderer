@@ -1,4 +1,5 @@
 import type { RenderMode } from '../../server/render-mode';
+import { rendererConfigFromSettings } from './render-options';
 import { resolveCharacterReferences } from './character-references';
 import type { CharacterReferenceMedia, GeneratedClip, RendererSettings, StoryBeat } from './types';
 
@@ -95,7 +96,9 @@ export class StudioRenderSession {
 
   async render(beat: StoryBeat, settings: RendererSettings, signal: AbortSignal): Promise<GeneratedClip> {
     const epoch = this.epoch;
-    const turbo = settings.renderMode === 'fal-turbo-i2v';
+    const config = rendererConfigFromSettings(settings);
+    if (config.continuity === 'camera-anchors') throw new Error('Camera setup anchors require the connected StoryKernel bridge. Select no generated-frame continuity for manual or imported rendering.');
+    const turbo = config.continuity === 'last-frame-chain';
     if (turbo) {
       if (this.activeTurboEpoch === epoch) throw new Error('A Turbo continuity shot is already generating.');
       this.activeTurboEpoch = epoch;
@@ -107,7 +110,7 @@ export class StudioRenderSession {
   private async renderNext(beat: StoryBeat, settings: RendererSettings, signal: AbortSignal): Promise<GeneratedClip> {
     const epoch = this.epoch;
     let imageUrl = settings.initialImageUrl;
-    if (settings.renderMode === 'fal-turbo-i2v' && this.previousVideoUrl) {
+    if (rendererConfigFromSettings(settings).continuity === 'last-frame-chain' && this.previousVideoUrl) {
       const response = await fetch('/api/video-frame', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
         body: JSON.stringify({ videoUrl: this.previousVideoUrl, position: 'last' }),
@@ -119,7 +122,7 @@ export class StudioRenderSession {
     if (signal.aborted || epoch !== this.epoch) throw new DOMException('Rendering stopped', 'AbortError');
     const clip = await renderBeat(beat, settings, signal, imageUrl);
     if (signal.aborted || epoch !== this.epoch) throw new DOMException('Rendering stopped', 'AbortError');
-    if (settings.renderMode === 'fal-turbo-i2v') this.previousVideoUrl = clip.videoUrl;
+    if (rendererConfigFromSettings(settings).continuity === 'last-frame-chain') this.previousVideoUrl = clip.videoUrl;
     return clip;
   }
 }

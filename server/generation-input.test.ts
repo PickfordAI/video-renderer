@@ -77,5 +77,6 @@ describe('parseGenerationInput', () => {
     expect(() => parseGenerationInput({ ...input, initialImageUrl: 'data:text/html;base64,AAAA' }, vi.fn())).toThrow('HTTPS');
     expect(() => parseGenerationInput({ ...input, initialImageUrl: 'https://name:secret@images.example/scene.jpg' }, vi.fn())).toThrow('credentials');
     expect(() => parseGenerationInput({ ...input, renderMode: 'unknown' }, vi.fn())).toThrow('renderMode');
+    expect(parseGenerationInput({ prompt: input.prompt, rendererConfig: { model: 'fal-max-ref2v', continuity: 'none' } }, vi.fn()).renderMode).toBe('fal-max-ref2v');
   });
 });

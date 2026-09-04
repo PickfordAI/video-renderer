@@ -28,7 +28,7 @@ try {
       if (!endpoints.narrativeEngineUrl || !endpoints.rendererBaseUrl) throw new Error('Run npm run setup or supply services in the handoff.');
       const health = await api('/api/health', undefined, 'GET');
       const renderOptions = renderingOptions(handoff);
-      if (renderOptions.renderMode !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
+      if (renderOptions.rendererConfig.model !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
       if (!health.falKeyConfigured && !health.minimaxKeyConfigured) throw new Error('Configure MINIMAX_API_KEY or FAL_KEY in the worker environment before starting a story.');
       if (saved?.runId) {
         const previous = await api(`/api/external-renderer/runs/${saved.runId}`, undefined, 'GET').catch(() => null);

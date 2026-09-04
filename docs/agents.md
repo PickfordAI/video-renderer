@@ -33,18 +33,30 @@ identifiers and will not authenticate. Pass its path, never the credentials, on 
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
-| `renderMode` | `auto` (default), `fal-turbo-i2v`, or `fal-max-ref2v`; explicit fal modes require `FAL_KEY` even with a MiniMax key |
+| `rendererConfig.model` | `auto` (default), `fal-turbo-i2v`, or `fal-max-ref2v`; explicit fal models require `FAL_KEY` even with a MiniMax key |
+| `rendererConfig.continuity` | `none`, `last-frame-chain`, or `camera-anchors`; supported combinations are listed below |
 | `initialImageUrl` | Public HTTPS scene image, required for Turbo; Max can use this or `shotPlanner` image references |
-| `generationConcurrency` | Integer 1–8, default 2; Turbo remains sequential because of last-frame chaining |
-| `maxBufferedSeconds` | Integer 5–120, default 30; larger lookahead trades audience responsiveness for smoother playback |
+| `rendererConfig.concurrency` | Integer 1–8, default 2; Turbo remains sequential because of last-frame chaining |
+| `rendererConfig.maxBufferedSeconds` | Integer 5–120, default 30; larger lookahead trades audience responsiveness for smoother playback |
 | `shotPlanner` | Named `characters`/`sets`, optional `styleImageUrl`, `styleDescription`, `initialImageUrl`, `markNames`, `useDialogueAudioReferences`, and `defaultDurationSeconds` |
+
+Model and continuity are separate choices. Current support is `auto` + `none`, Turbo +
+`last-frame-chain`, and Max + either `none` or `camera-anchors`. Unsupported combinations fail
+before provisioning. Concurrency is a ceiling; last-frame dependencies currently permit one job.
+Camera anchors require the connected bridge. For manual/imported studio Max rendering, select
+`none`; do not imply that a selected anchor strategy will run there.
+
+Legacy top-level `renderMode`, `generationConcurrency`, and `maxBufferedSeconds` are still accepted.
+Their strategy defaults preserve previous behavior: `auto` → `none`, Turbo → `last-frame-chain`,
+Max → `camera-anchors`. Explicit `rendererConfig` fields override matching legacy fields. New
+handoffs should use the grouped object shown in the example file.
 
 Each `shotPlanner.characters` entry can supply `name`, `aliases`, `description`, `imageUrl`, and
 `voice: { "url": "https://…/voice.mp3", "durationSeconds": 4 }`. Voice samples require a known
 2–15-second duration; exact usable DSS dialogue audio takes precedence. Set entries contain
 `description` and/or `imageUrl`. Use media owned or authorized by the user. Turbo uses only the
 initial and chained scene images; do not promise voice conditioning, ElevenLabs mixing, or lip-sync.
-Max ref2vid maintains camera setup anchors for independent parallel shots, with ordered playback.
+Selecting camera anchors with Max ref2vid maintains camera setup references for independent parallel shots, with ordered playback.
 Changing the handoff only affects the next run; stop before changing active run settings.
 
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.

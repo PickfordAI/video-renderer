@@ -1,7 +1,8 @@
-import type { RenderMode } from '../../server/render-mode';
+import type { ContinuityStrategy, RenderMode } from '../../server/render-mode';
 
 export interface RendererSettings {
   renderMode: RenderMode;
+  continuityStrategy: ContinuityStrategy;
   initialImageUrl: string;
   generationConcurrency: number;
   maxBufferedSeconds: number;

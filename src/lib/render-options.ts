@@ -1,19 +1,36 @@
-import { parseInitialImageUrl, parseRenderMode } from '../../server/render-mode';
+import { defaultContinuity, parseInitialImageUrl, parseRendererConfig, parseRenderMode, SUPPORTED_CONTINUITY, type ContinuityStrategy, type RenderMode, type RendererConfig } from '../../server/render-mode';
 import type { ShotPlannerSettings } from '../../server/shot-planner';
 import type { RendererSettings } from './types';
 
 export const DEFAULT_RENDER_OPTIONS = {
   renderMode: 'auto' as const,
+  continuityStrategy: 'none' as ContinuityStrategy,
   initialImageUrl: '',
   generationConcurrency: 2,
   maxBufferedSeconds: 30,
   styleDescription: '',
 };
 
-/** Invalid old preferences must not silently select a different paid provider. */
+export const CONTINUITY_LABELS: Record<ContinuityStrategy, string> = {
+  none: 'No frame continuity',
+  'last-frame-chain': 'Chain the previous last frame',
+  'camera-anchors': 'Camera anchors (connected runs)',
+};
+
+export function withRenderModel(settings: RendererSettings, model: RenderMode): RendererSettings {
+  return { ...settings, renderMode: model, continuityStrategy: SUPPORTED_CONTINUITY[model].includes(settings.continuityStrategy)
+    ? settings.continuityStrategy : defaultContinuity(model) };
+}
+
+export function rendererConfigFromSettings(settings: RendererSettings): RendererConfig {
+  return parseRendererConfig({ model: settings.renderMode ?? 'auto', continuity: settings.continuityStrategy ?? defaultContinuity(settings.renderMode ?? 'auto'), concurrency: settings.generationConcurrency ?? 2, maxBufferedSeconds: settings.maxBufferedSeconds ?? 30 });
+}
+
+/** Existing saved modes keep their previous continuity behavior on migration. */
 export function loadRenderOptions(value: Partial<RendererSettings>): Omit<typeof DEFAULT_RENDER_OPTIONS, 'renderMode'> & { renderMode: RendererSettings['renderMode'] } {
   return {
     renderMode: parseRenderMode(value.renderMode),
+    continuityStrategy: parseRendererConfig({ model: value.renderMode ?? 'auto', continuity: value.continuityStrategy ?? defaultContinuity(value.renderMode ?? 'auto'), concurrency: 2, maxBufferedSeconds: 30 }).continuity,
     initialImageUrl: typeof value.initialImageUrl === 'string' ? value.initialImageUrl : '',
     generationConcurrency: Number.isInteger(value.generationConcurrency) && value.generationConcurrency! >= 1 && value.generationConcurrency! <= 8 ? value.generationConcurrency! : 2,
     maxBufferedSeconds: Number.isInteger(value.maxBufferedSeconds) && value.maxBufferedSeconds! >= 5 && value.maxBufferedSeconds! <= 120 ? value.maxBufferedSeconds! : 30,
@@ -23,7 +40,7 @@ export function loadRenderOptions(value: Partial<RendererSettings>): Omit<typeof
 
 export function renderSettingsError(settings: RendererSettings, health?: { falKeyConfigured: boolean; anyKeyConfigured: boolean }): string | null {
   try {
-    const mode = parseRenderMode(settings.renderMode);
+    const mode = rendererConfigFromSettings(settings).model;
     const image = parseInitialImageUrl(settings.initialImageUrl);
     if (health && !(mode === 'auto' ? health.anyKeyConfigured : health.falKeyConfigured)) {
       return mode === 'auto' ? 'Configure a MiniMax or fal key on the renderer server.' : 'This rendering mode requires FAL_KEY on the renderer server.';
@@ -57,10 +74,8 @@ export function buildShotPlannerSettings(settings: RendererSettings): ShotPlanne
 
 export function externalRenderOptions(settings: RendererSettings) {
   return {
-    renderMode: settings.renderMode,
+    rendererConfig: rendererConfigFromSettings(settings),
     initialImageUrl: settings.initialImageUrl.trim() || undefined,
-    generationConcurrency: settings.generationConcurrency,
-    maxBufferedSeconds: settings.maxBufferedSeconds,
     resolution: settings.resolution,
     clipDurationSeconds: settings.duration,
     shotPlanner: buildShotPlannerSettings(settings),

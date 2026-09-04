@@ -1,4 +1,4 @@
-import type { RenderMode } from '../../server/render-mode';
+import type { RendererConfig } from '../../server/render-mode';
 import type { ShotPlannerSettings } from '../../server/shot-planner';
 
 export interface ExternalRendererConnectionStatus {
@@ -12,10 +12,8 @@ export interface ExternalRendererConnectionStatus {
 }
 
 export interface ExternalRendererStoryStart {
-  renderMode?: RenderMode;
+  rendererConfig?: RendererConfig;
   initialImageUrl?: string;
-  generationConcurrency?: number;
-  maxBufferedSeconds?: number;
   resolution?: '480P' | '768P';
   clipDurationSeconds?: number;
   shotPlanner?: ShotPlannerSettings;

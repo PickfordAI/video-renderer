@@ -1,5 +1,5 @@
 import type { GenerateVideoInput } from './fal.js';
-import { parseInitialImageUrl, parseRenderMode } from './render-mode.js';
+import { parseInitialImageUrl, parseRendererConfig } from './render-mode.js';
 
 export interface ReferenceAudioMetadata {
   role?: 'voice_sample' | 'dialogue_performance';
@@ -25,7 +25,7 @@ export function parseGenerationInput(
     throw new Error('duration must be an integer from 5 to 15 seconds');
   }
   const resolution = body.resolution === '480P' ? '480P' : '768P';
-  const renderMode = parseRenderMode(body.renderMode);
+  const renderMode = parseRendererConfig(body.rendererConfig, { renderMode: body.renderMode }).model;
   const initialImageUrl = parseInitialImageUrl(body.initialImageUrl, true);
   if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) {
     throw new Error('H3 Max Turbo image-to-video requires an initial image');

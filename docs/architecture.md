@@ -90,9 +90,9 @@ present; failures never switch providers. Run settings accept an HTTPS `initialI
 
 New modes compile each accepted DSS frame in order into immutable shot/group plans before
 submitting its video jobs. Turbo image-to-video requires an initial image and chains each scene's
-next shot from the previous clip's last frame. Reference-to-video uses configured character/set
+next shot from the previous clip's last frame. Reference-to-video with camera-anchors uses configured character/set
 references for the first shot of each camera/continuity setup, then adds that anchor clip's first
-frame to later matching shots (the last frame instead when the anchor shot contains movement, preserving its resulting pose). One of the 12 total reference slots is reserved for the continuity anchor before any submissions. Independent camera setups can generate concurrently; dependent
+frame to later matching shots (the last frame instead when the anchor shot contains movement, preserving its resulting pose). Camera-anchors reserves one of the 12 total reference slots for continuity before any submissions. Independent camera setups can generate concurrently; dependent
 shots wait for their anchor generation/frame extraction, not for playback. Failed anchors fail
 their dependents instead of silently removing references.
 
@@ -108,3 +108,19 @@ The private operator `POST /api/video-frame` extracts first/last continuity fram
 viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded
 size/time and cancellation; resulting JPEG data stays internal to the rendering flow.
 These additions have offline mocked validation until separately exercised with real providers.
+
+
+### Model and continuity are separate choices
+
+The canonical run `rendererConfig` contains `model`, `continuity`, `concurrency`, and
+`maxBufferedSeconds`. Model chooses the provider endpoint; continuity chooses dependencies and
+frame extraction. Supported combinations are auto/none, Turbo image-to-video/last-frame-chain,
+and Max reference-to-video with either none or camera-anchors. Unsupported combinations fail
+before generation. Legacy renderMode/concurrency fields normalize to their previous strategies.
+
+Max with continuity none generates independent shots using configured references and performs no
+frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
+adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the
+same duration-budgeted scheduler and ordered playback acknowledgements. Concurrency is an explicit
+limit within the selected strategy, not a synonym for the model or a promise that dependent shots
+can run simultaneously.

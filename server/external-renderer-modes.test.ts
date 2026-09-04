@@ -16,14 +16,19 @@ describe('explicit bridge generation modes', () => {
   it('validates budget limits and image requirements before starting a run', () => {
     const base = config('http://127.0.0.1:8193');
     expect(() => parseExternalRendererRunConfig({ ...base, renderMode: 'fal-turbo-i2v', initialImageUrl: undefined })).toThrow('initialImageUrl');
-    expect(() => parseExternalRendererRunConfig({ ...base, generationConcurrency: 9 })).toThrow('at most 8');
-    expect(() => parseExternalRendererRunConfig({ ...base, maxBufferedSeconds: 121 })).toThrow('at most 120');
+    expect(() => parseExternalRendererRunConfig({ ...base, generationConcurrency: 9 })).toThrow('1 to 8');
+    expect(() => parseExternalRendererRunConfig({ ...base, maxBufferedSeconds: 121 })).toThrow('5 to 120');
+    const parsed = parseExternalRendererRunConfig({ ...base, renderMode: 'fal-turbo-i2v', rendererConfig: { model: 'fal-max-ref2v', continuity: 'none', concurrency: 3, maxBufferedSeconds: 40 } });
+    expect(parsed).toMatchObject({ renderMode: 'fal-max-ref2v', continuityStrategy: 'none', generationConcurrency: 3, maxBufferedSeconds: 40 });
+    expect(parsed.rendererConfig).toEqual({ model: 'fal-max-ref2v', continuity: 'none', concurrency: 3, maxBufferedSeconds: 40 });
+    expect(() => parseExternalRendererRunConfig({ ...base, rendererConfig: { model: 'fal-turbo-i2v', continuity: 'camera-anchors', concurrency: 2, maxBufferedSeconds: 30 } })).toThrow();
+    expect(generateVideo).not.toHaveBeenCalled();
     vi.stubEnv('MINIMAX_API_KEY', 'mock-direct-key'); vi.stubEnv('FAL_KEY', ''); vi.stubEnv('FAL_API_KEY', '');
     const manager = new ExternalRendererRunManager({} as PlayoutManager);
     expect(() => manager.start({ ...base, renderMode: 'fal-max-ref2v' })).toThrow('requires FAL_KEY');
   });
 
-  it.each([['fal-turbo-i2v', false, false, false], ['fal-max-ref2v', false, false, false], ['fal-max-ref2v', true, false, false], ['fal-max-ref2v', false, true, false], ['fal-turbo-i2v', false, false, true]] as const)('generates %s (movement=%s) dependents before playback but completes in story order', async (renderMode, hasMovement, overReferenceBudget, staleAssignment) => {
+  it.each([['fal-turbo-i2v', false, false, false, undefined], ['fal-max-ref2v', false, false, false, undefined], ['fal-max-ref2v', true, false, false, undefined], ['fal-max-ref2v', false, true, false, undefined], ['fal-max-ref2v', false, false, false, 'none'], ['fal-max-ref2v', false, true, false, 'none'], ['fal-turbo-i2v', false, false, true, undefined]] as const)('generates %s (movement=%s) dependents before playback but completes in story order', async (renderMode, hasMovement, overReferenceBudget, staleAssignment, continuity) => {
     vi.stubEnv('FAL_KEY', 'mock-fal'); vi.stubEnv('MINIMAX_API_KEY', 'mock-direct');
     let generatedCount = 0;
     if (staleAssignment) vi.mocked(extractVideoFrame).mockImplementation((_url, options) => new Promise((_resolve, reject) => {
@@ -50,7 +55,7 @@ describe('explicit bridge generation modes', () => {
     const enqueue = vi.fn(); const stop = vi.fn(async () => undefined);
     const media = { start: vi.fn(async () => ({ sessionId: 'media', hlsUrl: 'https://media.example/index.m3u8', enqueue, status: () => ({ state: 'streaming', playedThroughPosition }) })), stop } as unknown as PlayoutManager;
     const manager = new ExternalRendererRunManager(media);
-    const run = manager.start({ ...config(`http://127.0.0.1:${port}`), renderMode, shotPlanner: overReferenceBudget ? { characters: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`extra${index}`, { imageUrl: `https://images.example/${index}.png` }])) } : {} });
+    const run = manager.start({ ...config(`http://127.0.0.1:${port}`), renderMode, rendererConfig: continuity ? { model: renderMode, continuity, concurrency: 2, maxBufferedSeconds: 30 } : undefined, shotPlanner: overReferenceBudget ? { characters: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`extra${index}`, { imageUrl: `https://images.example/${index}.png` }])) } : {} });
     try {
       if (staleAssignment) {
         await vi.waitFor(() => expect(extractVideoFrame).toHaveBeenCalledTimes(1));
@@ -62,7 +67,7 @@ describe('explicit bridge generation modes', () => {
         expect(events.filter(event => event.event === 'completed')).toHaveLength(0);
         return;
       }
-      if (overReferenceBudget) {
+      if (overReferenceBudget && continuity !== 'none') {
         await vi.waitFor(() => expect(run.state).toBe('failed'));
         expect(run.failures.join(' ')).toContain('reserving one slot');
         expect(generateVideo).not.toHaveBeenCalled();
@@ -79,6 +84,11 @@ describe('explicit bridge generation modes', () => {
         expect(calls[0][0].initialImageUrl).toBe('https://images.example/initial.png');
         expect(calls[1][0].initialImageUrl).toMatch(/^data:image\/jpeg/);
         expect(extractVideoFrame).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ position: 'last' }));
+      } else if (continuity === 'none') {
+        expect(calls[0][0].renderMode).toBe('fal-max-ref2v');
+        expect(calls[1][0].renderMode).toBe('fal-max-ref2v');
+        expect(calls[1][0].referenceImageUrls).toEqual(calls[0][0].referenceImageUrls);
+        expect(extractVideoFrame).not.toHaveBeenCalled();
       } else {
         expect(calls[0][0].referenceImageUrls).toContain('https://images.example/initial.png');
         expect(calls[1][0].referenceImageUrls?.at(-1)).toMatch(/^data:image\/jpeg/);
@@ -90,7 +100,7 @@ describe('explicit bridge generation modes', () => {
       expect(enqueue.mock.calls.map(([clip]) => clip.position)).toEqual([0, 1]);
       await vi.waitFor(() => expect(events.filter(event => event.event === 'completed').map(event => event.dss_id)).toEqual(['group-1']));
       playedThroughPosition = 1;
-      await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(hasMovement ? 3 : 2));
+      await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(2 + (hasMovement ? 1 : 0) + (overReferenceBudget ? 11 : 0)));
       await vi.waitFor(() => expect(events.filter(event => event.event === 'completed').map(event => event.dss_id)).toEqual(['group-1', 'group-2']));
     } finally {
       await manager.stopAll();

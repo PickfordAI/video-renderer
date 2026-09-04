@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
 import { generateMiniMaxVideo } from './minimax.js';
-import { parseRenderMode, parseInitialImageUrl, type RenderMode } from './render-mode.js';
+import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { extractVideoFrame } from './video-frame.js';
@@ -35,6 +35,8 @@ interface ExternalRendererRunConfig {
   clipDurationSeconds: number;
   resumeExistingStory: boolean;
   renderMode: RenderMode;
+  rendererConfig: RendererConfig;
+  continuityStrategy: ContinuityStrategy;
   initialImageUrl?: string;
   generationConcurrency: number;
   maxBufferedSeconds: number;
@@ -181,12 +183,13 @@ function uuid(value: unknown, label: string): string {
 export function parseExternalRendererRunConfig(value: unknown): ExternalRendererRunConfig {
   const body = asObject(value, 'run config');
   const environment = requiredString(body.environment ?? 'edge', 'environment');
-  const renderMode = parseRenderMode(body.renderMode);
+  const rendererConfig = parseRendererConfig(body.rendererConfig, body);
+  const renderMode = rendererConfig.model;
+  const continuityStrategy = rendererConfig.continuity;
   const initialImageUrl = parseInitialImageUrl(body.initialImageUrl);
   if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('fal-turbo-i2v requires initialImageUrl');
-  const generationConcurrency = positiveInteger(body.generationConcurrency, 2, 'generationConcurrency');
-  const maxBufferedSeconds = positiveInteger(body.maxBufferedSeconds, 30, 'maxBufferedSeconds');
-  if (generationConcurrency > 8 || maxBufferedSeconds > 120) throw new Error('generationConcurrency must be at most 8 and maxBufferedSeconds at most 120');
+  const generationConcurrency = rendererConfig.concurrency;
+  const maxBufferedSeconds = rendererConfig.maxBufferedSeconds;
   const shotPlanner = { ...asObject(body.shotPlanner ?? {}, 'shotPlanner') } as ShotPlannerSettings;
   if (body.includeDialogueAudioReferences !== undefined) {
     if (typeof body.includeDialogueAudioReferences !== 'boolean') throw new Error('includeDialogueAudioReferences must be boolean');
@@ -218,7 +221,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     baseUrl: requiredUrl(body.baseUrl ?? 'https://edge.pickford.ai', 'baseUrl', environment),
     environment,
     tier,
-    renderMode, initialImageUrl, generationConcurrency, maxBufferedSeconds, shotPlanner,
+    renderMode, rendererConfig, continuityStrategy, initialImageUrl, generationConcurrency, maxBufferedSeconds, shotPlanner,
     websocketUrl: body.websocketUrl === undefined ? null : requiredWebSocketUrl(body.websocketUrl, 'websocketUrl', environment),
     registerManifest: body.registerManifest !== false,
     rendererId,
@@ -724,8 +727,10 @@ class ExternalRendererRun {
 
   private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
     const mode = this.config.renderMode;
+    const continuity = this.config.continuityStrategy;
     const key = `${shot.setupKey}:${shot.continuityKey}`;
-    const dependency = mode === 'fal-turbo-i2v' ? this.sceneTails.get(shot.sceneKey) : this.anchorShots.get(key);
+    const dependency = continuity === 'last-frame-chain' ? this.sceneTails.get(shot.sceneKey)
+      : continuity === 'camera-anchors' ? this.anchorShots.get(key) : undefined;
     const handle = this.scheduler.add(shot.durationSeconds, async () => {
       this.assertCurrentAssignment(frame);
       const previous = dependency ? await dependency.result : undefined;
@@ -734,7 +739,7 @@ class ExternalRendererRun {
       if (dependency && !continuityFrame) throw new Error('Required shot continuity frame is unavailable');
       const images = [...shot.referenceImageUrls];
       let prompt = shot.prompt;
-      if (mode === 'fal-max-ref2v' && continuityFrame) {
+      if (continuity === 'camera-anchors' && continuityFrame) {
         images.push(continuityFrame);
         prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
       }
@@ -749,16 +754,16 @@ class ExternalRendererRun {
         timeoutMs: 300_000, signal: this.abortController.signal,
       });
       this.assertCurrentAssignment(frame);
-      const nextFrame = mode === 'fal-turbo-i2v' || !dependency
+      const nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !dependency
         ? await extractVideoFrame(generated.videoUrl, {
-          position: mode === 'fal-turbo-i2v' || shot.hasMovement ? 'last' : 'first', signal: this.abortController.signal,
+          position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal: this.abortController.signal,
         })
         : continuityFrame;
       this.assertCurrentAssignment(frame);
       return { videoUrl: generated.videoUrl, continuityFrame: nextFrame };
     }, dependency?.result);
-    if (mode === 'fal-turbo-i2v') this.sceneTails.set(shot.sceneKey, handle);
-    else if (!dependency) this.anchorShots.set(key, handle);
+    if (continuity === 'last-frame-chain') this.sceneTails.set(shot.sceneKey, handle);
+    else if (continuity === 'camera-anchors' && !dependency) this.anchorShots.set(key, handle);
     return handle;
   }
 
@@ -769,7 +774,12 @@ class ExternalRendererRun {
     if (this.config.renderMode === 'fal-max-ref2v') {
       for (const { plan } of groups) for (const shot of plan.shots) {
         if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
-        if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > 11) throw new Error('fal-max-ref2v allows at most 11 configured image/audio references, reserving one slot for the camera anchor');
+        const referenceLimit = this.config.continuityStrategy === 'camera-anchors' ? 11 : 12;
+        if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
+          throw new Error(this.config.continuityStrategy === 'camera-anchors'
+            ? 'fal-max-ref2v allows at most 11 configured image/audio references, reserving one slot for the camera anchor'
+            : 'fal-max-ref2v allows at most 12 image/audio references');
+        }
       }
     }
     const scheduled = groups.map(({ group, plan }) => ({
@@ -943,6 +953,7 @@ class ExternalRendererRun {
           renderer_version: this.config.rendererVersion,
           provider: this.provider.kind,
           render_mode: this.config.renderMode,
+          renderer_config: this.config.rendererConfig,
           model: this.config.renderMode === 'fal-turbo-i2v'
             ? 'minimax/h3-max-turbo/image-to-video'
             : this.config.renderMode === 'fal-max-ref2v'
@@ -1085,6 +1096,7 @@ export class ExternalRendererRunManager {
       roomId: prepared.roomId,
       storyMessageChannelId: prepared.storyMessageChannelId,
       storyConfig: prepared.storyConfig,
+      rendererConfig: prepared.rendererConfig,
       renderMode: prepared.renderMode, initialImageUrl: prepared.initialImageUrl,
       generationConcurrency: prepared.generationConcurrency, maxBufferedSeconds: prepared.maxBufferedSeconds,
       shotPlanner: prepared.shotPlanner,

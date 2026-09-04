@@ -6,6 +6,10 @@ const createTestReferences = () => ['Marcus Kent', 'Autumn Tate', 'June Morrison
 import { buildRenderPrompt, renderBeat } from './renderer';
 import type { RendererSettings } from './types';
 
+function testRendererSettings(overrides: Partial<RendererSettings>): RendererSettings {
+  return { renderMode: 'auto', continuityStrategy: 'none', initialImageUrl: '', generationConcurrency: 2, maxBufferedSeconds: 30, styleDescription: '', narrativeEngineUrl: '', narrativeAuthoringUrl: '', realtimeGatewayUrl: '', chatBackendUrl: '', setupMode: 'create', roomName: '', roomShortlink: '', evdId: '', storyType: 'CREATOR', sessionToken: '', autoRender: false, useCharacterReferences: false, characterReferences: [], resolution: '480P', duration: 5, ...overrides };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -198,12 +202,32 @@ describe('shared Turbo session ownership', () => {
     let finish!: (value: Response) => void;
     const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
     vi.stubGlobal('fetch', fetchMock);
-    const settings: RendererSettings = { duration: 5, resolution: '480P', renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://images.example/scene.jpg', useCharacterReferences: false, characterReferences: [], generationConcurrency: 2, maxBufferedSeconds: 30, styleDescription: '', narrativeEngineUrl: '', narrativeAuthoringUrl: '', realtimeGatewayUrl: '', chatBackendUrl: '', setupMode: 'create', roomName: '', roomShortlink: '', evdId: '', storyType: 'CREATOR', sessionToken: '', autoRender: false };
+    const settings: RendererSettings = { duration: 5, resolution: '480P', renderMode: 'fal-turbo-i2v', continuityStrategy: 'last-frame-chain', initialImageUrl: 'https://images.example/scene.jpg', useCharacterReferences: false, characterReferences: [], generationConcurrency: 2, maxBufferedSeconds: 30, styleDescription: '', narrativeEngineUrl: '', narrativeAuthoringUrl: '', realtimeGatewayUrl: '', chatBackendUrl: '', setupMode: 'create', roomName: '', roomShortlink: '', evdId: '', storyType: 'CREATOR', sessionToken: '', autoRender: false };
     const beat = { storyBlockId: 'one', sceneIndex: 0, blockIndex: 0, sequence: 1, prompt: 'Lily enters the quiet lobby.' };
     const first = session.render(beat, settings, new AbortController().signal);
     await expect(session.render({ ...beat, storyBlockId: 'two' }, settings, new AbortController().signal)).rejects.toThrow('already generating');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     finish(new Response(JSON.stringify({ requestId: 'one', videoUrl: 'https://example.com/one.mp4', timings: { totalSeconds: 2 } })));
     await first;
+  });
+});
+
+describe('studio continuity capability boundary', () => {
+  it('rejects connected-only camera anchors before a manual provider request', async () => {
+    const { StudioRenderSession } = await import('./renderer');
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const settings = testRendererSettings({ renderMode: 'fal-max-ref2v', continuityStrategy: 'camera-anchors', initialImageUrl: 'https://images.example/scene.jpg' });
+    await expect(new StudioRenderSession().render({ storyBlockId: 'one', sceneIndex: 0, blockIndex: 0, sequence: 1, prompt: 'Lily crosses the lobby.' }, settings, new AbortController().signal)).rejects.toThrow('connected StoryKernel bridge');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('permits independent Max studio shots without extracting preceding frames', async () => {
+    const { StudioRenderSession } = await import('./renderer');
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ requestId: 'one', videoUrl: 'https://example.com/one.mp4', timings: { totalSeconds: 2 }, generationMode: 'reference' }))));
+    vi.stubGlobal('fetch', fetchMock);
+    const settings = testRendererSettings({ renderMode: 'fal-max-ref2v', continuityStrategy: 'none', initialImageUrl: 'https://images.example/scene.jpg' });
+    const session = new StudioRenderSession();
+    const beat = { storyBlockId: 'one', sceneIndex: 0, blockIndex: 0, sequence: 1, prompt: 'Lily crosses the lobby.' };
+    await Promise.all([session.render(beat, settings, new AbortController().signal), session.render({ ...beat, storyBlockId: 'two' }, settings, new AbortController().signal)]);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual(['/api/generate', '/api/generate']);
   });
 });

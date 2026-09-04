@@ -161,34 +161,59 @@ runs if the upstream Stop request fails. Terminal failures and ended stories cle
 
 ## Generation choices
 
-Choose a mode in the studio, or set `renderMode` in the private onboarding handoff:
+Choose the **model**, **continuity strategy**, **concurrency limit**, and **generation lookahead**
+separately in the studio. The private onboarding handoff groups these options in `rendererConfig`:
 
-| Mode | Inputs and behavior |
+```json
+{
+  "rendererConfig": {
+    "model": "fal-max-ref2v",
+    "continuity": "camera-anchors",
+    "concurrency": 2,
+    "maxBufferedSeconds": 30
+  }
+}
+```
+
+| Model | Inputs |
 |---|---|
 | `auto` | Keeps the worker's configured direct MiniMax or fal provider. |
-| `fal-turbo-i2v` | H3 Max Turbo image to video through fal. Requires an HTTPS `initialImageUrl`; subsequent shots chain from the preceding clip's last frame. |
+| `fal-turbo-i2v` | H3 Max Turbo image to video through fal. Requires an HTTPS `initialImageUrl`. |
 | `fal-max-ref2v` | H3 Max reference to video through fal. Requires scene or character image references; can also use dialogue audio or a voice sample. |
 
-Both explicit fal modes require `FAL_KEY`, even if the worker also has a MiniMax key. An empty
+Both explicit fal models require `FAL_KEY`, even if the worker also has a MiniMax key. An empty
 reference configuration fails before a generation request; it does not silently switch models.
 Turbo does not accept voice references. The renderer does not overlay ElevenLabs audio or add
 lip-sync processing. Ref2vid voice conditioning also does not guarantee an exact performance.
+
+| Continuity strategy | Behavior and current support |
+|---|---|
+| `none` | Independent shots from prompts and configured references. Available for `auto` and Max ref2vid, including manual/imported studio shots. |
+| `last-frame-chain` | Each shot starts from the preceding clip's last frame. Currently supported for Turbo i2vid. Generation overlaps playback, with one generation job at a time. |
+| `camera-anchors` | Reuses camera setup anchors while independent shots generate in parallel. Currently supported for Max ref2vid in connected StoryKernel runs. |
+
+Unsupported model/strategy combinations fail before generation. The studio keeps a compatible
+strategy when the model changes; otherwise it selects and displays that model's supported default.
+Camera anchors require the connected bridge. Manual/imported rendering rejects that strategy
+instead of ignoring it; select **No frame continuity** for independent Max studio shots.
+
+`rendererConfig.concurrency` defaults to **2** (range 1–8) and remains an independent ceiling.
+Last-frame chaining can use only one job regardless of that ceiling because each frame depends on
+the preceding output. `rendererConfig.maxBufferedSeconds` defaults to **30** (range 5–120) and
+bounds generation lookahead; one shot can exceed the window when necessary to make progress.
+Larger buffers smooth playback but delay when audience input can affect the visible story.
+Completion acknowledgments correspond to actual playback, not generation finishing.
 
 For connected StoryKernel runs, `shotPlanner` supplies named `characters`, `sets`, optional
 `styleImageUrl`/`styleDescription`, `initialImageUrl`, and readable `markNames`. Each character
 may include `name`, `aliases`, `description`, `imageUrl`, and
 `voice: { "url": "https://…/sample.mp3", "durationSeconds": 4 }`. Use 2–15-second samples.
 The planner carries staging forward, binds references to the shot, and prefers usable exact DSS
-dialogue audio over a fallback voice sample. It maintains anchors for camera setups so independent
-reference shots can generate in parallel while playback remains ordered.
+dialogue audio over a fallback voice sample. The imported/manual studio path uses its existing
+shot descriptions and matched character references; camera-aware planning belongs to the bridge.
 
-`generationConcurrency` defaults to **2** (range 1–8). Turbo's frame dependency keeps its jobs
-sequential. `maxBufferedSeconds` defaults to **30** (range 5–120) and bounds generation lookahead;
-one shot can exceed the window when necessary to make progress. Generation overlaps playback.
-Larger buffers smooth playback but delay when audience input can affect the visible story.
-Completion acknowledgments still correspond to actual playback, not generation finishing.
-
-The imported/manual studio path supports both modes and Turbo last-frame chaining. It uses its
-existing shot descriptions and matched character references for ref2vid; camera-aware anchor
-planning belongs to the connected StoryKernel bridge. Editing generation settings is disabled
-while a run or generation job is active. Stop starts a fresh continuity chain on the next run.
+Old handoffs using top-level `renderMode`, `generationConcurrency`, and `maxBufferedSeconds`
+remain accepted. Their default strategies preserve previous behavior: `auto` uses `none`, Turbo
+uses `last-frame-chain`, and Max uses `camera-anchors`. Explicit `rendererConfig` fields take
+precedence over their legacy aliases. Existing studio preferences migrate the same way.
+Generation settings are disabled while a run or job is active. Stop resets continuity state.

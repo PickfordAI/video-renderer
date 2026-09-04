@@ -36,8 +36,8 @@ import {
 } from './lib/playout';
 import { orderClipsByTimeline, RenderPipeline, type RenderPipelineSnapshot } from './lib/render-pipeline';
 import { StudioRenderSession } from './lib/renderer';
-import { DEFAULT_RENDER_OPTIONS, externalRenderOptions, loadRenderOptions, renderSettingsError } from './lib/render-options';
-import { RENDER_MODES, RENDER_MODE_LABELS, parseRenderMode } from '../server/render-mode';
+import { CONTINUITY_LABELS, DEFAULT_RENDER_OPTIONS, externalRenderOptions, loadRenderOptions, renderSettingsError, withRenderModel } from './lib/render-options';
+import { RENDER_MODES, RENDER_MODE_LABELS, parseRenderMode, SUPPORTED_CONTINUITY, type ContinuityStrategy } from '../server/render-mode';
 import { isUuid } from './lib/uuid';
 import type {
   ChatMessage,
@@ -493,7 +493,7 @@ export function App() {
 
   useEffect(() => {
     const pipeline = new RenderPipeline({
-      concurrency: () => settingsRef.current.renderMode === 'fal-turbo-i2v' ? 1 : settingsRef.current.generationConcurrency,
+      concurrency: () => settingsRef.current.continuityStrategy === 'last-frame-chain' ? 1 : settingsRef.current.generationConcurrency,
       retries: 0,
       canStart: (beat) => {
         if (manualRenderControllerRef.current) return false;
@@ -529,7 +529,7 @@ export function App() {
 
   useEffect(() => {
     studioRenderSessionRef.current.reset();
-  }, [settings.renderMode, settings.initialImageUrl]);
+  }, [settings.renderMode, settings.continuityStrategy, settings.initialImageUrl]);
 
   useEffect(() => {
     return () => {
@@ -1100,7 +1100,7 @@ export function App() {
               <div className="generation-row">
                 <label>
                   <span>Model</span>
-                  <select value={settings.renderMode} onChange={event => setSettings({ ...settings, renderMode: parseRenderMode(event.target.value) })}>
+                  <select value={settings.renderMode} onChange={event => setSettings(withRenderModel(settings, parseRenderMode(event.target.value)))}>
                     {RENDER_MODES.map(mode => <option key={mode} value={mode}>{RENDER_MODE_LABELS[mode]}</option>)}
                   </select>
                   <small>{settings.renderMode === 'auto' ? 'Uses the server’s configured MiniMax or fal provider.' : 'Uses fal even when a direct MiniMax key is configured.'}</small>
@@ -1114,8 +1114,20 @@ export function App() {
                   <input placeholder="Lighting, wardrobe, and visual treatment" value={settings.styleDescription} onChange={event => setSettings({ ...settings, styleDescription: event.target.value })} />
                 </label>
               </div>
-              {settings.renderMode === 'fal-turbo-i2v' && <p className="reference-help">Turbo chains each shot from the previous clip’s last frame. Generation can overlap playback, but shots generate sequentially. This mode does not accept voice references; it does not mix or lip-sync ElevenLabs audio.</p>}
-              {settings.renderMode === 'fal-max-ref2v' && <p className="reference-help">Max uses named character images and dialogue or voice references. Connected StoryKernel runs preserve camera setup anchors and can generate independent shots in parallel. Imported studio shots use the configured references without camera setup anchors.</p>}
+              <div className="generation-row">
+                <label>
+                  <span>Continuity strategy</span>
+                  <select value={settings.continuityStrategy} onChange={event => setSettings({ ...settings, continuityStrategy: event.target.value as ContinuityStrategy })}>
+                    {SUPPORTED_CONTINUITY[settings.renderMode].map(strategy => <option key={strategy} value={strategy}>{CONTINUITY_LABELS[strategy]}</option>)}
+                  </select>
+                  <small>Only strategies supported by the selected model are listed. A model change preserves a compatible strategy or selects its displayed default.</small>
+                </label>
+              </div>
+              {settings.continuityStrategy === 'last-frame-chain' && <p className="reference-help">Each shot uses the previous clip’s last frame. Generation overlaps playback, but the dependency permits only one generation job at a time.</p>}
+              {settings.continuityStrategy === 'camera-anchors' && <p className="reference-help">Connected StoryKernel runs reuse camera setup anchors and generate independent shots in parallel. This strategy requires the connected bridge. Choose “No frame continuity” for manual or imported studio rendering.</p>}
+              {settings.continuityStrategy === 'none' && <p className="reference-help">Shots generate independently from their prompts and configured references. They do not depend on a previous generated frame.</p>}
+              {settings.renderMode === 'fal-turbo-i2v' && <p className="reference-help">Turbo does not accept voice references. The renderer does not mix or lip-sync ElevenLabs audio.</p>}
+              {settings.renderMode === 'fal-max-ref2v' && <p className="reference-help">Max uses named character images and dialogue or voice references. Choose independent shots or camera setup anchors separately using Continuity strategy.</p>}
             <div className="reference-settings">
               <div className="reference-header">
                 <label className="toggle-label reference-toggle">
@@ -1236,10 +1248,11 @@ export function App() {
               </label>
             </div>
               <div className="generation-row">
-                {settings.renderMode !== 'fal-turbo-i2v' && <label>
-                  <span>Parallel generation jobs</span>
+                <label>
+                  <span>Maximum concurrent generation jobs</span>
                   <input type="number" min="1" max="8" value={settings.generationConcurrency} onChange={event => setSettings({ ...settings, generationConcurrency: Number(event.target.value) })} />
-                </label>}
+                  {settings.continuityStrategy === 'last-frame-chain' && <small>Last-frame chaining currently uses one job; this limit is retained for other strategies.</small>}
+                </label>
                 <label>
                   <span>Generation lookahead (seconds)</span>
                   <input type="number" min="5" max="120" value={settings.maxBufferedSeconds} onChange={event => setSettings({ ...settings, maxBufferedSeconds: Number(event.target.value) })} />

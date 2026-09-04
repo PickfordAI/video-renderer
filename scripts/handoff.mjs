@@ -9,13 +9,25 @@ function object(value, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} must be an object.`);
 }
 
+/** Plain Node CLI mirror; conformance tests compare this with the shared server schema. */
+export function handoffRendererConfig(value) {
+  if (value.rendererConfig !== undefined) object(value.rendererConfig, 'rendererConfig');
+  const config = value.rendererConfig ?? {};
+  const model = config.model ?? value.renderMode ?? 'auto';
+  const supported = { auto: ['none'], 'fal-turbo-i2v': ['last-frame-chain'], 'fal-max-ref2v': ['none', 'camera-anchors'] };
+  if (!Object.hasOwn(supported, model)) throw new Error('rendererConfig.model must be auto, fal-turbo-i2v, or fal-max-ref2v.');
+  const continuity = config.continuity ?? (model === 'fal-turbo-i2v' ? 'last-frame-chain' : model === 'fal-max-ref2v' ? 'camera-anchors' : 'none');
+  if (!supported[model].includes(continuity)) throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
+  const concurrency = config.concurrency ?? value.generationConcurrency ?? 2;
+  const maxBufferedSeconds = config.maxBufferedSeconds ?? value.maxBufferedSeconds ?? 30;
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('rendererConfig.concurrency must be an integer from 1 to 8.');
+  if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 120) throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 120.');
+  return { model, continuity, concurrency, maxBufferedSeconds };
+}
+
 export function renderingOptions(value) {
-  const renderMode = value.renderMode ?? 'auto';
-  if (!['auto', 'fal-turbo-i2v', 'fal-max-ref2v'].includes(renderMode)) throw new Error('renderMode must be auto, fal-turbo-i2v, or fal-max-ref2v.');
-  const generationConcurrency = value.generationConcurrency ?? 2;
-  const maxBufferedSeconds = value.maxBufferedSeconds ?? 30;
-  if (!Number.isInteger(generationConcurrency) || generationConcurrency < 1 || generationConcurrency > 8) throw new Error('generationConcurrency must be an integer from 1 to 8.');
-  if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 120) throw new Error('maxBufferedSeconds must be an integer from 5 to 120.');
+  const rendererConfig = handoffRendererConfig(value);
+  const renderMode = rendererConfig.model;
   const planner = value.shotPlanner;
   if (planner !== undefined) {
     object(planner, 'shotPlanner');
@@ -41,7 +53,7 @@ export function renderingOptions(value) {
   if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('Turbo requires an initialImageUrl.');
   const hasReferenceImage = initialImageUrl || planner?.styleImageUrl || [planner?.characters, planner?.sets].some(entries => Object.values(entries ?? {}).some(item => item.imageUrl));
   if (renderMode === 'fal-max-ref2v' && !hasReferenceImage) throw new Error('Max ref2vid requires an initial image or shotPlanner image references.');
-  return { renderMode, initialImageUrl, generationConcurrency, maxBufferedSeconds, shotPlanner: planner };
+  return { rendererConfig, initialImageUrl, shotPlanner: planner };
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
