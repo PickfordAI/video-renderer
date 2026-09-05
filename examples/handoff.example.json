@@ -9,5 +9,17 @@
   "roomName": "My story",
   "resolution": "480P",
   "clipDurationSeconds": 6,
-  "storyConfig": {}
+  "storyConfig": {},
+  "shotPlanner": {
+    "styleDescription": "Cinematic live action with consistent wardrobe and practical lighting",
+    "useDialogueAudioReferences": true,
+    "characters": {},
+    "sets": {}
+  },
+  "rendererConfig": {
+    "model": "auto",
+    "continuity": "none",
+    "concurrency": 2,
+    "maxBufferedSeconds": 30
+  }
 }

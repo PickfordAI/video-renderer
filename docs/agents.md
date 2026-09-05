@@ -28,12 +28,16 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `evdId` | Actual published/available EVD UUID returned by narrative authoring; a local export label is insufficient |
 | `setupToken` | Verified user session from the kernel login; used only for room/story provisioning and stop |
 | `rendererId`, `credentialId`, `clientSecret` | The kernel's developer renderer installation creation response |
-| `environment` | Kernel environment: `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `edge` for the reference stack |
+| `environment` | Kernel environment: `local`, `test`, `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `edge` for the reference stack |
 | `storyType` | `CREATOR` (default) or `WHISPERS` |
 | `storyConfig` | Episode configuration from kernel onboarding; EVD and story-channel IDs are pinned by the CLI |
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
+| `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–8), and `maxBufferedSeconds` (5–120); see README generation choices |
+| `initialImageUrl` | Authorized HTTPS starting frame, required for Turbo i2v |
+| `shotPlanner` | Named cast/set references, style, readable marks, and optional 2–15-second voice samples |
+
 
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.
 It must contain `storyId`, `roomId`, `roomShortlink`, `storyMessageChannelId`, and
@@ -60,7 +64,7 @@ Never scrape arbitrary container environments, databases, or another user's brow
 ## Local workflow
 
 1. Clone the repository. Select Node 22+ and run `npm ci`.
-2. Obtain `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
+2. Obtain `MINIMAX_API_KEY` (configured direct adapter) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
    environment or `.env` with mode `0600`. Never use a `VITE_` prefix for secrets.
 3. Start the existing Story Kernel stack. Run `npm run setup`. It reads only Compose labels and
    published ports, not container environment variables. If multiple stacks exist, select the
@@ -72,7 +76,7 @@ Never scrape arbitrary container environments, databases, or another user's brow
    setup status and playback; do not send the user to an installation form. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
    protocol compatibility. Resolve errors; do not hide a failed check.
 6. Run `npm run story -- start` once. This submits paid
-   fal jobs when DSS arrives, so the user must have requested rendering.
+   video jobs when DSS arrives, so the user must have requested rendering.
 7. Poll `npm run story -- status`. Return the watch URL once the first clip is actually playable,
    or report a startup failure. `connecting` is not success. A manifest HTTP 200 plus playable
    video is stronger evidence than `clipsRendered` alone.
@@ -87,7 +91,7 @@ The agent, never the browser user, supplies these values in its process environm
 
 | Variable | Handoff field / source |
 |---|---|
-| `FAL_KEY` | User's fal account or secret manager |
+| `MINIMAX_API_KEY`, `FAL_KEY` | Provider credentials; explicit fal models require FAL_KEY |
 | `STORY_HANDOFF_PATH` | Private onboarding handoff path; recommended alternative to individual variables |
 | `STORY_EVD_ID` | `evdId` |
 | `STORY_SETUP_TOKEN` | `setupToken`, required for stop even with a pre-provisioned story |
@@ -97,6 +101,10 @@ The agent, never the browser user, supplies these values in its process environm
 | `STORY_ENVIRONMENT`, `STORY_TYPE`, `STORY_ROOM_NAME` | `environment`, `storyType`, `roomName` |
 | `STORY_RESOLUTION`, `STORY_CLIP_SECONDS`, `STORY_RENDERER_VERSION` | Optional rendering settings |
 | `STORY_CONFIG_JSON`, `STORY_JSON` | Optional JSON `storyConfig` and inactive pre-provisioned `story` |
+| `STORY_RENDERER_CONFIG_JSON` | JSON `rendererConfig`; separate from kernel story configuration |
+| `STORY_SHOT_PLANNER_JSON` | JSON `shotPlanner` reference and prompt settings |
+| `STORY_INITIAL_IMAGE_URL` | `initialImageUrl`, required for Turbo |
+
 
 Service variables in `.env.example` override local Docker discovery. Hosted commands accept those
 same HTTPS service variables. Never copy example IDs as if they were valid identities.
@@ -156,3 +164,22 @@ application use the user's authenticated cloud tools; these are not performed by
 - There is no automatic audience-message generator, notification, or background chat sender.
 - Credentials cannot be fabricated. Missing account access is a real onboarding dependency;
   ask only for that missing connection, not for IP addresses or manually assembled URLs.
+
+
+## Generation and evidence
+
+Keep renderer configuration outside `storyConfig`. Model endpoints and scheduling policy are
+independent; supported combinations and reference requirements are in README. Validate them before
+provisioning a story. Exact usable DSS dialogue audio takes precedence over a fallback voice sample.
+Turbo has no voice-reference support. Never copy private experimental assets into the repository.
+
+Explicit fal modes share a bounded scheduler across received DSS payloads. Preserve actual-playback
+Group_Finished timing, generation-budget release, cancellation, and assignment fencing. Do not send
+early acknowledgements to obtain more lookahead. Eight eight-second jobs need at least 64 seconds of
+work budget; that calculation does not authorize generation. Start with conservative limits.
+
+A captured-DSS replay with a fake provider can verify compilation, scheduling and local media. It
+cannot prove current kernel story creation, remote model latency, appearance consistency, or voice
+quality. A MiniMax replay URL does not fence explicit fal modes: those use FAL_QUEUE_BASE_URL. Keep
+all provider calls local and use dummy credentials for no-cost fixtures. Report live login, first DSS,
+playable media, verdict acknowledgements and kernel Stop as separate boundaries.

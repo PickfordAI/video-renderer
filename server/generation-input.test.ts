@@ -13,6 +13,8 @@ describe('parseGenerationInput', () => {
       duration: 5,
       resolution: '480P',
       aspectRatio: '16:9',
+      renderMode: 'auto',
+      initialImageUrl: undefined,
       referenceImageUrls: [],
       referenceAudioUrls: [],
       referenceAudioMetadata: [],
@@ -65,5 +67,16 @@ describe('parseGenerationInput', () => {
     expect(result.referenceImageUrls).toEqual(['data:image/jpeg;base64,whispers/kent.jpg']);
     expect(result.referenceAudioUrls).toEqual([]);
     expect(result.referenceAudioMetadata).toEqual([]);
+  });
+
+  it('accepts explicit modes and inline continuity frames but rejects invalid configuration', () => {
+    const input = { prompt: 'A cinematic diner at night', renderMode: 'fal-turbo-i2v' };
+    expect(() => parseGenerationInput(input, vi.fn())).toThrow('requires an initial image');
+    const initialImageUrl = 'data:image/jpeg;base64,/9j/AAAA';
+    expect(parseGenerationInput({ ...input, initialImageUrl }, vi.fn())).toMatchObject({ renderMode: 'fal-turbo-i2v', initialImageUrl });
+    expect(() => parseGenerationInput({ ...input, initialImageUrl: 'data:text/html;base64,AAAA' }, vi.fn())).toThrow('HTTPS');
+    expect(() => parseGenerationInput({ ...input, initialImageUrl: 'https://name:secret@images.example/scene.jpg' }, vi.fn())).toThrow('credentials');
+    expect(() => parseGenerationInput({ ...input, renderMode: 'unknown' }, vi.fn())).toThrow('renderMode');
+    expect(parseGenerationInput({ prompt: input.prompt, rendererConfig: { model: 'fal-max-ref2v', continuity: 'none' } }, vi.fn()).renderMode).toBe('fal-max-ref2v');
   });
 });

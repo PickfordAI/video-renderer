@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  controlGroupDurationSeconds,
   createCommandProgressEvent,
   createGroupFinishedEvent,
+  classifyStoryLifecycle,
   planGroupClips,
   parseExternalRendererRunConfig,
 } from './external-renderer.js';
@@ -26,6 +28,7 @@ function config() {
     storyMessageChannelId: storyChannelId,
     roomMainMessageChannelId: roomChannelId,
     storyConfig: { message_channel_ids: [storyChannelId] },
+    enableAudience: true,
   };
 }
 
@@ -37,6 +40,22 @@ describe('external renderer run configuration', () => {
     expect(parsed).not.toHaveProperty('audienceMessages');
     expect(parsed.resolution).toBe('480P');
     expect(parsed.roomShortlink).toBe(roomShortlink);
+  });
+
+  it('accepts a local bridge without audience-only room metadata', () => {
+    const parsed = parseExternalRendererRunConfig({
+      environment: 'local',
+      baseUrl: 'http://host.docker.internal:8193',
+      websocketUrl: 'ws://host.docker.internal:8193/api/v1/renderer-bridge/ws',
+      rendererId,
+      credentialId,
+      clientSecret: 'test-only-secret',
+      rendererVersion: 'minimax.20260904.local.1',
+      resumeExistingStory: true,
+    });
+
+    expect(parsed).not.toHaveProperty('enableAudience');
+    expect(parsed.tier).toBe('renderer-dev');
   });
 
   it('rejects the room-main channel in story configuration', () => {
@@ -53,6 +72,26 @@ describe('external renderer run configuration', () => {
     value.roomMainMessageChannelId = storyChannelId;
 
     expect(() => parseExternalRendererRunConfig(value)).toThrow('story and room-main channels must be distinct');
+  });
+});
+
+describe('story lifecycle observation', () => {
+  it('does not treat the initially inactive prepared story as completed', () => {
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, false, false).state).toBe('running');
+  });
+
+  it('reports authoritative end only after running or receiving an assignment', () => {
+    const running = classifyStoryLifecycle({ active: true, running_key: 'story-key', errors: null }, false, false);
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, running.observedRunning, false).state).toBe('ended');
+    expect(classifyStoryLifecycle({ active: false, running_key: null, errors: null }, false, true).state).toBe('ended');
+  });
+
+  it('reports persisted story errors as failures', () => {
+    expect(classifyStoryLifecycle({
+      active: false,
+      running_key: null,
+      errors: { story_error_type: 'renderer_unavailable' },
+    }, true, false)).toMatchObject({ state: 'failed', failure: 'renderer_unavailable' });
   });
 });
 
@@ -110,7 +149,7 @@ describe('createCommandProgressEvent', () => {
 });
 
 describe('planGroupClips', () => {
-  it('keeps a command group together in one ordered video clip', () => {
+  it('keeps dialogue turns as ordered child clips in one command group', () => {
     const clips = planGroupClips(
       {
         raw: {},
@@ -131,7 +170,72 @@ describe('planGroupClips', () => {
       6,
     );
 
+    expect(clips).toHaveLength(2);
+    expect(clips[0]?.prompt).toContain('June speaks: “First line.”');
+    expect(clips[1]?.prompt).toContain('Marcus speaks: “Second line.”');
+  });
+});
+
+
+describe('StoryKernel setup and transition commands', () => {
+  const frame = { raw: {}, sequence: 1, assignmentId: 'assignment-1', assignmentGeneration: 1, storyBlockId: roomId, groups: [] };
+
+  it('carries setup context to dialogue without generating setup clips', () => {
+    const context: string[] = [];
+    const setup = { id: 'setup', commands: [
+      { command: 'enable set', args: { set: 'hotel lobby' } },
+      { command: 'cutscene', args: { duration_seconds: 10 } },
+      { command: 'show debug', args: { show: false } },
+      { command: 'set fps', args: { fps: 24 } },
+      { command: 'add character', args: { character: 'marcus' } },
+    ] };
+    expect(planGroupClips(frame, setup, 5, context)).toEqual([]);
+    expect(controlGroupDurationSeconds(setup)).toBe(10);
+    const clips = planGroupClips(frame, { id: 'dialogue', commands: [
+      { command: 'talk', args: { character: 'marcus', dialogue: 'We meet again.' } },
+    ] }, 5, context);
     expect(clips).toHaveLength(1);
-    expect(clips[0]?.prompt).toContain('June speaks: “First line.” Then Marcus speaks: “Second line.”');
+    expect(clips[0]?.prompt).toContain('Setting: hotel lobby.');
+    expect(clips[0]?.prompt).toContain('marcus is present');
+    expect(clips[0]?.prompt).toContain('We meet again.');
+  });
+
+  it('honors transition duration even when transport delay is zero', () => {
+    const group = { id: 'fade', commands: [{ command: 'fade', delay: 0, blocking: true, args: { wait: true, duration: 2, 'fade in': true } }] };
+    expect(planGroupClips(frame, group, 5)).toEqual([]);
+    expect(controlGroupDurationSeconds(group)).toBe(2);
+  });
+
+  it('does not silently accept unknown commands alongside valid dialogue', () => {
+    expect(() => planGroupClips(frame, { id: 'unknown', commands: [
+      { command: 'talk', args: { dialogue: 'Hello.' } },
+      { command: 'unsupported movement', args: {} },
+    ] }, 5)).toThrow('Unsupported DSS command: unsupported movement');
+  });
+});
+
+
+describe('StoryKernel look direction', () => {
+  const frame = { raw: {}, sequence: 1, assignmentId: 'assignment-1', assignmentGeneration: 1, storyBlockId: roomId, groups: [] };
+
+  it('includes a look command following dialogue in the same shot and retains gaze context', () => {
+    const context: string[] = [];
+    const clips = planGroupClips(frame, { id: 'talk-look', commands: [
+      { command: 'talk', args: { character: 'Richard Cho', dialogue: 'A truly lamentable situation.', respondent: 'Lily Song' } },
+      { command: 'look', args: { character: 'Richard Cho', target: { type: 'Character', name: 'Lily Song', bias: 'eyes' } } },
+    ] }, 5, context);
+    expect(clips).toHaveLength(1);
+    expect(clips[0]?.prompt).toContain('Richard Cho looks toward Lily Song, making eye contact.');
+    expect(clips[0]?.prompt).toContain('A truly lamentable situation.');
+    const next = planGroupClips(frame, { id: 'next', commands: [
+      { command: 'talk', args: { character: 'Lily Song', dialogue: 'Indeed.' } },
+    ] }, 5, context);
+    expect(next[0]?.prompt).toContain('Richard Cho looks toward Lily Song');
+  });
+
+  it('rejects a malformed gaze target rather than acknowledging it silently', () => {
+    expect(() => planGroupClips(frame, { id: 'bad-look', commands: [
+      { command: 'look', args: { character: 'Richard Cho', target: { type: 'Character' } } },
+    ] }, 5)).toThrow('look target name');
   });
 });

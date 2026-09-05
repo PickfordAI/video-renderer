@@ -1,5 +1,5 @@
 import { watchUrlForStream } from './watch-url.mjs';
-import { validateHandoff } from './handoff.mjs';
+import { renderingOptions, validateHandoff } from './handoff.mjs';
 import { loadHandoff } from './onboarding.mjs';
 import { resolve } from 'node:path';
 import { api, hosted, option, readState, services, sessionFile, stateDir, writePrivate } from './config.mjs';
@@ -50,7 +50,9 @@ try {
       if (!endpoints.narrativeEngineUrl || !endpoints.rendererBaseUrl) throw new Error('Run npm run setup or supply services in the handoff.');
       validateHandoff({ ...handoff, services: endpoints }, hosted);
       const health = await api('/api/health', undefined, 'GET');
-      if (!health.falKeyConfigured) throw new Error('Configure FAL_KEY in the worker environment before starting a story.');
+      const renderOptions = renderingOptions(handoff);
+      if (renderOptions.rendererConfig.model !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
+      if (!health.falKeyConfigured && !health.minimaxKeyConfigured) throw new Error('Configure MINIMAX_API_KEY or FAL_KEY in the worker environment before starting a story.');
       if (saved?.runId) {
         const previous = await api(`/api/external-renderer/runs/${saved.runId}`, undefined, 'GET').catch(error => {
           if (error.status === 404) return null;
@@ -67,7 +69,7 @@ try {
       const recovery = { ...story, showBaseUrl: endpoints.narrativeEngineUrl, workerStopped: false, kernelStopped: false };
       writePrivate(resolve(stateDir, sessionFile), recovery);
       let run = await api('/api/external-renderer/runs', {
-        ...story, baseUrl: endpoints.rendererBaseUrl,
+        ...story, ...renderOptions, baseUrl: endpoints.rendererBaseUrl,
         rendererId: handoff.rendererId, credentialId: handoff.credentialId, clientSecret: handoff.clientSecret,
         environment: handoff.environment,
         rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.0',

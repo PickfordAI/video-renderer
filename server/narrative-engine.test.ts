@@ -27,6 +27,124 @@ afterEach(async () => {
 });
 
 describe('Narrative Engine server proxy', () => {
+  it('logs in only when stopping without a supplied setup token', async () => {
+    const calls: Array<{ method: string; path: string; body: unknown; authorization: string }> = [];
+    const upstream = await listen(createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      calls.push({
+        method: request.method ?? '',
+        path: request.url ?? '',
+        body: rawBody ? JSON.parse(rawBody) as unknown : null,
+        authorization: request.headers.authorization ?? '',
+      });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(
+        request.url === '/auth/login' ? { session_token: 'fresh-stop-session' } : { ok: true },
+      ));
+    }));
+    const proxy = await proxyServer();
+    const response = await fetch(`${proxy}/api/narrative/stop-show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: upstream,
+        shortlink: 'STOP42',
+        email: 'developer@example.com',
+        password: 'setup-password',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ stopped: true });
+    expect(calls).toEqual([
+      {
+        method: 'POST',
+        path: '/auth/login',
+        body: { email: 'developer@example.com', password: 'setup-password' },
+        authorization: '',
+      },
+      {
+        method: 'POST',
+        path: '/story/cancel?room_shortlink=STOP42',
+        body: null,
+        authorization: 'Bearer fresh-stop-session',
+      },
+      {
+        method: 'POST',
+        path: '/room/leave',
+        body: { shortlink: 'STOP42' },
+        authorization: 'Bearer fresh-stop-session',
+      },
+    ]);
+  });
+
+  it('provisions an inactive story with a distinct room-bound audience channel', async () => {
+    const roomId = '11111111-1111-4111-8111-111111111111';
+    const roomChannelId = '22222222-2222-4222-8222-222222222222';
+    const storyChannelId = '33333333-3333-4333-8333-333333333333';
+    const evdId = '44444444-4444-4444-8444-444444444444';
+    const calls: Array<{ method: string; path: string; body: unknown; authorization: string }> = [];
+    let storyChannelCreated = false;
+    const upstream = await listen(createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const text = Buffer.concat(chunks).toString('utf8');
+      const body = text ? JSON.parse(text) as unknown : null;
+      calls.push({
+        method: request.method ?? '',
+        path: request.url ?? '',
+        body,
+        authorization: request.headers.authorization ?? '',
+      });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      if (request.url === '/auth/login') response.end(JSON.stringify({ session_token: 'fresh-session' }));
+      else if (request.url === '/room/') response.end(JSON.stringify({ id: roomId, shortlink: 'public-h3' }));
+      else if (request.url === '/story/') response.end(JSON.stringify({ id: 14 }));
+      else if (request.url === `/message_channel/?room_id=${roomId}`) {
+        response.end(JSON.stringify([{ id: roomChannelId, state: 'ACTIVE', room_id: roomId, story_id: null }]));
+      } else if (request.url === '/message_channel/?story_id=14') {
+        response.end(JSON.stringify(storyChannelCreated
+          ? [{ id: storyChannelId, state: 'ACTIVE', room_id: roomId, story_id: 14 }]
+          : []));
+      } else if (request.url === '/message_channel/' && request.method === 'POST') {
+        storyChannelCreated = true;
+        response.end(JSON.stringify({ id: storyChannelId }));
+      } else response.end(JSON.stringify({ ok: true }));
+    }));
+    const proxy = await proxyServer();
+    const response = await fetch(`${proxy}/api/narrative/provision-external-story`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: upstream,
+        email: 'operator@example.test',
+        password: 'setup-only',
+        roomName: 'Public H3',
+        evdId,
+        storyType: 'WHISPERS',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      roomId,
+      roomShortlink: 'public-h3',
+      storyId: 14,
+      storyMessageChannelId: storyChannelId,
+      roomMainMessageChannelId: roomChannelId,
+    });
+    expect(calls.find((call) => call.path === '/story/')?.body).toEqual({ room_id: roomId, active: false });
+    expect(calls.find((call) => call.path === '/message_channel/' && call.method === 'POST')?.body).toEqual({
+      name: 'External audience',
+      state: 'ACTIVE',
+      story_id: 14,
+      room_id: roomId,
+    });
+    expect(calls.slice(1).every((call) => call.authorization === 'Bearer fresh-session')).toBe(true);
+  });
+
   it('joins a room server-to-server without exposing the upstream origin to browser CORS', async () => {
     let authorization = '';
     const upstream = await listen(createServer((request, response) => {
@@ -138,7 +256,7 @@ describe('Narrative Engine server proxy', () => {
         body: { name: 'H3 Show', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: 'CREATOR' },
       },
       { method: 'POST', path: '/room/join', body: { shortlink: 'h3-show' } },
-      { method: 'PATCH', path: '/room/playback-mode', body: { room_id: 'room-1', mode: 'external_renderer' } },
+      { method: 'PATCH', path: '/room/playback-mode', body: { room_id: 'room-1', mode: 'video' } },
       {
         method: 'POST',
         path: '/show/start',
@@ -157,69 +275,110 @@ describe('Narrative Engine server proxy', () => {
     ]);
   });
 
-  it('provisions an inactive story with a distinct room-bound audience channel', async () => {
-    const roomId = '11111111-1111-4111-8111-111111111111';
-    const roomChannelId = '22222222-2222-4222-8222-222222222222';
-    const storyChannelId = '33333333-3333-4333-8333-333333333333';
-    const evdId = '44444444-4444-4444-8444-444444444444';
-    const calls: Array<{ method: string; path: string; body: unknown; authorization: string }> = [];
-    let storyChannelCreated = false;
+  it('prepares an inactive story and active story channel for a renderer-pinned start', async () => {
+    const roomId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const channelId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
     const upstream = await listen(createServer(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const text = Buffer.concat(chunks).toString('utf8');
-      const body = text ? JSON.parse(text) as unknown : null;
-      calls.push({
-        method: request.method ?? '',
-        path: request.url ?? '',
-        body,
-        authorization: request.headers.authorization ?? '',
-      });
+      calls.push({ method: request.method ?? '', path: request.url ?? '', body: text ? JSON.parse(text) as unknown : null });
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      if (request.url === '/auth/login') response.end(JSON.stringify({ session_token: 'fresh-session' }));
-      else if (request.url === '/room/') response.end(JSON.stringify({ id: roomId, shortlink: 'public-h3' }));
-      else if (request.url === '/story/') response.end(JSON.stringify({ id: 14 }));
-      else if (request.url === `/message_channel/?room_id=${roomId}`) {
-        response.end(JSON.stringify([{ id: roomChannelId, state: 'ACTIVE', room_id: roomId, story_id: null }]));
-      } else if (request.url === '/message_channel/?story_id=14') {
-        response.end(JSON.stringify(storyChannelCreated
-          ? [{ id: storyChannelId, state: 'ACTIVE', room_id: roomId, story_id: 14 }]
-          : []));
-      } else if (request.url === '/message_channel/' && request.method === 'POST') {
-        storyChannelCreated = true;
-        response.end(JSON.stringify({ id: storyChannelId }));
-      } else response.end(JSON.stringify({ ok: true }));
+      if (request.method === 'POST' && request.url === '/room/') {
+        response.end(JSON.stringify({ id: roomId, shortlink: 'renderer-room' }));
+      } else if (request.method === 'POST' && request.url === '/story/') {
+        response.end(JSON.stringify({ id: 42, room_id: roomId, active: false }));
+      } else if (request.method === 'GET' && request.url === '/message_channel/?story_id=42') {
+        response.end(JSON.stringify([]));
+      } else if (request.method === 'POST' && request.url === '/message_channel/') {
+        response.end(JSON.stringify({ id: channelId, story_id: 42, room_id: roomId, state: 'ACTIVE' }));
+      } else {
+        response.end(JSON.stringify({ ok: true }));
+      }
     }));
     const proxy = await proxyServer();
-    const response = await fetch(`${proxy}/api/narrative/provision-external-story`, {
+    const response = await fetch(`${proxy}/api/narrative/prepare-show`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         baseUrl: upstream,
-        email: 'operator@example.test',
-        password: 'setup-only',
-        roomName: 'Public H3',
-        evdId,
+        token: 'session-token',
+        roomName: 'Renderer Room',
+        evdId: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
         storyType: 'WHISPERS',
       }),
     });
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      roomId,
-      roomShortlink: 'public-h3',
-      storyId: 14,
-      storyMessageChannelId: storyChannelId,
-      roomMainMessageChannelId: roomChannelId,
+      room: {
+        id: roomId,
+        shortlink: 'renderer-room',
+        active_story_id: 42,
+        message_channels: [{ id: channelId, story_id: 42, room_id: roomId, state: 'ACTIVE' }],
+      },
+      storyId: 42,
+      storyMessageChannelId: channelId,
+      storyConfig: {
+        base_structure: 'WHISPERS',
+        evd_id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
+        character_ids: [],
+        message_channel_ids: [channelId],
+      },
     });
-    expect(calls.find((call) => call.path === '/story/')?.body).toEqual({ room_id: roomId, active: false });
-    expect(calls.find((call) => call.path === '/message_channel/' && call.method === 'POST')?.body).toEqual({
-      name: 'External audience',
-      state: 'ACTIVE',
-      story_id: 14,
-      room_id: roomId,
+    expect(calls).toEqual([
+      { method: 'POST', path: '/room/', body: { name: 'Renderer Room', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: 'WHISPERS' } },
+      { method: 'POST', path: '/room/join', body: { shortlink: 'renderer-room' } },
+      { method: 'PATCH', path: '/room/playback-mode', body: { room_id: roomId, mode: 'video' } },
+      { method: 'POST', path: '/story/', body: { room_id: roomId, evd_id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4', active: false } },
+      { method: 'GET', path: '/message_channel/?story_id=42', body: null },
+      { method: 'POST', path: '/message_channel/', body: { name: 'Renderer Room story', story_id: 42, room_id: roomId, state: 'ACTIVE' } },
+    ]);
+  });
+
+  it('uses the selected Creator CVD authored premise in renderer story configuration', async () => {
+    const roomId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const channelId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const cvdId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const upstream = await listen(createServer(async (request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      if (request.url?.startsWith('/admin/evds/')) {
+        response.end(JSON.stringify({ cvd_id: cvdId }));
+      } else if (request.url === `/admin/cvds/${cvdId}/document`) {
+        response.end(JSON.stringify({ document: { metadata: { premise: 'A radio host receives calls from tomorrow.' } } }));
+      } else if (request.method === 'POST' && request.url === '/room/') {
+        response.end(JSON.stringify({ id: roomId, shortlink: 'creator-room' }));
+      } else if (request.method === 'POST' && request.url === '/story/') {
+        response.end(JSON.stringify({ id: 43 }));
+      } else if (request.method === 'GET' && request.url === '/message_channel/?story_id=43') {
+        response.end(JSON.stringify([{ id: channelId, story_id: 43, room_id: roomId, state: 'ACTIVE' }]));
+      } else {
+        for await (const _chunk of request) { /* consume request body */ }
+        response.end(JSON.stringify({ ok: true }));
+      }
+    }));
+    const proxy = await proxyServer();
+    const response = await fetch(`${proxy}/api/narrative/prepare-show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: upstream,
+        authoringBaseUrl: upstream,
+        token: 'session-token',
+        roomName: 'Creator Room',
+        evdId: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
+        storyType: 'CREATOR',
+      }),
     });
-    expect(calls.slice(1).every((call) => call.authorization === 'Bearer fresh-session')).toBe(true);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      storyConfig: {
+        base_structure: 'CREATOR',
+        story_premise: 'A radio host receives calls from tomorrow.',
+      },
+    });
   });
 
   it('forwards external playback state without exposing the service token in the URL', async () => {
@@ -394,59 +553,6 @@ describe('Narrative Engine server proxy', () => {
         path: '/room/leave',
         body: { shortlink: 'h3 show' },
         authorization: 'Bearer session-token',
-      },
-    ]);
-  });
-
-  it('logs in only when stopping without a supplied setup token', async () => {
-    const calls: Array<{ method: string; path: string; body: unknown; authorization: string }> = [];
-    const upstream = await listen(createServer(async (request, response) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      const rawBody = Buffer.concat(chunks).toString('utf8');
-      calls.push({
-        method: request.method ?? '',
-        path: request.url ?? '',
-        body: rawBody ? JSON.parse(rawBody) as unknown : null,
-        authorization: request.headers.authorization ?? '',
-      });
-      response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify(
-        request.url === '/auth/login' ? { session_token: 'fresh-stop-session' } : { ok: true },
-      ));
-    }));
-    const proxy = await proxyServer();
-    const response = await fetch(`${proxy}/api/narrative/stop-show`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        baseUrl: upstream,
-        shortlink: 'STOP42',
-        email: 'developer@example.com',
-        password: 'setup-password',
-      }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ stopped: true });
-    expect(calls).toEqual([
-      {
-        method: 'POST',
-        path: '/auth/login',
-        body: { email: 'developer@example.com', password: 'setup-password' },
-        authorization: '',
-      },
-      {
-        method: 'POST',
-        path: '/story/cancel?room_shortlink=STOP42',
-        body: null,
-        authorization: 'Bearer fresh-stop-session',
-      },
-      {
-        method: 'POST',
-        path: '/room/leave',
-        body: { shortlink: 'STOP42' },
-        authorization: 'Bearer fresh-stop-session',
       },
     ]);
   });

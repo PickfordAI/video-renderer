@@ -1,7 +1,7 @@
 # Pickford Video Renderer
 
 An open-source player for **DSS**, the story format emitted by the Pickford Story Kernel.
-The worker turns story commands into MiniMax H3 video through [fal](https://fal.ai), then uses
+The worker turns story commands into MiniMax H3 video through direct MiniMax or [fal](https://fal.ai), then uses
 FFmpeg and MediaMTX to play a continuous HLS stream.
 
 There is **one interface** for local and hosted viewing. Your agent connects the accounts,
@@ -15,7 +15,7 @@ Choose how to watch:
    AWS, GCP, or another provider. Your agent returns a watch link.
 
 The Story Kernel runs separately and supplies the story and renderer installation credentials.
-A fal account and compatible kernel onboarding are required for live generation. You can
+A MiniMax or fal account and compatible kernel onboarding are required for live generation. You can
 build and test without keys.
 
 ## Let an agent set it up
@@ -30,7 +30,7 @@ Requires **Node.js 22+**, FFmpeg, and Docker, with a compatible Story Kernel sta
 
 ```sh
 npm ci
-# The agent supplies FAL_KEY through the environment or a private .env.
+# The agent supplies MINIMAX_API_KEY or FAL_KEY through the environment or a private .env.
 # Register the private handoff from earlier kernel onboarding once:
 npm run setup -- --handoff /absolute/path/to/handoff.json
 npm run build
@@ -50,7 +50,7 @@ npm run story -- stop
 
 The player follows the agent-started story automatically. The agent should wait for playable
 video before declaring the story ready; the first scene can take a few minutes. Starting a
-story submits paid fal jobs when DSS arrives. Stop also cancels the kernel story using the
+story submits paid video jobs when DSS arrives. Stop also cancels the kernel story using the
 onboarding user session. Stop the worker with Ctrl+C when finished.
 
 `setup` discovers published Docker ports and stores them privately in `.renderer/services.json`.
@@ -122,7 +122,7 @@ Rebuild after editing `viewer/`. Protocol details and limitations: [architecture
 Release checklist: [releasing](docs/releasing.md).
 
 The full local Docker profile is available with `docker compose --profile full up --build`.
-Supply FAL_KEY in `.env`. The supported automatic discovery path runs the agent and `npm start`
+Supply MINIMAX_API_KEY or FAL_KEY in `.env`. The supported automatic discovery path runs the agent and `npm start`
 on the host with the relay in Docker; a container worker needs kernel services reachable from
 inside Docker, supplied by the agent.
 
@@ -133,3 +133,71 @@ see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license does not grant
 Story Kernel, stories, generated media, provider output, or Pickford trademarks.
 
 [Contributing](CONTRIBUTING.md) · [Security reports](SECURITY.md)
+
+
+## Generation choices
+
+The agent configures generation in the private onboarding handoff. Model choice, continuity,
+concurrency, and generation lookahead remain separate:
+
+```json
+{
+  "rendererConfig": {
+    "model": "fal-max-ref2v",
+    "continuity": "camera-anchors",
+    "concurrency": 2,
+    "maxBufferedSeconds": 30
+  },
+  "shotPlanner": {
+    "sets": {
+      "hotel lobby": { "imageUrl": "https://example.com/approved-lobby.jpg" }
+    }
+  }
+}
+```
+
+Replace the example image with an authorized, accessible reference. Settings are read for the
+next run; changing configuration does not start generation.
+
+| Model | Required inputs and available continuity |
+|---|---|
+| `auto` | Uses the configured direct MiniMax/fal adapter with `none`; retains serial generation. |
+| `fal-turbo-i2v` | HTTPS `initialImageUrl`; `last-frame-chain` uses each clip's ending frame for the next. |
+| `fal-max-ref2v` | Scene or character images in `shotPlanner`, or `initialImageUrl`; choose `camera-anchors` or `none`. |
+
+Explicit fal models require `FAL_KEY` and never switch providers after a failure. Unsupported
+model/strategy combinations fail before story provisioning. Turbo cannot use voice references;
+no ElevenLabs mixing or lip-sync correction is added. Max can use the beat's raw 2–15-second
+DSS audio URL, with an optional voice sample as fallback. Reference conditioning does not guarantee
+an exact voice or performance.
+
+`shotPlanner` also accepts named `characters`, `sets`, `styleImageUrl`, `styleDescription`,
+`markNames`, and `initialImageUrl`. Character entries may contain `name`, `aliases`, `description`,
+`imageUrl`, and `voice: { "url": "https://example.com/voice.mp3", "durationSeconds": 4 }`.
+DSS supplies dialogue and staging; it does not necessarily supply character portraits or set images.
+The compiler carries blocking, strips spoken TTS tags into acting directions, and anchors style to
+a set/style image. Ordinary `talking` animations preserve camera anchors; movement invalidates them.
+
+The concurrency ceiling defaults to 2 (range 1–8). Last-frame dependencies serialize Turbo
+regardless of that ceiling. `maxBufferedSeconds` defaults to 30 (range 5–120) and counts all reserved,
+unplayed work, including pending and generating clips. Eight eight-second jobs need at least 64
+seconds of budget. One oversized shot may occupy an otherwise empty budget to make progress.
+This setting is not a startup buffer or permission to submit a batch.
+
+Explicit fal modes can generate future received DSS while earlier clips play. Camera anchors
+persist across payloads; media and completion acknowledgements remain in story order. The kernel
+must supply enough lookahead. Playback begins with one ready clip to support short and ACK-gated
+stories. Offline overlap does not prove sustained live realtime performance or visual quality.
+
+Environment onboarding supports `STORY_RENDERER_CONFIG_JSON`, `STORY_SHOT_PLANNER_JSON`, and
+`STORY_INITIAL_IMAGE_URL` for the same options. Existing handoffs with top-level `renderMode`,
+`generationConcurrency`, and `maxBufferedSeconds` remain accepted; explicit `rendererConfig`
+fields take precedence. Stop the active run before changing its settings.
+
+## Hackathon rendering limits
+
+Dialogue and supported character actions become generated video. Set and cast setup becomes prompt
+context. Titles, credits, cutscenes, fades and supported engine controls are timing approximations;
+they do not reproduce Unreal overlays or separate audio tracks. Unknown commands fail explicitly.
+Stop cancels local generation/playout; the CLI separately stops the kernel story and records any
+cleanup that must be retried.

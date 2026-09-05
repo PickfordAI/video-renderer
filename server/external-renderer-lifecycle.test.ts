@@ -8,7 +8,7 @@ vi.mock('./fal.js', () => ({ generateVideo: vi.fn(async () => ({ videoUrl: 'http
 const rendererId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const storyChannel = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function config(baseUrl = 'http://127.0.0.1:9999') {
-  return { baseUrl, rendererId, credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'test-installation', rendererVersion: 'h3.test.v1.0', environment: 'prod', storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'TEST', storyMessageChannelId: storyChannel, roomMainMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', storyConfig: { message_channel_ids: [storyChannel] } };
+  return { baseUrl, rendererId, credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'test-installation', rendererVersion: 'h3.test.v1.0', environment: 'local', storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'TEST', storyMessageChannelId: storyChannel, roomMainMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', storyConfig: { message_channel_ids: [storyChannel] } };
 }
 function playout() {
   const enqueue = vi.fn();
@@ -33,10 +33,10 @@ describe('external renderer lifecycle', () => {
     }));
     const fetchMock = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
       if (String(url).endsWith('/login')) {
-        expect(JSON.parse(String(options?.body))).toMatchObject({ tier: 'renderer-prod', environment: 'prod' });
+        expect(JSON.parse(String(options?.body))).toMatchObject({ tier: 'renderer-dev', environment: 'local' });
         return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
       }
-      for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 1, story_block_id: 'block', script: { sequence: 1, command_groups: [{ id: 'group', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'Hello Sam.' } }] }] } }));
+      for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 1, story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', script: { sequence: 1, command_groups: [{ id: 'group', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'Hello Sam.' } }] }] } }));
       return Response.json({ renderer_id: rendererId, audience_grant: { grant: { story_id: 42, message_channel_id: storyChannel } } }, { status: 202 });
     });
     vi.stubGlobal('fetch', fetchMock);

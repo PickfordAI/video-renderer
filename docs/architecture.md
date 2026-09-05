@@ -18,10 +18,11 @@ handling, and correlated command completion. It validates the separate story and
 channels. The setup user token is used by the provisioning/stop proxy only; renderer runtime
 uses the installation credential. Login tier is derived from the kernel environment.
 
-The bridge currently combines each DSS frame's ordered command groups into one text-to-video
-clip and waits for that clip to play before acknowledging its groups. Nonvisual commands become
-a transition when necessary. This preserves frame order but does not reproduce a 3D renderer's
-exact animation, timing, or voice identity. It does not import local CVD/EVD exports into the kernel.
+The configured-provider adapter combines each DSS frame into one clip. Explicit fal modes compile
+ordered groups into immutable shot plans, carrying staging across payloads. Their shared scheduler
+can generate later received DSS while earlier clips play. Group acknowledgements follow actual
+playback; generation completion does not advance the kernel cursor. Supported nonvisual controls
+use timing approximations. The adapter does not reproduce a 3D renderer's exact animation or overlays.
 
 The sole frontend is `viewer/`, served on both the local operator listener and public media
 listener. The old React room/SSE studio and manual credential form are removed. Renderer runtime
@@ -65,11 +66,26 @@ PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen h
 
 ## Compatibility and recovery
 
-Reviewed against Story Kernel PR [#6681](https://github.com/PickfordAI/unrendered/pull/6681),
-commit `6f0689648228c46f6880349f9e0c888e3076c77c`. The locally running Compose stack's worktree
-matches that commit. The protocol is still evolving; rerun a real end-to-end acceptance when
-upgrading it. Offline tests cover shape, ordering, retries, and access boundaries, not a complete
-kernel deployment or provider acceptance.
+The renderer-start and event-verdict contracts were inspected at StoryKernel commit
+`8ca50d8fcb6bfddc0a9d9db1fcffc54c72f0d6ed`. This is contract evidence, not proof of a complete
+live story. The protocol is still evolving; verify login, start, assignment, DSS, media, verdicts
+and Stop when upgrading. Offline fixtures do not establish provider or deployed-kernel acceptance.
+
+Completion events carry deterministic `client_event_id` values, distinct for each logical group
+and progress event. Authoritative verdicts are correlated to the renderer, stream, assignment lease,
+generation and sequence before their exact verdict/event IDs are acknowledged. The private run
+status records pending, acknowledged and refused verdicts. A transport rejection has no verdict ID
+and is recorded as a failure without fabricating an acknowledgement.
+Missing verdicts are bounded during active playback as well: at most 128 pending events and a
+30-second pending-verdict deadline. The bridge stops on a missing return path before continuing
+to submit further generation.
+
+On natural completion, the bridge stops accepting new DSS, finishes already accepted generation
+and playback, then waits up to five seconds for pending verdict acknowledgements to be written.
+Missing verdicts are a reported failure, so an older kernel without verdict delivery cannot pass
+this completion check. User Stop still cancels local work immediately; the CLI separately requests
+kernel Stop and keeps recovery state if either cleanup step fails. Socket closure alone does not
+prove that the kernel released its assignment.
 
 There is one active agent run per worker. Run records, queues, and media are ephemeral. Automatic
 resume after a process crash is not implemented; stale kernel sessions must be stopped and a new
@@ -77,3 +93,110 @@ story started. Retrying `start` is not a durable idempotency guarantee across a 
 The CLI saves provisioned identities before renderer start so ordinary failed starts can be
 cleaned up. If provisioning itself fails partway, inspect/reconcile the created room through the
 kernel onboarding flow before retrying. No automatic synthetic audience traffic is generated.
+
+
+## Explicit fal continuity modes
+
+`rendererConfig.model=auto` preserves the configured direct MiniMax/fal adapter. Explicit
+`fal-turbo-i2v` and `fal-max-ref2v` require a fal credential even when a direct MiniMax key is
+present; failures never switch providers. Run settings accept an HTTPS `initialImageUrl`,
+`shotPlanner` reference/style settings, `rendererConfig.concurrency` (default 2, at most 8), and
+`rendererConfig.maxBufferedSeconds` (default 30, at most 120).
+
+New modes compile each accepted DSS frame in order into immutable shot/group plans before
+submitting its video jobs. Turbo image-to-video requires an initial image and chains each scene's
+next shot from the previous clip's last frame. Reference-to-video with camera-anchors uses configured character/set
+references for the first shot of each camera/continuity setup, then adds that anchor clip's first
+frame to later matching shots (the last frame instead when the anchor shot contains movement, preserving its resulting pose). Camera-anchors reserves one of the 12 total reference slots for continuity before any submissions. Independent camera setups can generate concurrently; dependent
+shots wait for their anchor generation/frame extraction, not for playback. Failed anchors fail
+their dependents instead of silently removing references.
+
+The scheduler reserves unplayed video duration in playback order, including dependency waits,
+so later jobs cannot starve an earlier dependent shot. One shot larger than the configured budget
+may occupy an otherwise empty buffer. A single sequential compiler prepares later received DSS
+payloads while an ordered consumer plays earlier ones. The scheduler, camera anchors, and chain
+tails are shared across these payloads. Prepared payloads are bounded independently of video
+duration, including payloads that contain only control commands. Enqueue and group completion stay in DSS order. Control
+waits complete before their group acknowledgement; generation progress does not advance the
+kernel's sequence high-water mark. Stop aborts provider and frame-extraction jobs and drains them.
+A changed assignment terminates the run; it cannot enqueue stale results or silently resume.
+
+A FIFO feeder sends each generated clip to media preparation as soon as preceding clips have been
+enqueued. An independent playback consumer waits for the played position before releasing its
+reservation or acknowledging its group. This permits normalization ahead of playback without
+waiting for an entire group to generate, which could deadlock when that group exceeds the budget.
+Positive-duration control transitions stop the feeder at the group boundary until preceding
+playback and the declared delay complete; zero-duration boundaries do not prevent prefeeding.
+
+Generation failure in a later prepared payload aborts the run without waiting for earlier
+playback to finish. Stop and receiver failure wake the planning and playback consumers. Duplicate
+payloads are ignored before compilation, so they cannot mutate staging twice or submit extra jobs.
+The configured-provider (`auto`) adapter retains its serial behavior.
+
+The video-duration budget counts work reserved for pending, in-flight, and ready-but-unplayed
+shots. It is not a startup runway or a measure of contiguous playable footage. Playback starts
+with one clip; requiring multiple clips can deadlock a short story or a kernel waiting for the
+current completion acknowledgement. No synthetic progress or early GroupFinished events are sent
+to obtain more lookahead. If the kernel has not delivered later DSS, the renderer cannot generate
+it. Offline overlap and ordering tests do not prove sustained live throughput or voice/lip-sync
+quality.
+
+The explicit-mode prompt compiler separates bracketed TTS directions from spoken dialogue, binds
+speech to its subject, and makes listener eye-lines relative to the camera in tight shots. It
+distinguishes exact dialogue audio from a generic voice sample. Dedicated style and set images can
+anchor visual style; character portraits remain identity references. Camera cuts hold established
+blocking unless an action changes it, while Turbo's supplied frame retains its framing. Repeated
+character declarations update carried state; they are not assumed to replace the complete cast.
+The kernel's in-place `talking` animation retains the camera anchor. Position-changing and unknown
+animations still invalidate anchors conservatively.
+
+The private operator `POST /api/video-frame` extracts first/last continuity frames. The public
+viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded
+size/time and cancellation; resulting JPEG data stays internal to the rendering flow.
+These additions have offline mocked validation until separately exercised with real providers.
+
+
+### Model and continuity are separate choices
+
+The canonical run `rendererConfig` contains `model`, `continuity`, `concurrency`, and
+`maxBufferedSeconds`. Model chooses the provider endpoint; continuity chooses dependencies and
+frame extraction. Supported combinations are auto/none, Turbo image-to-video/last-frame-chain,
+and Max reference-to-video with either none or camera-anchors. Unsupported combinations fail
+before generation. Legacy renderMode/concurrency fields normalize to their previous strategies.
+
+Max with continuity none generates independent shots using configured references and performs no
+frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
+adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the
+same duration-budgeted scheduler and ordered playback acknowledgements. Concurrency is an explicit
+limit within the selected strategy, not a synonym for the model or a promise that dependent shots
+can run simultaneously.
+
+### Reuse in another renderer
+
+`DssShotPlanner` is the stateful DSS-to-prompt boundary: feed groups in order and retain its
+immutable plans, reference bindings, and group IDs. `ShotScheduler` bounds asynchronous generation
+and resolves strategy dependencies without knowing the transport or media player. Provider
+adapters select model endpoints independently of that scheduling policy.
+
+`external-renderer.ts` is the integration layer: it supplies assignment fencing, bounded payload
+queues, camera/chain dependencies, ordered media enqueue, and playback acknowledgements. A host
+with different transport or playout can reuse the compiler and scheduler while adapting that
+layer. Preserve actual-playback budget release, timing barriers, and cancellation when porting;
+generation completion alone is insufficient to acknowledge DSS.
+
+
+### Canonical references and derived images
+
+The intended upstream boundary is for StoryKernel to deliver the story's approved character,
+empty-set and style references with stable entity identities and asset versions. That delivery
+contract is not implemented by this renderer or the offline DSS-renderer experiment; today the
+private handoff supplies `shotPlanner` images. Avoid treating a local reference picker as the
+canonical store for every run.
+
+The compiler selects identity pictures for the shot's visible characters while retaining off-screen
+state for later shots. Tight shots omit the listener's portrait. Set and style references remain
+separate from character identity. Derived camera anchors and last-frame continuity belong to the
+renderer. A future Turbo opening-frame composition should use the relevant canonical set/cast and
+be cached separately; it must not overwrite those source assets. Refreshable references or cross-run
+caches would also need upstream asset versions in their cache keys. Neither automatic opening-frame
+generation nor a new Kernel asset wire format is introduced here.

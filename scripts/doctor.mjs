@@ -1,11 +1,18 @@
 import { execFileSync } from 'node:child_process';
 import { services, rendererOrigin } from './config.mjs';
-import { onboardingStatus } from './onboarding.mjs';
+import { loadHandoff, onboardingStatus } from './onboarding.mjs';
+import { handoffRendererConfig } from './handoff.mjs';
 const checks = [];
-const falCheck = { name: 'fal credential (environment or running worker)', ok: Boolean(process.env.FAL_KEY || process.env.FAL_API_KEY) };
+let model = 'auto';
+try { model = handoffRendererConfig(loadHandoff()).model; } catch { /* Story access reports an invalid handoff separately. */ }
+const hasRequiredCredential = (fal, minimax) => model === 'auto' ? Boolean(fal || minimax) : Boolean(fal);
+const credentialCheck = {
+  name: model === 'auto' ? 'MiniMax or fal credential (environment or running worker)' : 'fal credential for selected model (environment or running worker)',
+  ok: hasRequiredCredential(process.env.FAL_KEY || process.env.FAL_API_KEY, process.env.MINIMAX_API_KEY),
+};
 const major = Number(process.versions.node.split('.')[0]);
 checks.push({ name: 'Node.js 22+', ok: major >= 22 });
-checks.push(falCheck);
+checks.push(credentialCheck);
 checks.push({ name: 'agent-managed story access', ok: !onboardingStatus().missing.includes('storyAccess'), fix: 'Have the agent configure STORY_HANDOFF_PATH or STORY_* environment variables. See docs/agents.md.' });
 try { execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], { stdio: 'ignore' }); checks.push({ name: 'FFmpeg', ok: true }); }
 catch { checks.push({ name: 'FFmpeg', ok: false, fix: 'Install FFmpeg or use the full Docker profile.' }); }
@@ -14,7 +21,8 @@ for (const [name, url] of Object.entries({ ...services(), worker: rendererOrigin
     const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) });
     if (name === 'worker' && response.ok) {
       const health = await response.json();
-      falCheck.ok ||= health.falKeyConfigured === true;
+      // A reachable worker is authoritative; local key changes may still need a restart.
+      credentialCheck.ok = hasRequiredCredential(health.falKeyConfigured === true, health.minimaxKeyConfigured === true);
     } else await response.body?.cancel();
     // A 404 still proves the HTTP service is reachable; it is not protocol/auth verification.
     checks.push({ name, ok: response.status < 500, status: response.status, check: 'HTTP reachability' });
