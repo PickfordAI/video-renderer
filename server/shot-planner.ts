@@ -127,6 +127,11 @@ function numeric(value: unknown): number | undefined {
 }
 function normalize(value: string): string { return value.trim().toLowerCase(); }
 function humanize(value: string): string { return value.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'); }
+function isCloseUp(shot: string): boolean {
+  // A POV identifies a viewpoint, not an on-screen subject. Keep it outside the
+  // close-up visibility/eyeline rules until its geometry is explicitly modeled.
+  return (CAMERA_NAMES[shot] ?? shot).toLowerCase().replace(/[\s_-]+/g, '').includes('closeup');
+}
 function httpsUrl(value: string, label: string): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute HTTPS URL`); }
@@ -346,9 +351,11 @@ export class DssShotPlanner {
         }
         case 'playanimation': {
           const character = actor(args.character);
-          actions.push(`${character.name} performs ${humanize(required(args.animation, 'animation'))}.`);
-          // Animation effects can change body blocking; a setup anchor must not survive blindly.
-          next.continuityRevision++; hasMovement = true;
+          const animation = required(args.animation, 'animation');
+          actions.push(`${character.name} performs ${humanize(animation)}.`);
+          // StoryKernel emits `talking` alongside dialogue without changing marks
+          // or posture. Other animations may move the actor, so invalidate safely.
+          if (normalize(animation) !== 'talking') { next.continuityRevision++; hasMovement = true; }
           break;
         }
         case 'charactershot': case 'charactercamera': {
@@ -388,7 +395,12 @@ export class DssShotPlanner {
       const shotEnd = stateSnapshot({ ...next, camera });
       const shotActions = index === 0 ? actions : [];
       const names = [...new Set([...Object.keys(next.characters), ...participants])].sort((a, b) => normalize(a) < normalize(b) ? -1 : normalize(a) > normalize(b) ? 1 : 0);
-      const refs = this.references(names, next, line, split);
+      const cameraSubject = camera.character ?? line?.speaker;
+      // Keep off-screen cast in scene state and eyeline prose, but their portraits
+      // can pull a close-up toward the wrong face. Wider/unmodeled views retain
+      // staged cast; reaction close-ups use the explicitly framed listener.
+      const visibleNames = isCloseUp(camera.shot) && cameraSubject && names.includes(cameraSubject) ? [cameraSubject] : names;
+      const refs = this.references(visibleNames, next, line, split);
       const sourceDuration = segment?.duration;
       const durationSeconds = Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
       if (durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
@@ -468,10 +480,7 @@ export class DssShotPlanner {
       const character = end.characters[name];
       return [character?.gaze ? `${name} looks toward ${character.gaze}.` : '', character?.emotion ? `${name} appears ${character.emotion}.` : ''].filter(Boolean).join(' ');
     }).filter(Boolean);
-    const shotName = (CAMERA_NAMES[camera.shot] ?? camera.shot).toLowerCase().replace(/[\s_-]+/g, '');
-    // A POV identifies a viewpoint, not an on-screen subject. Without explicit
-    // geometry it must not inherit close-up rules that hide the listener.
-    const tightShot = shotName.includes('closeup');
+    const tightShot = isCloseUp(camera.shot);
     const gazeTarget = line ? end.characters[line.speaker]?.gaze?.replace(/ \(eye contact\)$/, '') : undefined;
     const listener = line ? gazeTarget ? (names.includes(gazeTarget) ? gazeTarget : undefined) : line.respondent : undefined;
     const speakerInFrame = !camera.character || camera.character === line?.speaker;

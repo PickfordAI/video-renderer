@@ -1,4 +1,4 @@
-/** Provider choices shared by the studio and the server; contains no server secrets. */
+/** Provider choices and continuity capabilities for private renderer configuration. */
 export const RENDER_MODES = ['auto', 'fal-turbo-i2v', 'fal-max-ref2v'] as const;
 export type RenderMode = typeof RENDER_MODES[number];
 

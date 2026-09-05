@@ -9,6 +9,7 @@ import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type Render
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
+import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { extractVideoFrame } from './video-frame.js';
 import type { PlayoutManager, PlayoutSession } from './playout.js';
 
@@ -72,6 +73,7 @@ export interface ExternalRendererRunStatus {
   clipsRendered: number;
   hlsUrl: string | null;
   lastHeartbeatAt: string | null;
+  eventVerdicts: RendererEventVerdictStatus;
   failures: string[];
 }
 
@@ -86,6 +88,7 @@ interface DssFrame {
   assignmentId: string;
   assignmentGeneration: number;
   storyBlockId: string;
+  episodeId?: number;
   groups: DssGroup[];
 }
 
@@ -133,6 +136,8 @@ const GROUP_FINISHED_STATUS_ID = 10;
 // A duration budget does not bound control-only payloads or unscheduled plans.
 const MAX_PREPARED_DSS_FRAMES = 32;
 const MAX_PENDING_DSS_FRAMES = 256;
+const NATURAL_COMPLETION_DRAIN_MS = 5_000;
+const VERDICT_ACK_TIMEOUT_MS = 2_000;
 
 function asObject(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -408,6 +413,8 @@ function textArg(command: JsonObject, key: string): string | null {
 function parseDssFrame(raw: JsonObject): DssFrame {
   const script = asObject(raw.script, 'DSS script');
   const sequence = Number(script.sequence ?? raw.sequence);
+  const episodeId = script.episode_id ?? raw.episode_id ?? undefined;
+  if (episodeId !== undefined && (!Number.isInteger(episodeId) || (episodeId as number) < 0)) throw new Error('DSS episode_id must be a non-negative integer');
   if (!Number.isInteger(sequence) || sequence < 0) throw new Error('DSS sequence must be a non-negative integer');
   const rawGroups = script.command_groups;
   if (!Array.isArray(rawGroups)) throw new Error('DSS command_groups must be an array');
@@ -426,6 +433,7 @@ function parseDssFrame(raw: JsonObject): DssFrame {
     assignmentId: String(raw.assignment_id ?? ''),
     assignmentGeneration: Number(raw.assignment_generation ?? 0),
     storyBlockId: uuid(raw.story_block_id ?? script.story_block_id, 'DSS story_block_id'),
+    episodeId: episodeId as number | undefined,
     groups,
   };
 }
@@ -539,6 +547,7 @@ export function createCommandProgressEvent(input: {
 }): JsonObject {
   return {
     type: 'renderer.event',
+    client_event_id: rendererEventId([input.streamId, input.assignmentId, input.assignmentGeneration, input.sequence, input.storyBlockId, input.groupId, 'command_progress', input.status, input.current, input.total]),
     event: 'command_progress',
     id: COMMAND_GROUP_PROGRESS_MESSAGE_ID,
     stream_id: input.streamId,
@@ -564,6 +573,7 @@ export function createGroupFinishedEvent(input: {
 }): JsonObject {
   return {
     type: 'renderer.event',
+    client_event_id: rendererEventId([input.streamId, input.assignmentId, input.assignmentGeneration, input.sequence, input.storyBlockId, input.groupId, 'group_finished']),
     event: 'completed',
     id: SCRIPT_STATUS_MESSAGE_ID,
     stream_id: input.streamId,
@@ -656,11 +666,15 @@ class ExternalRendererRun {
   private socket: WebSocket | null = null;
   private playout: PlayoutSession | null = null;
   private stopped = false;
+  private ending = false;
   private closing: Promise<void> | null = null;
   private clipPosition = 0;
   private readonly sceneContext: string[] = [];
   private heartbeat: NodeJS.Timeout | null = null;
+  private verdictWatch: NodeJS.Timeout | null = null;
   private readonly seenDss = new Set<string>();
+  private readonly unplayedDss = new Set<string>();
+  private readonly verdicts = new RendererEventVerdicts();
   private readonly abortController = new AbortController();
   private readonly shotPlanner: DssShotPlanner;
   private readonly scheduler: ShotScheduler<GeneratedShot>;
@@ -698,6 +712,7 @@ class ExternalRendererRun {
       clipsRendered: 0,
       hlsUrl: null,
       lastHeartbeatAt: null,
+      eventVerdicts: this.verdicts.status,
       failures: [],
     };
   }
@@ -718,11 +733,15 @@ class ExternalRendererRun {
     this.stopped = true;
     this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.verdictWatch) clearInterval(this.verdictWatch);
     this.heartbeat = null;
+    this.verdictWatch = null;
     this.closing = (async () => {
-      if (this.socket) await closeSocket(this.socket);
-      if (this.playout) await this.playoutManager.stop(this.playout.sessionId);
-      await this.scheduler.drain();
+      await Promise.all([
+        this.socket ? closeSocket(this.socket) : Promise.resolve(),
+        this.playout ? this.playoutManager.stop(this.playout.sessionId) : Promise.resolve(),
+        this.scheduler.drain(),
+      ]);
     })();
     return this.closing;
   }
@@ -753,6 +772,27 @@ class ExternalRendererRun {
     });
   }
 
+  private sendRendererEvent(event: JsonObject, frame: DssFrame): void {
+    send(this.socket!, this.verdicts.register(event, frame.episodeId));
+  }
+
+  private async acknowledgeVerdict(ack: VerdictAcknowledgement): Promise<void> {
+    const socket = this.socket!;
+    const signal = this.abortController.signal;
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); };
+      const onAbort = () => { cleanup(); reject(signal.reason); };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Renderer verdict ACK write timed out')); }, VERDICT_ACK_TIMEOUT_MS);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (socket.readyState !== WebSocket.OPEN) { cleanup(); reject(new Error('Renderer connection closed before verdict ACK')); return; }
+      socket.send(JSON.stringify(ack.message), error => { cleanup(); if (error) reject(error); else resolve(); });
+    });
+    signal.throwIfAborted();
+    this.verdicts.acknowledge(ack.message);
+    if (ack.failure) throw new Error(ack.failure);
+  }
+
   private async waitForPlayback(position: number): Promise<void> {
     for (;;) {
       if (this.stopped) throw new Error('renderer run stopped');
@@ -778,6 +818,7 @@ class ExternalRendererRun {
       : continuity === 'camera-anchors' ? this.anchorShots.get(key) : undefined;
     const handle = this.scheduler.add(shot.durationSeconds, async () => {
       this.assertCurrentAssignment(frame);
+      this.verdicts.assertHealthy();
       const previous = dependency ? await dependency.result : undefined;
       this.assertCurrentAssignment(frame);
       const continuityFrame = previous?.continuityFrame;
@@ -867,11 +908,12 @@ class ExternalRendererRun {
       const delay = frame.sequence === 0 ? 0 : plan.delaySeconds;
       if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
       this.assertCurrentAssignment(frame);
-      send(this.socket!, this.completedEvent(frame, group, seconds + delay));
+      this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay), frame);
       this.status.dssCommandsRendered += group.commands.length;
       completed.resolve();
     }
     this.status.firstDssAcknowledgedAt ??= new Date().toISOString();
+    this.unplayedDss.delete(`${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`);
   }
 
   private acceptFrame(frame: DssFrame): boolean {
@@ -887,13 +929,13 @@ class ExternalRendererRun {
     if (!this.acceptFrame(frame)) return;
     const groupsWithCommands = frame.groups.filter((group) => group.commands.length > 0);
     if (groupsWithCommands.length === 0) {
-      frame.groups.forEach((group) => send(this.socket!, this.completedEvent(frame, group, 0)));
+      frame.groups.forEach((group) => this.sendRendererEvent(this.completedEvent(frame, group, 0), frame));
       this.status.firstDssAcknowledgedAt ??= new Date().toISOString();
       return;
     }
     for (const group of frame.groups) {
       if (group.commands.length === 0 || frame.sequence === 0) {
-        send(this.socket!, this.completedEvent(frame, group, 0));
+        this.sendRendererEvent(this.completedEvent(frame, group, 0), frame);
         continue;
       }
       const planned = planGroupClips(frame, group, this.config.clipDurationSeconds, this.sceneContext);
@@ -904,14 +946,15 @@ class ExternalRendererRun {
           new Promise((resolve) => setTimeout(resolve, controlDuration * 1_000)), this.abortController.signal,
         );
         if (this.stopped) throw this.abortController.signal.reason;
-        send(this.socket!, this.completedEvent(frame, group, controlDuration));
+        this.sendRendererEvent(this.completedEvent(frame, group, controlDuration), frame);
         this.status.dssCommandsRendered += group.commands.length;
         continue;
       }
-      send(this.socket!, this.progressEvent(frame, group, 0, group.commands.length));
+      this.sendRendererEvent(this.progressEvent(frame, group, 0, group.commands.length), frame);
       let playedSeconds = 0;
       for (const clip of planned) {
         if (this.stopped) throw this.abortController.signal.reason;
+        this.verdicts.assertHealthy();
         const input = {
           prompt: clip.prompt,
           duration: clip.durationSeconds,
@@ -947,7 +990,7 @@ class ExternalRendererRun {
         await this.waitForPlayback(position);
         playedSeconds += clip.durationSeconds;
       }
-      send(this.socket!, this.completedEvent(frame, group, playedSeconds));
+      this.sendRendererEvent(this.completedEvent(frame, group, playedSeconds), frame);
       this.status.dssCommandsRendered += group.commands.length;
     }
     this.status.firstDssAcknowledgedAt ??= new Date().toISOString();
@@ -969,6 +1012,16 @@ class ExternalRendererRun {
       }
       if (observation.state === 'ended') {
         this.status.storyEndedAt = new Date().toISOString();
+        this.ending = true;
+        // Finish only already-received work under its existing generation/playout
+        // cancellation fences. A short verdict deadline must never truncate video.
+        while (this.unplayedDss.size > 0) await waitWithAbort(25, this.abortController.signal);
+        const deadline = Date.now() + NATURAL_COMPLETION_DRAIN_MS;
+        while (this.verdicts.status.pending > 0) {
+          if (Date.now() >= deadline) throw new Error(`Story ended with ${this.verdicts.status.pending} renderer verdicts pending`);
+          await waitWithAbort(25, this.abortController.signal);
+        }
+        this.abortController.signal.throwIfAborted();
         this.status.state = 'ended';
         await this.closeResources();
         return;
@@ -1065,6 +1118,10 @@ class ExternalRendererRun {
       }
       if (this.stopped) return;
       this.status.state = 'running';
+      this.verdictWatch = setInterval(() => {
+        try { this.verdicts.assertHealthy(); }
+        catch (error) { if (!this.stopped) this.fail(error); }
+      }, 1_000);
       void this.observeStoryLifecycle().catch((error) => {
         if (!this.stopped) this.fail(error);
       });
@@ -1081,15 +1138,28 @@ class ExternalRendererRun {
             this.status.lastHeartbeatAt = new Date().toISOString();
             continue;
           }
+          if (message.type === 'renderer.event.verdict') {
+            const ack = this.verdicts.receiveVerdict(message, this.assignmentKey);
+            if (ack) await this.acknowledgeVerdict(ack);
+            continue;
+          }
+          if (message.type === 'renderer.event.rejected') {
+            const failure = this.verdicts.receiveRejection(message);
+            if (failure) throw new Error(failure);
+            continue;
+          }
           if (message.script) {
+            if (this.ending) continue;
+            const frame = parseDssFrame(message);
             if (this.config.renderMode !== 'auto') {
               if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
-              const frame = parseDssFrame(message);
               if (!frame.assignmentId || !Number.isInteger(frame.assignmentGeneration) || frame.assignmentGeneration < 1) throw new Error('DSS assignment identity is required');
               const key = `${frame.assignmentId}:${frame.assignmentGeneration}`;
               if (this.assignmentKey && this.assignmentKey !== key) throw new Error('Renderer assignment changed; start a fresh run');
               this.assignmentKey = key;
             }
+            const dedupeKey = `${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`;
+            if (!this.seenDss.has(dedupeKey)) this.unplayedDss.add(dedupeKey);
             dssMessages.push(message);
           }
         }
@@ -1142,7 +1212,9 @@ class ExternalRendererRun {
         const message = await dssMessages.next(this.status.firstAssignmentAt ? 300_000 : 60_000, this.abortController.signal);
         if (message.type === 'websocket.closed') break;
         if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
-        await this.renderFrame(parseDssFrame(message));
+        const frame = parseDssFrame(message);
+        await this.renderFrame(frame);
+        this.unplayedDss.delete(`${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`);
       }
       await receiver;
     } catch (error) {
@@ -1232,6 +1304,10 @@ export class ExternalRendererRunManager {
 
   get(runId: string): ExternalRendererRunStatus | null {
     return this.runs.get(runId)?.status ?? null;
+  }
+
+  latest(): ExternalRendererRunStatus | null {
+    return [...this.runs.values()].at(-1)?.status ?? null;
   }
 
   async stop(runId: string): Promise<ExternalRendererRunStatus | null> {

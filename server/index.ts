@@ -1,13 +1,12 @@
 import 'dotenv/config';
 
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { extname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { ViteDevServer } from 'vite';
 
 import { allowOperatorRequest } from './access.js';
 import { serveMedia } from './media.js';
+import { servePublicViewer } from './public-viewer.js';
+import { viewerStatus } from './viewer-status.js';
+import { onboardingStatus } from '../scripts/onboarding.mjs';
 import { ExternalRendererRunManager } from './external-renderer.js';
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
 import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
@@ -17,10 +16,6 @@ import { handleNarrativeEngineApi } from './narrative-engine.js';
 import { PlayoutManager } from './playout.js';
 import { prepareReferenceAudioUrls } from './reference-audio.js';
 
-const isDevelopment = process.argv.includes('--dev');
-const appRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const distRoot = resolve(appRoot, 'dist');
-const hlsModulePath = join(appRoot, 'node_modules', 'hls.js', 'dist', 'hls.mjs');
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
@@ -64,11 +59,8 @@ function referenceAssetDataUrl(_assetKey: string): string {
 async function handleApi(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
   const requestUrl = new URL(request.url ?? '/', 'http://local');
   const pathname = requestUrl.pathname;
-  if (pathname === '/api/config' && request.method === 'GET') {
-    const configPath = join(appRoot, '.renderer', 'services.json');
-    const saved = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
-    const keys: Record<string, string> = { narrativeEngineUrl: 'NARRATIVE_ENGINE_URL', narrativeAuthoringUrl: 'NARRATIVE_AUTHORING_URL', realtimeGatewayUrl: 'REALTIME_GATEWAY_URL', chatBackendUrl: 'CHAT_BACKEND_URL', rendererBaseUrl: 'RENDERER_PLATFORM_URL' };
-    sendJson(response, 200, Object.fromEntries(Object.entries(keys).map(([key, env]) => [key, process.env[env] || saved[key] || ''])));
+  if (pathname === '/api/viewer-status' && request.method === 'GET') {
+    sendJson(response, 200, viewerStatus(onboardingStatus(), externalRendererRuns.latest()));
     return true;
   }
   if (pathname === '/api/health' && request.method === 'GET') {
@@ -262,59 +254,22 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
   return true;
 }
 
-const mimeTypes: Record<string, string> = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.jpg': 'image/jpeg',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.txt': 'text/plain; charset=utf-8',
-};
-
-function serveProduction(request: IncomingMessage, response: ServerResponse): void {
-  const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://local').pathname);
-  const requested = resolve(distRoot, `.${pathname}`);
-  const isSafe = requested === distRoot || requested.startsWith(`${distRoot}/`);
-  const filePath = isSafe && existsSync(requested) && statSync(requested).isFile()
-    ? requested
-    : join(distRoot, 'index.html');
-  response.writeHead(200, {
-    'Content-Type': mimeTypes[extname(filePath)] ?? 'application/octet-stream',
-  });
-  createReadStream(filePath).pipe(response);
-}
-
-let vite: ViteDevServer | null = null;
-
 const server = createServer(async (request, response) => {
   if (!allowOperatorRequest(request)) {
     sendJson(response, 403, { error: 'This is the private operator port. Use the local agent or authenticated private proxy.' });
     return;
   }
   try {
-  if (new URL(request.url ?? '/', 'http://local').pathname === '/vendor/hls.js') {
-    if (request.method !== 'GET') {
-      sendJson(response, 405, { error: 'method not allowed' });
-      return;
-    }
-    response.writeHead(200, {
-      'Content-Type': 'text/javascript; charset=utf-8',
-      'Cache-Control': isDevelopment ? 'no-store' : 'public, max-age=86400',
-    });
-    createReadStream(hlsModulePath).pipe(response);
+  if (new URL(request.url ?? '/', 'http://local').pathname === '/external-run.html' && request.method === 'GET') {
+    response.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+    response.end();
     return;
   }
   if (await handleNarrativeEngineApi(request, response)) return;
   if (await handleApi(request, response)) return;
-  if (vite) {
-    vite.middlewares(request, response, () => {
-      response.statusCode = 404;
-      response.end('Not found');
-    });
-    return;
-  }
-  serveProduction(request, response);
+  if (await servePublicViewer(request, response)) return;
+  response.writeHead(404);
+  response.end();
   } catch {
     if (!response.headersSent) sendJson(response, 500, { error: 'Renderer request failed' });
     else response.destroy();
@@ -325,16 +280,8 @@ const mediaServer = createServer((request, response) => {
   void serveMedia(request, response, playoutManager).catch(() => response.destroy());
 });
 
-if (isDevelopment) {
-  vite = await (await import('vite')).createServer({
-    root: appRoot,
-    server: { middlewareMode: true, hmr: { server } },
-    appType: 'spa',
-  });
-}
-
 server.listen(port, process.env.HOST ?? '127.0.0.1', () => {
-  console.log(`H3 Director listening at http://localhost:${port}`);
+  console.log(`Pickford renderer listening at http://localhost:${port}`);
 });
 
 mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), process.env.MEDIA_HOST ?? '127.0.0.1');
@@ -346,7 +293,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       server.closeAllConnections();
       mediaServer.close();
       mediaServer.closeAllConnections();
-      void vite?.close();
       setTimeout(() => process.exit(0), 3000).unref();
     });
   });

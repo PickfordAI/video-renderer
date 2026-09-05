@@ -1,0 +1,18 @@
+import { describe, expect, it } from 'vitest';
+import { viewerStatus } from './viewer-status.js';
+import type { ExternalRendererRunStatus } from './external-renderer.js';
+
+describe('local viewer status', () => {
+  it('exposes only readiness and playback, never runtime identities or diagnostics', () => {
+    const run = { state: 'running', hlsUrl: 'http://localhost:4174/hls/example/index.m3u8', rendererId: 'private-id', failures: ['private-diagnostic'], clientSecret: 'private-secret' } as unknown as ExternalRendererRunStatus;
+    const result = viewerStatus({ ready: true, missing: [] }, run);
+    expect(result.story).toEqual({ state: 'running', hlsUrl: run.hlsUrl });
+    expect(JSON.stringify(result)).not.toContain('private');
+  });
+  it('clears playback after stop/failure and supports an unconfigured worker', () => {
+    expect(viewerStatus({ ready: false, missing: ['storyAccess'] }, null).story).toBeNull();
+    for (const state of ['stopped', 'failed'] as const) {
+      expect(viewerStatus({ ready: true, missing: [] }, { state, hlsUrl: 'https://story.example/old.m3u8' } as ExternalRendererRunStatus).story?.hlsUrl).toBeNull();
+    }
+  });
+});

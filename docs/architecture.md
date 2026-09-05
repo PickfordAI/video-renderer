@@ -18,18 +18,22 @@ handling, and correlated command completion. It validates the separate story and
 channels. The setup user token is used by the provisioning/stop proxy only; renderer runtime
 uses the installation credential. Login tier is derived from the kernel environment.
 
-The configured-provider adapter compiles supported DSS commands into clips and waits for playback
-before acknowledging their groups. Explicit fal modes use the stateful shot planner and bounded
-generation pipeline described below. Nonvisual commands become a timed transition when necessary.
-Both paths preserve story order but do not reproduce a 3D renderer's exact animation or timing.
-The bridge does not import local CVD/EVD exports into the kernel.
+The configured-provider adapter combines each DSS frame into one clip. Explicit fal modes compile
+ordered groups into immutable shot plans, carrying staging across payloads. Their shared scheduler
+can generate later received DSS while earlier clips play. Group acknowledgements follow actual
+playback; generation completion does not advance the kernel cursor. Supported nonvisual controls
+use timing approximations. The adapter does not reproduce a 3D renderer's exact animation or overlays.
 
-`src/lib/dss.ts` is the studio's richer shot planner, used by its legacy room/SSE flow. The studio
-can render up to three clips concurrently, while `src/lib/render-pipeline.ts` preserves story
-positions. The studio's optional character reference mode supports user-supplied HTTPS images
-and voice/exact dialogue audio. The bridge's explicit modes accept their own shot-planner reference
-configuration. These are intentionally separate
-protocol adapters; changing one does not prove the other works.
+The sole frontend is `viewer/`, served on both the local operator listener and public media
+listener. The old React room/SSE studio and manual credential form are removed. Renderer runtime
+uses the installation-credential bridge only. The remaining private generation/provisioning API
+helpers are available for diagnostics; they are not a second user setup flow.
+
+`scripts/onboarding.mjs` resolves a registered handoff path, STORY_HANDOFF_PATH, or the STORY_*
+environment bundle for the CLI. `setup` persists only the file path and discovered service URLs.
+The browser receives a fixed allowlist of readiness flags, story state and HLS URL. It never
+receives the handoff, provider keys, setup token, renderer credentials, or backend diagnostics.
+Start/stop stays with the agent; opening the player never starts paid generation.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
 hold frames while generation catches up. MediaMTX exposes fMP4 HLS internally. FFmpeg progress
@@ -47,26 +51,41 @@ Operator API (local only, or bearer-authenticated private Fly/SSH proxy):
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Provider model names and whether a fal key is configured; never the key |
-| `GET /api/config` | Allowlisted service URLs for local studio setup |
+| `GET /api/viewer-status` | Sanitized setup readiness and current playback; private listener only |
 | `POST /api/narrative/provision-external-story` | Create private room, inactive story, and resolve distinct channels |
 | `POST /api/external-renderer/runs` | Start one bridge worker run; returns 202 while connecting |
 | `GET /api/external-renderer/runs/:id` | Run progress/diagnostics |
 | `DELETE /api/external-renderer/runs/:id` | Stop worker activity and playout; CLI separately stops the kernel story |
 | `POST /api/narrative/stop-show` | Cancel kernel story and leave room using a valid user session |
-| `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Local studio adapter routes |
+| `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Private generation/protocol diagnostics |
 
 Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healthz`, and `GET`/`HEAD /hls/h3-:session/:file`. Other routes/methods
-return 404. Static files are served only from dist/viewer; neither the studio nor the server
+return 404. Static files are served only from dist/viewer; neither agent configuration nor server
 source is accessible. Fly/Render derive the public origin from platform metadata; VMs use
 PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen host.
 
 ## Compatibility and recovery
 
-Reviewed against Story Kernel PR [#6681](https://github.com/PickfordAI/unrendered/pull/6681),
-commit `6f0689648228c46f6880349f9e0c888e3076c77c` for the initial integration. The protocol is still
-evolving; this historical baseline does not identify the currently deployed kernel. Rerun real end-to-end acceptance when
-upgrading it. Offline tests cover shape, ordering, retries, and access boundaries, not a complete
-kernel deployment or provider acceptance.
+The renderer-start and event-verdict contracts were inspected at StoryKernel commit
+`8ca50d8fcb6bfddc0a9d9db1fcffc54c72f0d6ed`. This is contract evidence, not proof of a complete
+live story. The protocol is still evolving; verify login, start, assignment, DSS, media, verdicts
+and Stop when upgrading. Offline fixtures do not establish provider or deployed-kernel acceptance.
+
+Completion events carry deterministic `client_event_id` values, distinct for each logical group
+and progress event. Authoritative verdicts are correlated to the renderer, stream, assignment lease,
+generation and sequence before their exact verdict/event IDs are acknowledged. The private run
+status records pending, acknowledged and refused verdicts. A transport rejection has no verdict ID
+and is recorded as a failure without fabricating an acknowledgement.
+Missing verdicts are bounded during active playback as well: at most 128 pending events and a
+30-second pending-verdict deadline. The bridge stops on a missing return path before continuing
+to submit further generation.
+
+On natural completion, the bridge stops accepting new DSS, finishes already accepted generation
+and playback, then waits up to five seconds for pending verdict acknowledgements to be written.
+Missing verdicts are a reported failure, so an older kernel without verdict delivery cannot pass
+this completion check. User Stop still cancels local work immediately; the CLI separately requests
+kernel Stop and keeps recovery state if either cleanup step fails. Socket closure alone does not
+prove that the kernel released its assignment.
 
 There is one active agent run per worker. Run records, queues, and media are ephemeral. Automatic
 resume after a process crash is not implemented; stale kernel sessions must be stopped and a new
@@ -75,20 +94,14 @@ The CLI saves provisioned identities before renderer start so ordinary failed st
 cleaned up. If provisioning itself fails partway, inspect/reconcile the created room through the
 kernel onboarding flow before retrying. No automatic synthetic audience traffic is generated.
 
-The integrated studio bridge additionally supports direct MiniMax and local/test routing. It keeps
-setup context without video jobs, approximates observed UE controls by timing, and acknowledges
-ordered dialogue groups after playout. Authoritative story-status polling distinguishes ended and
-failed runs where the caller provides the status origin and setup token. CLI and studio flows remain
-separate acceptance surfaces; the integration merge has offline validation only.
-
 
 ## Explicit fal continuity modes
 
-`renderMode=auto` preserves the configured direct MiniMax/fal adapter. Explicit
+`rendererConfig.model=auto` preserves the configured direct MiniMax/fal adapter. Explicit
 `fal-turbo-i2v` and `fal-max-ref2v` require a fal credential even when a direct MiniMax key is
 present; failures never switch providers. Run settings accept an HTTPS `initialImageUrl`,
-`shotPlanner` reference/style settings, `generationConcurrency` (default 2, at most 8), and
-`maxBufferedSeconds` (default 30, at most 120).
+`shotPlanner` reference/style settings, `rendererConfig.concurrency` (default 2, at most 8), and
+`rendererConfig.maxBufferedSeconds` (default 30, at most 120).
 
 New modes compile each accepted DSS frame in order into immutable shot/group plans before
 submitting its video jobs. Turbo image-to-video requires an initial image and chains each scene's
@@ -134,6 +147,8 @@ distinguishes exact dialogue audio from a generic voice sample. Dedicated style 
 anchor visual style; character portraits remain identity references. Camera cuts hold established
 blocking unless an action changes it, while Turbo's supplied frame retains its framing. Repeated
 character declarations update carried state; they are not assumed to replace the complete cast.
+The kernel's in-place `talking` animation retains the camera anchor. Position-changing and unknown
+animations still invalidate anchors conservatively.
 
 The private operator `POST /api/video-frame` extracts first/last continuity frames. The public
 viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded
@@ -168,3 +183,20 @@ queues, camera/chain dependencies, ordered media enqueue, and playback acknowled
 with different transport or playout can reuse the compiler and scheduler while adapting that
 layer. Preserve actual-playback budget release, timing barriers, and cancellation when porting;
 generation completion alone is insufficient to acknowledge DSS.
+
+
+### Canonical references and derived images
+
+The intended upstream boundary is for StoryKernel to deliver the story's approved character,
+empty-set and style references with stable entity identities and asset versions. That delivery
+contract is not implemented by this renderer or the offline DSS-renderer experiment; today the
+private handoff supplies `shotPlanner` images. Avoid treating a local reference picker as the
+canonical store for every run.
+
+The compiler selects identity pictures for the shot's visible characters while retaining off-screen
+state for later shots. Tight shots omit the listener's portrait. Set and style references remain
+separate from character identity. Derived camera anchors and last-frame continuity belong to the
+renderer. A future Turbo opening-frame composition should use the relevant canonical set/cast and
+be cached separately; it must not overwrite those source assets. Refreshable references or cross-run
+caches would also need upstream asset versions in their cache keys. Neither automatic opening-frame
+generation nor a new Kernel asset wire format is introduced here.

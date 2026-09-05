@@ -76,6 +76,52 @@ describe('DSS shot planning', () => {
     expect(follow.prompt).toContain('Hard cut into this camera setup');
   });
 
+  it('preserves camera anchors across StoryKernel talking beats while keeping real movement distinct', () => {
+    const planner = new DssShotPlanner({ initialImageUrl: 'https://assets.example/lobby.png' });
+    // Sanitized structure from captured Story12: every beat restores the set and
+    // cast, then emits Talk + Look + the in-place `talking` animation together.
+    const capturedBeat = (sequence: number, character: string, respondent: string) => {
+      const groups = [
+        [command('enable set', { set: 'hotel lobby' })],
+        [command('show debug'), command('set fps'),
+          command('add character', { character: 'marcus', name: 'Marcus Kent', point: { mark: 'kent', zone: 'lobby' } }),
+          command('add character', { character: 'song', name: 'Lily Song', point: { mark: 'song', zone: 'lobby' } })],
+        [command('fade', { duration: 2 })],
+        [command('talk', { character, respondent, camera_shot: 'Character_Medium', tone: 'determined',
+          dialogue: '[measured] Ready. [firm] Let us begin.', audio_duration: 2.0375510204081633, audio: 'https://assets.example/dialogue.mp3' }),
+          command('look', { character, target: { type: 'Character', name: respondent, bias: 'eyes' } }),
+          command('play animation', { character, animation: 'talking' })],
+      ];
+      return groups.flatMap((commands, index) => planner.planGroup(commands.map(value => ({ ...value, version: 1, blocking: true })), `sequence-${sequence}-group-${index}`, 'story12-block').shots);
+    };
+    const first = capturedBeat(1, 'Marcus Kent', 'Lily Song')[0];
+    const reverse = capturedBeat(2, 'Lily Song', 'Marcus Kent')[0];
+    const returning = capturedBeat(3, 'Marcus Kent', 'Lily Song')[0];
+    expect(returning.setupKey).toBe(first.setupKey);
+    expect(reverse.setupKey).not.toBe(first.setupKey);
+    expect([reverse.continuityKey, returning.continuityKey]).toEqual([first.continuityKey, first.continuityKey]);
+    expect([first.hasMovement, reverse.hasMovement, returning.hasMovement]).toEqual([false, false, false]);
+    expect(returning.prompt).toContain('Marcus Kent performs talking');
+    const moved = planner.planGroup([
+      command('character move to', { character: 'Marcus Kent', location: { name: 'reception' } }),
+      command('talk', { character: 'Marcus Kent', dialogue: 'Over here.', camera_shot: 'Character_Medium' }),
+      command('play animation', { character: 'Marcus Kent', animation: 'talking' }),
+    ], 'moved', 'story12-block').shots[0];
+    expect(moved.setupKey).toBe(first.setupKey);
+    expect(moved.continuityKey).not.toBe(returning.continuityKey);
+    expect(moved.hasMovement).toBe(true);
+  });
+
+  it.each(['walking', 'unrecognized gesture'])('invalidates anchors for animation %s with unknown staging effects', animation => {
+    const planner = new DssShotPlanner(configured);
+    setup(planner);
+    const before = planner.planGroup([talk()], 'before-animation', 'block').shots[0];
+    const after = planner.planGroup([command('play animation', { character: 'Maya', animation }), talk()], 'animation', 'block').shots[0];
+    expect(after.setupKey).toBe(before.setupKey);
+    expect(after.continuityKey).not.toBe(before.continuityKey);
+    expect(after.hasMovement).toBe(true);
+  });
+
   it('invalidates anchors on cast, costume, set and lighting changes', () => {
     const planner = new DssShotPlanner(configured);
     setup(planner);
@@ -107,8 +153,9 @@ describe('DSS shot planning', () => {
   it('uses stable canonical reference slots and the supplied art style without forcing live action', () => {
     const planner = new DssShotPlanner({ ...configured, aliases: { hero: 'protagonist', protagonist: 'lead' } });
     setup(planner);
-    const first = planner.planGroup([talk('hero')], 'a', 'block').shots[0];
-    const second = planner.planGroup([talk('partner')], 'b', 'block').shots[0];
+    const wideTalk = (character: string) => command('talk', { character, dialogue: 'Stay here.', camera_shot: 'Character_Full' });
+    const first = planner.planGroup([wideTalk('hero')], 'a', 'block').shots[0];
+    const second = planner.planGroup([wideTalk('partner')], 'b', 'block').shots[0];
     expect(first.speaker).toBe('Maya');
     expect(first.referenceImageUrls).toEqual(second.referenceImageUrls);
     expect(first.imageReferences.map((entry) => entry.label)).toEqual(['Image 1', 'Image 2', 'Image 3', 'Image 4']);
@@ -191,13 +238,53 @@ describe('DSS shot planning', () => {
     expect(reaction.prompt).not.toContain('Keep the camera on Maya');
   });
 
+  it('selects close-up portraits by visibility while preserving cast for a wide view and reverse shot', () => {
+    const planner = new DssShotPlanner(configured);
+    setup(planner);
+    const before = planner.state;
+    const tight = planner.planGroup([
+      talk('lead'), command('look', { character: 'lead', target: { name: 'partner', bias: 'eyes' } }),
+    ], 'speaker-closeup', 'block').shots[0];
+    expect(tight.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'set']);
+    expect(tight.referenceImageUrls).not.toContain('https://assets.example/theo.png');
+    expect(tight.prompt).toContain('Maya has the character design in Image 2');
+    expect(tight.prompt).not.toContain('Theo has the character design in');
+    expect(tight.prompt).toContain('Theo is off-screen');
+    expect(tight.resultingState.characters.Theo).toEqual(before.characters.Theo);
+    const wide = planner.planGroup([command('talk', {
+      character: 'Maya', respondent: 'Theo', dialogue: 'Stay here.', camera_shot: 'Character_Full',
+    })], 'wide-view', 'block').shots[0];
+    expect(wide.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'Theo', 'set']);
+    expect(wide.prompt).toContain('Theo has the character design in Image 3');
+    const reverse = planner.planGroup([talk('partner')], 'reverse-closeup', 'block').shots[0];
+    expect(reverse.imageReferences.map(reference => reference.name)).toEqual(['style', 'Theo', 'set']);
+    expect(reverse.prompt).toContain('Theo has the character design in Image 2');
+    expect(reverse.referenceAudioUrls).toEqual([]);
+    expect(reverse.resultingState.characters.Maya.mark).toBe(before.characters.Maya.mark);
+    const reaction = planner.planGroup([
+      command('character camera', { character: 'Theo', shot: 'Character_CloseUp' }),
+      command('talk', { character: 'Maya', respondent: 'Theo', dialogue: 'Stay here.' }),
+    ], 'listener-reaction', 'block').shots[0];
+    expect(reaction.imageReferences.map(reference => reference.name)).toEqual(['style', 'Theo', 'set']);
+    expect(reaction.referenceAudioUrls).toEqual(['https://assets.example/maya.wav']);
+    expect(reaction.prompt).toContain('camera holds on Theo listening silently');
+    for (const shot of [tight, wide, reverse, reaction]) {
+      for (const match of shot.prompt.matchAll(/Image (\d+)/g)) expect(shot.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
+      for (const match of shot.prompt.matchAll(/Audio (\d+)/g)) expect(shot.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
+    }
+    const establishing = planner.planGroup([
+      command('still shot', { 'shot name': 'Establishing wide' }), command('play animation', { character: 'Maya', animation: 'talking' }),
+    ], 'establishing', 'block').shots[0];
+    expect(establishing.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'Theo', 'set']);
+  });
+
   it('uses only a neutral style or set anchor for global style, never a character portrait fallback', () => {
     const explicit = new DssShotPlanner(configured);
     setup(explicit);
     expect(explicit.planGroup([talk()], 'style', 'block').shots[0].prompt).toContain('Use Image 1 for the overall rendering style');
     const setOnly = new DssShotPlanner({ ...configured, styleImageUrl: undefined });
     setup(setOnly);
-    expect(setOnly.planGroup([talk()], 'set-style', 'block').shots[0].prompt).toContain('Use Image 3 for the overall rendering style');
+    expect(setOnly.planGroup([talk()], 'set-style', 'block').shots[0].prompt).toContain('Use Image 2 for the overall rendering style');
     const portraitsOnly = new DssShotPlanner({ characters: configured.characters });
     setup(portraitsOnly);
     const portraitShot = portraitsOnly.planGroup([talk()], 'portraits', 'block').shots[0];
@@ -217,6 +304,7 @@ describe('DSS shot planning', () => {
     expect(pov.prompt).not.toContain('Theo is off-screen');
     expect(pov.prompt).not.toContain('Keep the camera on Maya');
     expect(pov.prompt).not.toContain('Maya speaks from off-screen');
+    expect(pov.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'Theo', 'set']);
   });
 
   it('uses authoritative audio duration and never silently truncates long dialogue or repeats its audio', () => {
@@ -253,7 +341,7 @@ describe('DSS shot planning', () => {
     expect(sample.prompt).not.toContain('exact spoken performance');
     const crowded = new DssShotPlanner({ characters: Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`Person${i}`, { imageUrl: `https://assets.example/${i}.png` }])) });
     crowded.planGroup(Array.from({ length: 13 }, (_, i) => command('add character', { name: `Person${i}` })), 'cast', 'block');
-    expect(() => crowded.planGroup([talk('Person0')], 'crowd', 'block')).toThrow('more than 12');
+    expect(() => crowded.planGroup([command('talk', { character: 'Person0', dialogue: 'Hello everyone.', camera_shot: 'Character_Full' })], 'crowd', 'block')).toThrow('more than 12');
     const voices = new DssShotPlanner({ characters: { Maya: { voice: { url: 'https://assets.example/m.wav', durationSeconds: 8 } }, Theo: { voice: { url: 'https://assets.example/t.wav', durationSeconds: 8 } } } });
     setup(voices);
     expect(voices.planGroup([talk()], 'voices', 'block').shots[0].referenceAudioUrls).toEqual(['https://assets.example/m.wav']);

@@ -35,7 +35,7 @@ describe('combined public viewer and stream listener', () => {
       const script = await fetch(`${base}/assets/player.js`);
       expect(script.headers.get('content-type')).toContain('text/javascript');
       expect(await script.text()).toContain('public player');
-      for (const route of ['/api/health', '/api/generate', '/external-run.html', '/.env', '/server/index.ts']) expect((await fetch(base + route)).status).toBe(404);
+      for (const route of ['/api/health', '/api/viewer-status', '/api/generate', '/external-run.html', '/.env', '/server/index.ts']) expect((await fetch(base + route)).status).toBe(404);
       expect((await fetch(base, { method: 'POST' })).status).toBe(404);
       expect((await fetch(base + '/healthz')).status).toBe(200);
     } finally {

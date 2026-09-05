@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server/index.ts --dev",
-    "build": "tsc -p tsconfig.app.json --noEmit && vite build && tsc -p tsconfig.server.build.json && npm run build:viewer && node scripts/copy-viewer.mjs",
+    "dev": "npm run build:viewer && node scripts/copy-viewer.mjs && tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.server.build.json && npm run build:viewer && node scripts/copy-viewer.mjs",
     "start": "node server-dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
     "story": "node scripts/story.mjs",
@@ -24,19 +24,14 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "hls.js": "^1.6.16",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
-    "@types/react": "^19.1.6",
-    "@types/react-dom": "^19.1.6",
     "@types/ws": "^8.18.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
-    "@vitejs/plugin-react": "^4.3.4",
     "vite": "^6.1.0"
   },
   "description": "Standalone DSS story renderer with fal video generation and a shareable HLS viewer",

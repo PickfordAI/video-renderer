@@ -5,7 +5,6 @@ retain their own licenses and copyright notices. The lockfile pins exact JavaScr
 
 | Component | License | Source |
 |---|---|---|
-| React / React DOM | MIT | https://github.com/facebook/react |
 | hls.js | Apache-2.0 | https://github.com/video-dev/hls.js |
 | ws | MIT | https://github.com/websockets/ws |
 | dotenv | BSD-2-Clause | https://github.com/motdotla/dotenv |

@@ -20,7 +20,8 @@ second hosting account for the viewer. The kernel remains an earlier onboarding 
 
 Have the earlier kernel onboarding step write a JSON file with mode `0600`, outside tracked files.
 Start with [examples/handoff.example.json](../examples/handoff.example.json). It contains dummy
-identifiers and will not authenticate. Pass its path, never the credentials, on the command line.
+identifiers and will not authenticate. Register its path once with `npm run setup -- --handoff /absolute/path/to/handoff.json`, or set
+`STORY_HANDOFF_PATH`. Never pass credentials on the command line.
 
 | Field | Source |
 |---|---|
@@ -33,38 +34,10 @@ identifiers and will not authenticate. Pass its path, never the credentials, on 
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
-| `rendererConfig.model` | `auto` (default), `fal-turbo-i2v`, or `fal-max-ref2v`; explicit fal models require `FAL_KEY` even with a MiniMax key |
-| `rendererConfig.continuity` | `none`, `last-frame-chain`, or `camera-anchors`; supported combinations are listed below |
-| `initialImageUrl` | Public HTTPS scene image, required for Turbo; Max can use this or `shotPlanner` image references |
-| `rendererConfig.concurrency` | Integer 1–8, default 2; Turbo remains sequential because of last-frame chaining |
-| `rendererConfig.maxBufferedSeconds` | Integer 5–120, default 30; bounds reserved unplayed video work, including pending and in-flight jobs, not startup-ready footage |
-| `shotPlanner` | Named `characters`/`sets`, optional `styleImageUrl`, `styleDescription`, `initialImageUrl`, `markNames`, `useDialogueAudioReferences`, and `defaultDurationSeconds` |
+| `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–8), and `maxBufferedSeconds` (5–120); see README generation choices |
+| `initialImageUrl` | Authorized HTTPS starting frame, required for Turbo i2v |
+| `shotPlanner` | Named cast/set references, style, readable marks, and optional 2–15-second voice samples |
 
-Model and continuity are separate choices. Current support is `auto` + `none`, Turbo +
-`last-frame-chain`, and Max + either `none` or `camera-anchors`. Unsupported combinations fail
-before provisioning. Concurrency is a ceiling; last-frame dependencies currently permit one job.
-Camera anchors require the connected bridge. For manual/imported studio Max rendering, select
-`none`; do not imply that a selected anchor strategy will run there.
-
-Legacy top-level `renderMode`, `generationConcurrency`, and `maxBufferedSeconds` are still accepted.
-Their strategy defaults preserve previous behavior: `auto` → `none`, Turbo → `last-frame-chain`,
-Max → `camera-anchors`. Explicit `rendererConfig` fields override matching legacy fields. New
-handoffs should use the grouped object shown in the example file.
-
-Each `shotPlanner.characters` entry can supply `name`, `aliases`, `description`, `imageUrl`, and
-`voice: { "url": "https://…/voice.mp3", "durationSeconds": 4 }`. Voice samples require a known
-2–15-second duration; exact usable DSS dialogue audio takes precedence. Set entries contain
-`description` and/or `imageUrl`. Use media owned or authorized by the user. Turbo uses only the
-initial and chained scene images; do not promise voice conditioning, ElevenLabs mixing, or lip-sync.
-Selecting camera anchors with Max ref2vid maintains camera setup references for independent parallel shots, with ordered playback.
-Connected explicit fal modes prepare later received DSS while earlier clips play. Keep enough
-work budget for the chosen concurrency: eight eight-second clips need at least 64 seconds, before
-considering other pending work. This is a planning calculation, not authorization to submit a batch.
-Playback starts with one ready clip so a short or acknowledgement-gated story cannot deadlock.
-The kernel must actually deliver future DSS; never acknowledge unplayed work to obtain lookahead.
-The configured-provider (`auto`) adapter remains serial. Validate the chosen model and strategy
-with a bounded authorized live run before claiming sustained realtime rendering or voice quality.
-Changing the handoff only affects the next run; stop before changing active run settings.
 
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.
 It must contain `storyId`, `roomId`, `roomShortlink`, `storyMessageChannelId`, and
@@ -91,23 +64,64 @@ Never scrape arbitrary container environments, databases, or another user's brow
 ## Local workflow
 
 1. Clone the repository. Select Node 22+ and run `npm ci`.
-2. Obtain `MINIMAX_API_KEY` (direct) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
+2. Obtain `MINIMAX_API_KEY` (configured direct adapter) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
    environment or `.env` with mode `0600`. Never use a `VITE_` prefix for secrets.
 3. Start the existing Story Kernel stack. Run `npm run setup`. It reads only Compose labels and
    published ports, not container environment variables. If multiple stacks exist, select the
    one matching the onboarding session with `--project`.
 4. Run `docker compose up -d media-relay`, `npm run build`, and `npm start` as a managed persistent
    process. Read startup output for a port conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
-5. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
+5. Register the onboarding handoff with `npm run setup -- --handoff /absolute/path/to/handoff.json`
+   (or configure the environment as described below). Open `http://localhost:4173`. It shows only
+   setup status and playback; do not send the user to an installation form. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
    protocol compatibility. Resolve errors; do not hide a failed check.
-6. Run `npm run story -- start --handoff /absolute/path/to/handoff.json` once. This submits paid
+6. Run `npm run story -- start` once. This submits paid
    video jobs when DSS arrives, so the user must have requested rendering.
 7. Poll `npm run story -- status`. Return the watch URL once the first clip is actually playable,
    or report a startup failure. `connecting` is not success. A manifest HTTP 200 plus playable
    video is stronger evidence than `clipsRendered` alone.
-8. On stop: `npm run story -- stop --handoff /absolute/path/to/handoff.json`, then end the worker
+8. On stop: `npm run story -- stop`, then end the worker
    and relay if no longer needed. Stop needs a valid setup user session; refresh through onboarding
    when expired. Failed cleanup must be reported and retried, not silently ignored.
+
+## Environment and persistent configuration
+
+The agent, never the browser user, supplies these values in its process environment or a private
+`.env` file with mode `0600`:
+
+| Variable | Handoff field / source |
+|---|---|
+| `MINIMAX_API_KEY`, `FAL_KEY` | Provider credentials; explicit fal models require FAL_KEY |
+| `STORY_HANDOFF_PATH` | Private onboarding handoff path; recommended alternative to individual variables |
+| `STORY_EVD_ID` | `evdId` |
+| `STORY_SETUP_TOKEN` | `setupToken`, required for stop even with a pre-provisioned story |
+| `STORY_RENDERER_ID` | `rendererId` |
+| `STORY_CREDENTIAL_ID` | `credentialId` |
+| `STORY_CLIENT_SECRET` | `clientSecret` |
+| `STORY_ENVIRONMENT`, `STORY_TYPE`, `STORY_ROOM_NAME` | `environment`, `storyType`, `roomName` |
+| `STORY_RESOLUTION`, `STORY_CLIP_SECONDS`, `STORY_RENDERER_VERSION` | Optional rendering settings |
+| `STORY_CONFIG_JSON`, `STORY_JSON` | Optional JSON `storyConfig` and inactive pre-provisioned `story` |
+| `STORY_RENDERER_CONFIG_JSON` | JSON `rendererConfig`; separate from kernel story configuration |
+| `STORY_SHOT_PLANNER_JSON` | JSON `shotPlanner` reference and prompt settings |
+| `STORY_INITIAL_IMAGE_URL` | `initialImageUrl`, required for Turbo |
+
+
+Service variables in `.env.example` override local Docker discovery. Hosted commands accept those
+same HTTPS service variables. Never copy example IDs as if they were valid identities.
+
+Configuration precedence: explicit `--handoff`, then `STORY_HANDOFF_PATH`, then the environment
+identity bundle when `STORY_EVD_ID` is present, then the registered handoff path. A handoff is one
+identity bundle: missing fields in a selected file are not filled from another credential source.
+A bad selected file fails closed. The agent should use one source and clear stale overrides.
+`npm run setup` validates service discovery; its sanitized `onboarding` result reports missing
+account configuration. `npm run doctor` also checks story access and reachability. No browser
+form is needed. After configuration, `story -- start`, `status`, and `stop` reuse it.
+
+Restart the local worker after `.env` changes. On hosted deployments, keep story setup credentials
+and handoff registration on the agent's machine; the CLI sends only runtime credentials to the
+worker. Host preparation/deployment scripts transfer fal/operator keys, not setup user tokens.
+The local player polls `/api/viewer-status` for readiness and playback only; it cannot start paid
+jobs or stop a story. The agent owns start/stop and reports any cleanup failure.
 
 ## Hosted workflow
 
@@ -125,7 +139,7 @@ onboarding before continuing.
 Open the selected provider's private connection with `npm run hosted:connect`. Then:
 
 ```sh
-npm run story -- start --hosted --handoff /absolute/path/to/handoff.json
+npm run story -- start --hosted
 npm run story -- status --hosted
 npm run share -- --hosted
 ```
@@ -150,3 +164,22 @@ application use the user's authenticated cloud tools; these are not performed by
 - There is no automatic audience-message generator, notification, or background chat sender.
 - Credentials cannot be fabricated. Missing account access is a real onboarding dependency;
   ask only for that missing connection, not for IP addresses or manually assembled URLs.
+
+
+## Generation and evidence
+
+Keep renderer configuration outside `storyConfig`. Model endpoints and scheduling policy are
+independent; supported combinations and reference requirements are in README. Validate them before
+provisioning a story. Exact usable DSS dialogue audio takes precedence over a fallback voice sample.
+Turbo has no voice-reference support. Never copy private experimental assets into the repository.
+
+Explicit fal modes share a bounded scheduler across received DSS payloads. Preserve actual-playback
+Group_Finished timing, generation-budget release, cancellation, and assignment fencing. Do not send
+early acknowledgements to obtain more lookahead. Eight eight-second jobs need at least 64 seconds of
+work budget; that calculation does not authorize generation. Start with conservative limits.
+
+A captured-DSS replay with a fake provider can verify compilation, scheduling and local media. It
+cannot prove current kernel story creation, remote model latency, appearance consistency, or voice
+quality. A MiniMax replay URL does not fence explicit fal modes: those use FAL_QUEUE_BASE_URL. Keep
+all provider calls local and use dummy credentials for no-cost fixtures. Report live login, first DSS,
+playable media, verdict acknowledgements and kernel Stop as separate boundaries.

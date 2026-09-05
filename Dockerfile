@@ -13,6 +13,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --prefer-offline
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server-dist ./server-dist
+COPY scripts/*.mjs ./scripts/
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 EXPOSE 4173
 CMD ["node", "server-dist/index.js"]
@@ -20,7 +21,6 @@ CMD ["node", "server-dist/index.js"]
 FROM runtime AS hosted
 COPY --from=bluenviron/mediamtx:1.12.2 /mediamtx /usr/local/bin/mediamtx
 COPY media-relay/mediamtx.yml /app/media-relay/mediamtx.yml
-COPY scripts/hosted.mjs /app/scripts/hosted.mjs
 RUN mkdir -p /home/node/.ssh && chmod 0700 /home/node/.ssh && chown node:node /home/node/.ssh
 USER node
 EXPOSE 4174
