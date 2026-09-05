@@ -22,6 +22,9 @@ const setAssetId = '44444444-4444-4444-8444-444444444444';
 const mayaAssetId = '55555555-5555-4555-8555-555555555555';
 const theoAssetId = '66666666-6666-4666-8666-666666666666';
 const inezAssetId = '77777777-7777-4777-8777-777777777777';
+const mayaName = 'Maya';
+const theoName = 'Theo';
+const inezName = 'Inéz 李';
 
 const positions = {
   [mayaId]: 'Maya stands camera-left beside the rain-streaked window.',
@@ -37,9 +40,10 @@ function sceneContext(signature: string): Json {
       image_url: `https://assets.example/hotel.png?signature=${signature}`,
     },
     character_images: [
-      { asset_id: mayaAssetId, character_id: mayaId, image_url: `https://assets.example/maya.png?signature=${signature}` },
-      { asset_id: theoAssetId, character_id: theoId, image_url: `https://assets.example/theo.png?signature=${signature}` },
-      { asset_id: inezAssetId, character_id: inezId, image_url: `https://assets.example/inez.png?signature=${signature}` },
+      // Deliberately unrelated to talk-command order: names, not position, bind identities.
+      { asset_id: inezAssetId, character_id: inezId, character_name: inezName, image_url: `https://assets.example/inez.png?signature=${signature}` },
+      { asset_id: theoAssetId, character_id: theoId, character_name: theoName, image_url: `https://assets.example/theo.png?signature=${signature}` },
+      { asset_id: mayaAssetId, character_id: mayaId, character_name: mayaName, image_url: `https://assets.example/maya.png?signature=${signature}` },
     ],
     character_positions: { ...positions },
   };
@@ -47,6 +51,14 @@ function sceneContext(signature: string): Json {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function expectNamedImage(prompt: string, characterName: string, imageNumber: number): void {
+  const escapedName = characterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const imageLabel = `Image\\s+${imageNumber}\\b`;
+  expect(prompt).toMatch(new RegExp(
+    `(?:${escapedName}[\\s\\S]{0,240}${imageLabel}|${imageLabel}[\\s\\S]{0,240}${escapedName})`,
+  ));
 }
 
 async function bridge(options: {
@@ -205,6 +217,30 @@ describe('certified MiniMax DSS scene context', () => {
     }
   });
 
+  it('binds exact talk names to the matching images and retains a silent participant', async () => {
+    const fixture = await bridge();
+    try {
+      fixture.send(fixture.frame(1, { context: sceneContext('identity') }));
+      await vi.waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
+
+      const input = vi.mocked(generateVideo).mock.calls[0][0];
+      const references = input.referenceImageUrls ?? [];
+      const mayaImage = references.indexOf(`data:image/png;base64,${btoa('downloaded:maya.png')}`) + 1;
+      const theoImage = references.indexOf(`data:image/png;base64,${btoa('downloaded:theo.png')}`) + 1;
+      const inezImage = references.indexOf(`data:image/png;base64,${btoa('downloaded:inez.png')}`) + 1;
+
+      expect(mayaImage).toBeGreaterThan(0);
+      expect(theoImage).toBeGreaterThan(0);
+      expect(inezImage).toBeGreaterThan(0);
+      expectNamedImage(input.prompt, mayaName, mayaImage);
+      expectNamedImage(input.prompt, theoName, theoImage);
+      expectNamedImage(input.prompt, inezName, inezImage);
+      expect(input.prompt).toContain('The last train already left.');
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it('reuses successful asset downloads by stable identity when signed URLs refresh', async () => {
     const fixture = await bridge();
     try {
@@ -228,6 +264,10 @@ describe('certified MiniMax DSS scene context', () => {
     ['non-HTTPS set image', (() => { const value = sceneContext('bad'); (value.set_image as Json).image_url = 'http://assets.example/hotel.png'; return value; })()],
     ['missing character image URL', (() => { const value = sceneContext('bad'); delete ((value.character_images as Json[])[1]).image_url; return value; })()],
     ['invalid asset identity', (() => { const value = sceneContext('bad'); ((value.character_images as Json[])[0]).asset_id = 'not-a-uuid'; return value; })()],
+    ['missing character name', (() => { const value = sceneContext('bad'); delete ((value.character_images as Json[])[0]).character_name; return value; })()],
+    ['blank character name', (() => { const value = sceneContext('bad'); ((value.character_images as Json[])[0]).character_name = '  '; return value; })()],
+    ['duplicate character name', (() => { const value = sceneContext('bad'); ((value.character_images as Json[])[0]).character_name = theoName; return value; })()],
+    ['case-mismatched command name', (() => { const value = sceneContext('bad'); ((value.character_images as Json[])[2]).character_name = 'maya'; return value; })()],
     ['missing silent-character position', (() => { const value = sceneContext('bad'); delete (value.character_positions as Json)[inezId]; return value; })()],
     ['extra unmatched position', (() => { const value = sceneContext('bad'); (value.character_positions as Json)['88888888-8888-4888-8888-888888888888'] = 'An unknown person is outside frame.'; return value; })()],
     ['blank position', (() => { const value = sceneContext('bad'); (value.character_positions as Json)[theoId] = '  '; return value; })()],
