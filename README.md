@@ -101,7 +101,9 @@ Anyone with the watch link can watch and submit audience suggestions while the s
 renderer relays messages through its authenticated Story Kernel connection; credentials never
 enter the page. Treat the watch link as permission to participate. Hosting and fal usage are billed by
 their providers. Sessions are volatile: restarts or deployments end the run. One active story
-is supported per worker; durable resume and recording are not included.
+is supported per worker; durable resume and recording are not included. If a later renderer
+request fails after at least one clip completed, the worker keeps the existing HLS playout
+available until the run is explicitly stopped or the worker exits.
 
 ## Development and verification
 

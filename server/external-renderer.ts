@@ -270,7 +270,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const fallbackRoomChannel = '00000000-0000-4000-8000-000000000002';
   const storyConfig = asObject(body.storyConfig ?? { message_channel_ids: [fallbackStoryChannel] }, 'storyConfig');
   const resumeExistingStory = body.resumeExistingStory === true;
-  if (!resumeExistingStory) {
+  if (body.storyConfig !== undefined && !resumeExistingStory) {
     uuid(storyConfig.evd_id, 'storyConfig.evd_id');
     if (!['MINIMAX', 'CREATOR', 'WHISPERS'].includes(String(storyConfig.base_structure))) {
       throw new Error('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
@@ -795,30 +795,34 @@ class ExternalRendererRun {
     this.status.failures.push(detail.slice(0, 500));
     this.status.failures.splice(0, Math.max(0, this.status.failures.length - MAX_FAILURES));
     this.status.state = 'failed';
-    void this.closeResources();
+    void this.closeResources({ preservePlayableOutput: this.status.clipsRendered > 0 });
   }
 
-  private async closeResources(): Promise<void> {
-    if (this.closing) return this.closing;
-    this.stopped = true;
-    this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
-    if (this.heartbeat) clearInterval(this.heartbeat);
-    if (this.verdictWatch) clearInterval(this.verdictWatch);
-    this.heartbeat = null;
-    this.verdictWatch = null;
-    for (const pending of this.pendingAudienceMessages.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error('The story chat disconnected.'));
-    }
-    this.pendingAudienceMessages.clear();
-    this.closing = (async () => {
-      await Promise.all([
+  private async closeResources(options: { preservePlayableOutput?: boolean } = {}): Promise<void> {
+    if (!this.closing) {
+      this.stopped = true;
+      this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      if (this.verdictWatch) clearInterval(this.verdictWatch);
+      this.heartbeat = null;
+      this.verdictWatch = null;
+      for (const pending of this.pendingAudienceMessages.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error('The story chat disconnected.'));
+      }
+      this.pendingAudienceMessages.clear();
+      this.closing = Promise.all([
         this.socket ? closeSocket(this.socket) : Promise.resolve(),
-        this.playout ? this.playoutManager.stop(this.playout.sessionId) : Promise.resolve(),
         this.scheduler.drain(),
-      ]);
-    })();
-    return this.closing;
+      ]).then(() => undefined);
+    }
+    const playoutStop = this.playout && !options.preservePlayableOutput
+      ? this.playoutManager.stop(this.playout.sessionId)
+      : Promise.resolve();
+    if (this.playout && !options.preservePlayableOutput) {
+      this.playout = null;
+    }
+    await Promise.all([this.closing, playoutStop]);
   }
 
   private progressEvent(frame: DssFrame, group: DssGroup, current: number, total: number): JsonObject {

@@ -70,6 +70,50 @@ describe('external renderer lifecycle', () => {
     expect(JSON.stringify(run)).not.toContain('test-installation');
     expect(JSON.stringify(run)).not.toContain('test-fal');
   });
+  it('keeps completed HLS playout available after a later render failure until explicitly stopped', async () => {
+    vi.stubEnv('FAL_KEY', 'test-fal');
+    vi.mocked(generateVideo)
+      .mockResolvedValueOnce({
+        requestId: 'request-1',
+        videoUrl: 'https://video.example/first.mp4',
+        expandedPrompt: null,
+        generationMode: 'text',
+        timings: { submitSeconds: 1, queueSeconds: 1, totalSeconds: 2, polls: 1 },
+      })
+      .mockRejectedValueOnce(new Error('provider unavailable'));
+    const http = createServer();
+    const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    ws.on('connection', socket => socket.on('message', raw => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
+      if (frame.type === 'renderer.event' && frame.event === 'completed' && frame.id === 6) {
+        socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 2, story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', script: { sequence: 2, command_groups: [{ id: 'group-2', commands: [{ command: 'Talk', args: { character: 'Sam', dialogue: 'The next clip fails.' } }] }] } }));
+      }
+    }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith('/login')) return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
+      for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 1, story_block_id: storyChannel, script: { sequence: 1, command_groups: [{ id: 'group-1', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'This clip remains playable.' } }] }] } }));
+      return Response.json({ renderer_id: rendererId, audience_grant: { grant: { story_id: 42, message_channel_id: storyChannel } } }, { status: 202 });
+    }));
+    const media = playout();
+    const manager = new ExternalRendererRunManager(media.manager);
+    const run = manager.start(config(`http://127.0.0.1:${port}`));
+    try {
+      await vi.waitFor(() => expect(run.state).toBe('failed'));
+      expect(run.clipsRendered, JSON.stringify(run)).toBe(1);
+      expect(run.hlsUrl).toBe('https://media.example/index.m3u8');
+      expect(media.stop).not.toHaveBeenCalled();
+      await manager.stop(run.runId);
+      expect(media.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  });
   it('aborts a login in progress when stopped', async () => {
     vi.stubEnv('FAL_KEY', 'test-fal');
     let loginSignal: AbortSignal | null = null;
