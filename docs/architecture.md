@@ -18,15 +18,17 @@ handling, and correlated command completion. It validates the separate story and
 channels. The setup user token is used by the provisioning/stop proxy only; renderer runtime
 uses the installation credential. Login tier is derived from the kernel environment.
 
-The bridge currently combines each DSS frame's ordered command groups into one text-to-video
-clip and waits for that clip to play before acknowledging its groups. Nonvisual commands become
-a transition when necessary. This preserves frame order but does not reproduce a 3D renderer's
-exact animation, timing, or voice identity. It does not import local CVD/EVD exports into the kernel.
+The configured-provider adapter compiles supported DSS commands into clips and waits for playback
+before acknowledging their groups. Explicit fal modes use the stateful shot planner and bounded
+generation pipeline described below. Nonvisual commands become a timed transition when necessary.
+Both paths preserve story order but do not reproduce a 3D renderer's exact animation or timing.
+The bridge does not import local CVD/EVD exports into the kernel.
 
 `src/lib/dss.ts` is the studio's richer shot planner, used by its legacy room/SSE flow. The studio
 can render up to three clips concurrently, while `src/lib/render-pipeline.ts` preserves story
 positions. The studio's optional character reference mode supports user-supplied HTTPS images
-and voice/exact dialogue audio. The bridge uses text mode. These are intentionally separate
+and voice/exact dialogue audio. The bridge's explicit modes accept their own shot-planner reference
+configuration. These are intentionally separate
 protocol adapters; changing one does not prove the other works.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
@@ -61,8 +63,8 @@ PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen h
 ## Compatibility and recovery
 
 Reviewed against Story Kernel PR [#6681](https://github.com/PickfordAI/unrendered/pull/6681),
-commit `6f0689648228c46f6880349f9e0c888e3076c77c`. The locally running Compose stack's worktree
-matches that commit. The protocol is still evolving; rerun a real end-to-end acceptance when
+commit `6f0689648228c46f6880349f9e0c888e3076c77c` for the initial integration. The protocol is still
+evolving; this historical baseline does not identify the currently deployed kernel. Rerun real end-to-end acceptance when
 upgrading it. Offline tests cover shape, ordering, retries, and access boundaries, not a complete
 kernel deployment or provider acceptance.
 
@@ -98,11 +100,40 @@ their dependents instead of silently removing references.
 
 The scheduler reserves unplayed video duration in playback order, including dependency waits,
 so later jobs cannot starve an earlier dependent shot. One shot larger than the configured budget
-may occupy an otherwise empty buffer. Generation can overlap playback within the accepted frame;
-frames remain serial at story boundaries. Enqueue and group completion stay in DSS order. Control
+may occupy an otherwise empty buffer. A single sequential compiler prepares later received DSS
+payloads while an ordered consumer plays earlier ones. The scheduler, camera anchors, and chain
+tails are shared across these payloads. Prepared payloads are bounded independently of video
+duration, including payloads that contain only control commands. Enqueue and group completion stay in DSS order. Control
 waits complete before their group acknowledgement; generation progress does not advance the
 kernel's sequence high-water mark. Stop aborts provider and frame-extraction jobs and drains them.
 A changed assignment terminates the run; it cannot enqueue stale results or silently resume.
+
+A FIFO feeder sends each generated clip to media preparation as soon as preceding clips have been
+enqueued. An independent playback consumer waits for the played position before releasing its
+reservation or acknowledging its group. This permits normalization ahead of playback without
+waiting for an entire group to generate, which could deadlock when that group exceeds the budget.
+Positive-duration control transitions stop the feeder at the group boundary until preceding
+playback and the declared delay complete; zero-duration boundaries do not prevent prefeeding.
+
+Generation failure in a later prepared payload aborts the run without waiting for earlier
+playback to finish. Stop and receiver failure wake the planning and playback consumers. Duplicate
+payloads are ignored before compilation, so they cannot mutate staging twice or submit extra jobs.
+The configured-provider (`auto`) adapter retains its serial behavior.
+
+The video-duration budget counts work reserved for pending, in-flight, and ready-but-unplayed
+shots. It is not a startup runway or a measure of contiguous playable footage. Playback starts
+with one clip; requiring multiple clips can deadlock a short story or a kernel waiting for the
+current completion acknowledgement. No synthetic progress or early GroupFinished events are sent
+to obtain more lookahead. If the kernel has not delivered later DSS, the renderer cannot generate
+it. Offline overlap and ordering tests do not prove sustained live throughput or voice/lip-sync
+quality.
+
+The explicit-mode prompt compiler separates bracketed TTS directions from spoken dialogue, binds
+speech to its subject, and makes listener eye-lines relative to the camera in tight shots. It
+distinguishes exact dialogue audio from a generic voice sample. Dedicated style and set images can
+anchor visual style; character portraits remain identity references. Camera cuts hold established
+blocking unless an action changes it, while Turbo's supplied frame retains its framing. Repeated
+character declarations update carried state; they are not assumed to replace the complete cast.
 
 The private operator `POST /api/video-frame` extracts first/last continuity frames. The public
 viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded
@@ -124,3 +155,16 @@ adds per-setup dependencies and reserves one slot for the extracted continuity f
 same duration-budgeted scheduler and ordered playback acknowledgements. Concurrency is an explicit
 limit within the selected strategy, not a synonym for the model or a promise that dependent shots
 can run simultaneously.
+
+### Reuse in another renderer
+
+`DssShotPlanner` is the stateful DSS-to-prompt boundary: feed groups in order and retain its
+immutable plans, reference bindings, and group IDs. `ShotScheduler` bounds asynchronous generation
+and resolves strategy dependencies without knowing the transport or media player. Provider
+adapters select model endpoints independently of that scheduling policy.
+
+`external-renderer.ts` is the integration layer: it supplies assignment fencing, bounded payload
+queues, camera/chain dependencies, ordered media enqueue, and playback acknowledgements. A host
+with different transport or playout can reuse the compiler and scheduler while adapting that
+layer. Preserve actual-playback budget release, timing barriers, and cancellation when porting;
+generation completion alone is insufficient to acknowledge DSS.

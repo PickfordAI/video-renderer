@@ -94,7 +94,9 @@ type MutableState = Omit<ShotPlannerState, 'characters' | 'camera'> & {
   characters: Record<string, CharacterStaging>;
   camera: { shot: string; character?: string };
 };
-interface Line { speaker: string; dialogue: string; duration: number; audio?: string; tone?: string; respondent?: string; camera: MutableState['camera'] }
+interface DeliveryDirection { text: string; wordOffset: number }
+interface Line { speaker: string; dialogue: string; deliveryDirections: readonly DeliveryDirection[]; duration: number; audio?: string; tone?: string; respondent?: string; camera: MutableState['camera'] }
+interface DialogueSegment { dialogue: string; duration: number; deliveryDirections: readonly string[] }
 
 const CONTROL_COMMANDS = new Set([
   'cutscene', 'showtitle', 'showcredits', 'credits', 'delay', 'fade', 'showdebug',
@@ -142,14 +144,31 @@ function freeze<T>(value: T): T {
 function stateSnapshot(value: MutableState): ShotPlannerState { return freeze(clone(value)); }
 function words(value: string): string[] { return value.trim().split(/\s+/).filter(Boolean); }
 
+/** DSS inline square brackets are TTS acting directions, never spoken words. */
+function spokenDialogue(raw: string): { dialogue: string; deliveryDirections: DeliveryDirection[] } {
+  const deliveryDirections: DeliveryDirection[] = [];
+  let spoken = '';
+  let offset = 0;
+  for (const match of raw.matchAll(/\[([^\]]*)\]/g)) {
+    spoken += raw.slice(offset, match.index);
+    const direction = match[1].trim();
+    if (direction) deliveryDirections.push({ text: direction, wordOffset: words(spoken).length });
+    spoken += ' ';
+    offset = match.index! + match[0].length;
+  }
+  const dialogue = (spoken + raw.slice(offset)).replace(/\s+/g, ' ').trim();
+  if (!dialogue) throw new Error('talk dialogue contains no spoken words after delivery directions');
+  return { dialogue, deliveryDirections };
+}
+
 /** Preserve every spoken word; prefer sentence boundaries without exceeding the time budget. */
-function splitLine(line: Line): Array<{ dialogue: string; duration: number }> {
-  if (line.duration <= 15) return [{ dialogue: line.dialogue, duration: line.duration }];
+function splitLine(line: Line): DialogueSegment[] {
+  if (line.duration <= 15) return [{ dialogue: line.dialogue, duration: line.duration, deliveryDirections: line.deliveryDirections.map((direction) => direction.text) }];
   const tokens = words(line.dialogue);
   const secondsPerWord = line.duration / tokens.length;
   const maximumWords = Math.floor(15 / secondsPerWord);
   if (maximumWords < 1) throw new Error('Dialogue cannot be safely split into 15-second shots without word-level audio timing');
-  const segments: Array<{ dialogue: string; duration: number }> = [];
+  const segments: DialogueSegment[] = [];
   for (let offset = 0; offset < tokens.length;) {
     let length = Math.min(maximumWords, tokens.length - offset);
     if (offset + length < tokens.length) {
@@ -158,7 +177,9 @@ function splitLine(line: Line): Array<{ dialogue: string; duration: number }> {
         if (/[.!?]["'”’)]*$/.test(tokens[offset + candidate - 1])) { length = candidate; break; }
       }
     }
-    segments.push({ dialogue: tokens.slice(offset, offset + length).join(' '), duration: length * secondsPerWord });
+    const end = offset + length;
+    const deliveryDirections = line.deliveryDirections.filter((direction) => direction.wordOffset >= offset && (direction.wordOffset < end || end === tokens.length)).map((direction) => direction.text);
+    segments.push({ dialogue: tokens.slice(offset, end).join(' '), duration: length * secondsPerWord, deliveryDirections });
     offset += length;
   }
   return segments;
@@ -340,7 +361,7 @@ export class DssShotPlanner {
           break;
         case 'talk': case 'charactertalk': {
           const character = actor(args.character);
-          const dialogue = required(args.dialogue, 'talk dialogue');
+          const { dialogue, deliveryDirections } = spokenDialogue(required(args.dialogue, 'talk dialogue'));
           const providedDuration = numeric(args.audio_duration);
           if (args.audio_duration !== undefined && args.audio_duration !== null && providedDuration === undefined) throw new Error('talk audio_duration must be numeric');
           const duration = providedDuration ?? words(dialogue).length / 2.3;
@@ -348,7 +369,7 @@ export class DssShotPlanner {
           const respondent = text(args.respondent) ? this.canonical(text(args.respondent)!, next) : undefined;
           if (respondent) participants.add(respondent);
           if (text(args.camera_shot)) next.camera = { shot: text(args.camera_shot)!, character: character.name };
-          lines.push({ speaker: character.name, dialogue, duration, audio: text(args.audio), tone: text(args.tone), respondent, camera: clone(next.camera) });
+          lines.push({ speaker: character.name, dialogue, deliveryDirections, duration, audio: text(args.audio), tone: text(args.tone), respondent, camera: clone(next.camera) });
           break;
         }
         default: throw new Error(`Unsupported DSS command: ${rawName}`);
@@ -360,7 +381,7 @@ export class DssShotPlanner {
 
     const resultingState = stateSnapshot(next);
     const shots: PlannedShot[] = [];
-    const createShot = (line?: Line, segment?: { dialogue: string; duration: number }, split = false): void => {
+    const createShot = (line?: Line, segment?: DialogueSegment, split = false): void => {
       const index = shots.length;
       const camera = line?.camera ?? next.camera;
       const shotStart = index === 0 ? visualStartingState : shots[index - 1].resultingState;
@@ -377,7 +398,7 @@ export class DssShotPlanner {
       const id = `${storyBlockId}:${groupId}:${index}`;
       shots.push(freeze({
         id, groupId, storyBlockId,
-        prompt: this.prompt(names, refs, shotStart, shotEnd, shotActions, camera, line, segment?.dialogue, durationSeconds),
+        prompt: this.prompt(names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds),
         durationSeconds, ...(line ? { speaker: line.speaker, dialogue: segment!.dialogue, audioDurationSeconds: sourceDuration, sourceAudioDurationSeconds: line.duration } : {}),
         ...(!split && line?.audio ? { dialogueAudioUrl: httpsUrl(line.audio, 'dialogue audio') } : {}),
         referenceImageUrls: refs.images.map((entry) => entry.url), referenceAudioUrls: refs.audios.map((entry) => entry.url),
@@ -426,13 +447,16 @@ export class DssShotPlanner {
     return { images, audios };
   }
 
-  private prompt(names: string[], refs: { images: PlannedImageReference[]; audios: PlannedAudioReference[] }, start: ShotPlannerState, end: ShotPlannerState, actions: readonly string[], camera: MutableState['camera'], line: Line | undefined, dialogue: string | undefined, duration: number): string {
+  private prompt(names: string[], refs: { images: PlannedImageReference[]; audios: PlannedAudioReference[] }, start: ShotPlannerState, end: ShotPlannerState, actions: readonly string[], camera: MutableState['camera'], line: Line | undefined, segment: DialogueSegment | undefined, duration: number): string {
     const imageFor = (name: string) => refs.images.find((entry) => entry.name === name)?.label;
     const subjects = names.map((name) => {
       const reference = this.characterReferences.get(normalize(name));
       const image = imageFor(name);
       const audio = refs.audios.find((entry) => entry.name === name);
-      return [`${name}${image ? ` has the character design in ${image}` : ''}.`, reference?.description, end.characters[name]?.appearance, audio ? `${name}'s voice follows ${audio.label}.` : undefined].filter(Boolean).join(' ');
+      const audioInstruction = !audio ? undefined : audio.purpose === 'dialogue'
+        ? `${audio.label} contains ${name}'s exact spoken performance for this line; match its words, timing, delivery and voice.`
+        : `Use ${audio.label} only as ${name}'s voice identity and timbre reference; speak the scripted dialogue rather than copying the sample's words or timing.`;
+      return [`${name}${image ? ` has the character design in ${image}` : ''}.`, reference?.description, end.characters[name]?.appearance, audioInstruction].filter(Boolean).join(' ');
     });
     const staging = (state: ShotPlannerState): string => names.map((name) => {
       const character = state.characters[name];
@@ -444,18 +468,37 @@ export class DssShotPlanner {
       const character = end.characters[name];
       return [character?.gaze ? `${name} looks toward ${character.gaze}.` : '', character?.emotion ? `${name} appears ${character.emotion}.` : ''].filter(Boolean).join(' ');
     }).filter(Boolean);
+    const shotName = (CAMERA_NAMES[camera.shot] ?? camera.shot).toLowerCase().replace(/[\s_-]+/g, '');
+    // A POV identifies a viewpoint, not an on-screen subject. Without explicit
+    // geometry it must not inherit close-up rules that hide the listener.
+    const tightShot = shotName.includes('closeup');
+    const gazeTarget = line ? end.characters[line.speaker]?.gaze?.replace(/ \(eye contact\)$/, '') : undefined;
+    const listener = line ? gazeTarget ? (names.includes(gazeTarget) ? gazeTarget : undefined) : line.respondent : undefined;
+    const speakerInFrame = !camera.character || camera.character === line?.speaker;
+    const eyeline = line && listener && listener !== line.speaker
+      ? tightShot && speakerInFrame
+        ? `${listener} is off-screen; ${line.speaker} addresses them with an eyeline just off-camera. Keep the camera on ${line.speaker}.`
+        : tightShot
+          ? `${line.speaker} speaks from off-screen while the camera holds on ${camera.character} listening silently.`
+        : `${line.speaker} directs their eyeline toward ${listener}; keep the stated camera composition.`
+      : '';
+    const delivery = segment?.deliveryDirections.length ? `Delivery directions, not spoken text, in order: ${segment.deliveryDirections.join('; ')}.` : '';
     const setRef = end.set ? this.setReferences.get(normalize(end.set)) : undefined;
     const scene = [end.set, end.dressing, end.timeOfDay, setRef?.description].filter(Boolean).join(', ');
     const initialFrameOnly = this.settings.referenceMode === 'initial-frame';
-    const style = this.settings.styleDescription ?? (initialFrameOnly ? 'Preserve the visual medium and art style of the supplied initial frame.' : refs.images.length ? 'Match the visual medium and art style of the supplied references consistently.' : 'Coherent cinematic staging and expressive performances.');
-    const styleImage = imageFor('style');
+    // A neutral style/set image may govern the world; a portrait governs only its
+    // named character. Promoting a portrait to global style can blend identities.
+    const styleImage = imageFor('style') ?? imageFor('set');
+    const style = this.settings.styleDescription ?? (initialFrameOnly ? 'Preserve the visual medium and art style of the supplied initial frame.' : 'Coherent cinematic staging and expressive performances.');
     const initialImage = imageFor('initial frame');
+    const cut = initialFrameOnly ? 'Continue from the supplied initial frame and preserve its camera framing.' : 'Hard cut into this camera setup; do not morph or dissolve between shots.';
+    const blocking = actions.length ? 'Perform the scripted actions; otherwise hold the established character positions and camera framing.' : 'Hold the established character positions and camera framing throughout the shot.';
     return [
       `subject_definitions: ${subjects.join(' ')}`,
       `summary: ${scene ? `Setting: ${scene}. ` : ''}${style}${styleImage ? ` Use ${styleImage} for the overall rendering style.` : ''}`,
       `set: ${scene || 'Preserve the established setting'}${imageFor('set') ? `; match the set design and lighting in ${imageFor('set')}` : ''}.`,
       `starting_state: ${staging(start) || 'Use the established staging.'}${initialFrameOnly ? ' The supplied initial frame provides the visual context; preserve its character designs, set and lighting.' : initialImage ? ` ${initialImage} is the supplied initial visual context.` : ''}`,
-      `shot: ${CAMERA_NAMES[camera.shot] ?? humanize(camera.shot)}${camera.character ? ` of ${camera.character}` : ''}. ${actions.join(' ')} ${expressions.join(' ')}${line ? ` ${line.speaker}${line.tone ? `, speaking in a ${line.tone} tone,` : ''} speaks${line.respondent ? ` to ${line.respondent}` : ''}: <d>[English] ${dialogue}</d>` : ''}`,
+      `shot: ${CAMERA_NAMES[camera.shot] ?? humanize(camera.shot)}${camera.character ? ` of ${camera.character}` : ''}. ${cut} ${blocking} ${actions.join(' ')} ${expressions.join(' ')} ${eyeline} ${delivery}${line ? ` ${line.speaker}${line.tone ? `, speaking in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; any other characters listen silently.` : ''}`,
       `resulting_state: ${staging(end) || 'Preserve staging.'}`,
       `overall_soundscape: ${line ? 'Natural dialogue acoustics and quiet room tone.' : 'Quiet environmental ambience.'} Let the performance occupy the ${duration}-second shot without adding dialogue or captions.`,
     ].join('\n');

@@ -6,8 +6,9 @@ import WebSocket from 'ws';
 import { generateVideo } from './fal.js';
 import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
-import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot } from './shot-planner.js';
+import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
+import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { extractVideoFrame } from './video-frame.js';
 import type { PlayoutManager, PlayoutSession } from './playout.js';
 
@@ -129,6 +130,9 @@ const MAX_FAILURES = 50;
 const COMMAND_GROUP_PROGRESS_MESSAGE_ID = 10;
 const SCRIPT_STATUS_MESSAGE_ID = 6;
 const GROUP_FINISHED_STATUS_ID = 10;
+// A duration budget does not bound control-only payloads or unscheduled plans.
+const MAX_PREPARED_DSS_FRAMES = 32;
+const MAX_PENDING_DSS_FRAMES = 256;
 
 function asObject(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -248,26 +252,39 @@ class AsyncJsonQueue {
   private readonly values: JsonObject[] = [];
   private readonly waiters: Array<(value: JsonObject) => void> = [];
 
+  constructor(private readonly capacity = Number.POSITIVE_INFINITY) {}
+
   push(value: JsonObject): void {
     const waiter = this.waiters.shift();
     if (waiter) waiter(value);
-    else this.values.push(value);
+    else {
+      if (this.values.length >= this.capacity) throw new Error('DSS receive buffer exceeded its capacity');
+      this.values.push(value);
+    }
   }
 
-  async next(timeoutMs = 60_000): Promise<JsonObject> {
+  async next(timeoutMs: number | null = 60_000, signal?: AbortSignal): Promise<JsonObject> {
+    signal?.throwIfAborted();
     const value = this.values.shift();
     if (value) return value;
     return await new Promise<JsonObject>((resolve, reject) => {
-      const waiter = (item: JsonObject) => {
-        clearTimeout(timeout);
-        resolve(item);
-      };
-      const timeout = setTimeout(() => {
+      const cleanup = () => {
+        if (timeout) clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
+      };
+      const onAbort = () => { cleanup(); reject(signal?.reason); };
+      const waiter = (item: JsonObject) => {
+        cleanup();
+        resolve(item);
+      };
+      const timeout = timeoutMs === null ? null : setTimeout(() => {
+        cleanup();
         reject(new Error('timed out waiting for a WebSocket message'));
       }, timeoutMs);
       this.waiters.push(waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -332,6 +349,15 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
       (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
       (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
     );
+  });
+}
+
+function waitWithAbort(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, milliseconds);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -608,6 +634,21 @@ function closeSocket(socket: WebSocket): Promise<void> {
 }
 
 interface GeneratedShot { videoUrl: string; continuityFrame?: string }
+interface CompletionLatch { promise: Promise<void>; resolve(): void }
+function completionLatch(): CompletionLatch {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+interface PreparedFrame {
+  frame: DssFrame;
+  groups: ReadonlyArray<{
+    group: DssGroup;
+    plan: PlannedGroup;
+    completed: CompletionLatch;
+    shots: ReadonlyArray<{ shot: PlannedShot; job: ScheduledShot<GeneratedShot>; position: number; enqueued: CompletionLatch }>;
+  }>;
+}
 
 class ExternalRendererRun {
   readonly runId = randomUUID();
@@ -615,6 +656,7 @@ class ExternalRendererRun {
   private socket: WebSocket | null = null;
   private playout: PlayoutSession | null = null;
   private stopped = false;
+  private closing: Promise<void> | null = null;
   private clipPosition = 0;
   private readonly sceneContext: string[] = [];
   private heartbeat: NodeJS.Timeout | null = null;
@@ -672,14 +714,17 @@ class ExternalRendererRun {
   }
 
   private async closeResources(): Promise<void> {
-    if (this.stopped) return;
+    if (this.closing) return this.closing;
     this.stopped = true;
     this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
-    if (this.socket) await closeSocket(this.socket);
-    if (this.playout) await this.playoutManager.stop(this.playout.sessionId);
-    await this.scheduler.drain();
+    this.closing = (async () => {
+      if (this.socket) await closeSocket(this.socket);
+      if (this.playout) await this.playoutManager.stop(this.playout.sessionId);
+      await this.scheduler.drain();
+    })();
+    return this.closing;
   }
 
   private progressEvent(frame: DssFrame, group: DssGroup, current: number, total: number): JsonObject {
@@ -714,7 +759,7 @@ class ExternalRendererRun {
       const current = this.playout?.status();
       if (current?.state === 'error') throw new Error(current.error ?? 'playout failed');
       if (current && current.playedThroughPosition >= position) return;
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await waitWithAbort(250, this.abortController.signal);
     }
   }
 
@@ -764,10 +809,13 @@ class ExternalRendererRun {
     }, dependency?.result);
     if (continuity === 'last-frame-chain') this.sceneTails.set(shot.sceneKey, handle);
     else if (continuity === 'camera-anchors' && !dependency) this.anchorShots.set(key, handle);
+    // A future shot can fail while an earlier clip is playing. Fence the whole run
+    // immediately, before another scheduler slot submits additional paid work.
+    void handle.result.catch(error => { if (!this.stopped) this.fail(error); });
     return handle;
   }
 
-  private async renderPlannedFrame(frame: DssFrame): Promise<void> {
+  private preparePlannedFrame(frame: DssFrame): PreparedFrame {
     this.assertCurrentAssignment(frame);
     // Compile the entire accepted frame before submitting any of its paid work.
     const groups = frame.groups.map(group => ({ group, plan: this.shotPlanner.planGroup(group.commands, group.id, frame.storyBlockId) }));
@@ -782,40 +830,61 @@ class ExternalRendererRun {
         }
       }
     }
-    const scheduled = groups.map(({ group, plan }) => ({
-      group, plan, shots: frame.sequence === 0 ? [] : plan.shots.map(shot => ({ shot, job: this.scheduleShot(frame, shot) })),
-    }));
-    for (const { group, plan, shots } of scheduled) {
-      this.assertCurrentAssignment(frame);
-      let seconds = 0;
-      // No generation-side progress events: future sequences must not advance the kernel high-water mark.
-      for (const { shot, job } of shots) {
+    return { frame, groups: groups.map(({ group, plan }) => ({
+      group, plan, completed: completionLatch(), shots: frame.sequence === 0 ? [] : plan.shots.map(shot => ({
+        shot, job: this.scheduleShot(frame, shot), position: this.clipPosition++, enqueued: completionLatch(),
+      })),
+    })) };
+  }
+
+  private async enqueuePlannedFrame({ frame, groups }: PreparedFrame): Promise<void> {
+    for (const { plan, shots, completed } of groups) {
+      for (const { shot, job, position, enqueued } of shots) {
         const generated = await job.result;
         this.assertCurrentAssignment(frame);
-        const position = this.clipPosition++;
         this.playout!.enqueue({ position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds });
         this.status.clipsRendered += 1;
+        enqueued.resolve();
+      }
+      // A timed control follows its group's video and precedes the next group.
+      // Ordinary cuts can prefeed normalization without advancing any kernel ACK.
+      if (frame.sequence !== 0 && plan.delaySeconds > 0) await abortable(completed.promise, this.abortController.signal);
+    }
+  }
+
+  private async playPlannedFrame({ frame, groups }: PreparedFrame): Promise<void> {
+    for (const { group, plan, shots, completed } of groups) {
+      this.assertCurrentAssignment(frame);
+      let seconds = 0;
+      // Only actual playback advances the kernel high-water mark and frees paid-work budget.
+      for (const { shot, job, position, enqueued } of shots) {
+        await abortable(enqueued.promise, this.abortController.signal);
         await this.waitForPlayback(position);
         this.assertCurrentAssignment(frame);
         job.release();
         seconds += shot.durationSeconds;
       }
       const delay = frame.sequence === 0 ? 0 : plan.delaySeconds;
-      if (delay > 0) await abortable(new Promise(resolve => setTimeout(resolve, delay * 1_000)), this.abortController.signal);
+      if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
       this.assertCurrentAssignment(frame);
       send(this.socket!, this.completedEvent(frame, group, seconds + delay));
       this.status.dssCommandsRendered += group.commands.length;
+      completed.resolve();
     }
     this.status.firstDssAcknowledgedAt ??= new Date().toISOString();
   }
 
-  private async renderFrame(frame: DssFrame): Promise<void> {
+  private acceptFrame(frame: DssFrame): boolean {
     const dedupeKey = `${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`;
-    if (this.seenDss.has(dedupeKey)) return;
+    if (this.seenDss.has(dedupeKey)) return false;
     this.seenDss.add(dedupeKey);
     this.status.firstAssignmentAt ??= new Date().toISOString();
     this.status.dssSequences.push(frame.sequence);
-    if (this.config.renderMode !== 'auto') { await this.renderPlannedFrame(frame); return; }
+    return true;
+  }
+
+  private async renderFrame(frame: DssFrame): Promise<void> {
+    if (!this.acceptFrame(frame)) return;
     const groupsWithCommands = frame.groups.filter((group) => group.commands.length > 0);
     if (groupsWithCommands.length === 0) {
       frame.groups.forEach((group) => send(this.socket!, this.completedEvent(frame, group, 0)));
@@ -1002,10 +1071,11 @@ class ExternalRendererRun {
       this.socket.on('close', (code) => {
         if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code})`));
       });
-      const dssMessages = new AsyncJsonQueue();
+      if (this.socket.readyState !== WebSocket.OPEN) throw new Error('Renderer connection closed');
+      const dssMessages = new AsyncJsonQueue(MAX_PENDING_DSS_FRAMES);
       const receiver = (async () => {
         while (!this.stopped && this.socket?.readyState === WebSocket.OPEN) {
-          const message = await opened.messages.next(300_000);
+          const message = await opened.messages.next(300_000, this.abortController.signal);
           if (message.type === 'websocket.closed') break;
           if (message.type === 'renderer.heartbeat.accepted') {
             this.status.lastHeartbeatAt = new Date().toISOString();
@@ -1023,13 +1093,53 @@ class ExternalRendererRun {
             dssMessages.push(message);
           }
         }
-        dssMessages.push({ type: 'websocket.closed' });
+        if (!this.stopped) throw new Error('Renderer connection closed');
       })().catch(error => {
         if (!this.stopped) this.fail(error);
-        dssMessages.push({ type: 'websocket.closed' });
       });
+      if (this.config.renderMode !== 'auto') {
+        const prepared = new PreparedFrameQueue<PreparedFrame>(MAX_PREPARED_DSS_FRAMES, this.abortController.signal);
+        const queued = new PreparedFrameQueue<{ value: PreparedFrame; release(): void }>(MAX_PREPARED_DSS_FRAMES, this.abortController.signal);
+        const planner = (async () => {
+          while (!this.stopped) {
+            const waitController = new AbortController();
+            const waitSignal = AbortSignal.any([this.abortController.signal, waitController.signal]);
+            // ACK-gated kernels may legitimately deliver no next DSS throughout
+            // generation and playback. Their idle timeout starts after real ACKs.
+            const idleTimeout = (async () => {
+              await prepared.waitForIdle(waitSignal);
+              await waitWithAbort(this.status.firstAssignmentAt ? 300_000 : 60_000, waitSignal);
+              throw new Error('timed out waiting for DSS after playback became idle');
+            })();
+            let message: JsonObject;
+            try { message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]); }
+            finally { waitController.abort(); }
+            const frame = parseDssFrame(message);
+            if (this.acceptFrame(frame)) await prepared.prepare(() => this.preparePlannedFrame(frame));
+          }
+        })();
+        const feeder = (async () => {
+          while (!this.stopped) {
+            const item = await prepared.next();
+            // Publish to the ACK consumer before feeding: it must be able to free
+            // budget even when this payload contains more video than the budget.
+            await queued.prepare(() => item);
+            await this.enqueuePlannedFrame(item.value);
+          }
+        })();
+        const playback = (async () => {
+          while (!this.stopped) {
+            const item = await queued.next();
+            await this.playPlannedFrame(item.value.value);
+            item.value.release();
+            item.release();
+          }
+        })();
+        await Promise.all([receiver, planner, feeder, playback]);
+        return;
+      }
       while (!this.stopped && this.socket.readyState === WebSocket.OPEN) {
-        const message = await dssMessages.next(this.status.firstAssignmentAt ? 300_000 : 60_000);
+        const message = await dssMessages.next(this.status.firstAssignmentAt ? 300_000 : 60_000, this.abortController.signal);
         if (message.type === 'websocket.closed') break;
         if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
         await this.renderFrame(parseDssFrame(message));

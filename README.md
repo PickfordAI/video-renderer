@@ -201,7 +201,24 @@ instead of ignoring it; select **No frame continuity** for independent Max studi
 Last-frame chaining can use only one job regardless of that ceiling because each frame depends on
 the preceding output. `rendererConfig.maxBufferedSeconds` defaults to **30** (range 5–120) and
 bounds generation lookahead; one shot can exceed the window when necessary to make progress.
-Larger buffers smooth playback but delay when audience input can affect the visible story.
+In connected explicit fal modes, generation can use later DSS payloads while earlier clips play.
+Compilation, playback, and group acknowledgements retain story order. Camera anchors and
+last-frame dependencies persist across payloads; generation can only use DSS the kernel has
+already delivered.
+Ready clips are fed to media preparation in order while earlier clips play, avoiding an obligatory
+download/normalization wait after every clip. Timed transitions remain barriers to feeding later video.
+
+The duration budget includes waiting, generating, and generated-but-unplayed shots. It is not
+a target amount of ready video or a fixed startup delay. For example, eight parallel eight-second
+shots need at least 64 seconds of work budget; a 30-second budget cannot fill all eight slots.
+Larger budgets allow more speculative generation and can delay when audience input affects the
+visible story. Defaults remain conservative, and changing configuration does not start generation.
+
+The renderer starts playback with one ready clip so short stories and kernels that wait for
+acknowledgements can make progress. Continuous playback still depends on delivered DSS lookahead,
+provider latency, and media preparation. Faster-than-playback recorded batches do not establish
+sustained live performance; the integrated lookahead path has offline validation until a separately
+authorized live run proves it.
 Completion acknowledgments correspond to actual playback, not generation finishing.
 
 For connected StoryKernel runs, `shotPlanner` supplies named `characters`, `sets`, optional
@@ -209,7 +226,10 @@ For connected StoryKernel runs, `shotPlanner` supplies named `characters`, `sets
 may include `name`, `aliases`, `description`, `imageUrl`, and
 `voice: { "url": "https://…/sample.mp3", "durationSeconds": 4 }`. Use 2–15-second samples.
 The planner carries staging forward, binds references to the shot, and prefers usable exact DSS
-dialogue audio over a fallback voice sample. The imported/manual studio path uses its existing
+dialogue audio over a fallback voice sample. It moves inline TTS delivery tags out of spoken text,
+identifies the sole speaker, and uses camera-relative listener eyelines. Global style references
+come from a dedicated style or set image, while portraits define individual characters.
+The imported/manual studio path uses its existing
 shot descriptions and matched character references; camera-aware planning belongs to the bridge.
 
 Old handoffs using top-level `renderMode`, `generationConcurrency`, and `maxBufferedSeconds`

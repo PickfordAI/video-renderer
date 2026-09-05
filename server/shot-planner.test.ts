@@ -64,6 +64,7 @@ describe('DSS shot planning', () => {
     expect(move.resultingState.characters.Maya.mark).toBe('Station.Platform');
     expect(move.prompt).toContain('starting_state: Maya is standing at door');
     expect(move.prompt).toContain('Maya walks to platform');
+    expect(move.prompt).toContain('Perform the scripted actions; otherwise hold');
     expect(move.prompt).toContain('resulting_state: Maya is standing at platform');
     expect(move.hasMovement).toBe(true);
     const seated = planner.planGroup([command('sit', { character: 'Maya' }), talk()], 'sit', 'block').shots[0];
@@ -71,6 +72,8 @@ describe('DSS shot planning', () => {
     const follow = planner.planGroup([talk()], 'follow', 'block').shots[0];
     expect(follow.continuityKey).toBe(seated.continuityKey);
     expect(follow.prompt).toContain('Maya is sitting at platform');
+    expect(follow.prompt).toContain('Hold the established character positions');
+    expect(follow.prompt).toContain('Hard cut into this camera setup');
   });
 
   it('invalidates anchors on cast, costume, set and lighting changes', () => {
@@ -112,7 +115,7 @@ describe('DSS shot planning', () => {
     expect(first.prompt).toContain('Maya has the character design in Image 2');
     expect(first.prompt).toContain('Theo has the character design in Image 3');
     expect(first.prompt).toContain('set design and lighting in Image 4');
-    expect(first.prompt).toContain("Maya's voice follows Audio 1");
+    expect(first.prompt).toContain("Use Audio 1 only as Maya's voice identity and timbre reference");
     expect(first.prompt).not.toMatch(/live.action|photorealistic/i);
     for (const match of first.prompt.matchAll(/Image (\d+)/g)) expect(first.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
     for (const match of first.prompt.matchAll(/Audio (\d+)/g)) expect(first.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
@@ -133,6 +136,87 @@ describe('DSS shot planning', () => {
     expect(shot.prompt).toContain('Preserve the visual medium and art style');
     expect(shot.prompt).toContain('<d>[English] Stay here.</d>');
     expect(shot.prompt).not.toContain("voice follows");
+    expect(shot.prompt).toContain('Continue from the supplied initial frame and preserve its camera framing');
+    expect(shot.prompt).not.toContain('Hard cut');
+  });
+
+  it('moves inline TTS tags into acting directions while preserving only the spoken text and its duration', () => {
+    const planner = new DssShotPlanner(configured);
+    const shot = planner.planGroup([command('talk', {
+      character: 'Maya', dialogue: '[whispering] Stay here. [firmly] I will return.', tone: 'concerned', audio_duration: 8.75,
+    })], 'delivery', 'block').shots[0];
+    expect(shot.dialogue).toBe('Stay here. I will return.');
+    expect(shot.prompt).toContain('<d>[English] Stay here. I will return.</d>');
+    expect(shot.prompt).toContain('Delivery directions, not spoken text, in order: whispering; firmly.');
+    expect(shot.prompt).toContain('speaking in a concerned tone');
+    expect(shot.audioDurationSeconds).toBe(8.75);
+    expect(shot.durationSeconds).toBe(9);
+    expect(shot.prompt).not.toContain('[whispering]');
+    expect(() => planner.planGroup([talk('Maya', '[sighs]', 2)], 'nonverbal', 'block')).toThrow('no spoken words');
+  });
+
+  it('keeps delivery cues with their segment when long dialogue is split and omits exact whole-line audio', () => {
+    const planner = new DssShotPlanner({ ...configured, useDialogueAudioReferences: true });
+    const shots = planner.planGroup([command('talk', {
+      character: 'Maya', dialogue: '[whispering] Stay by the station door. [firmly] I will come right back.',
+      audio_duration: 20, audio: 'https://assets.example/long.wav',
+    })], 'long-delivery', 'block').shots;
+    expect(shots.map((shot) => shot.dialogue)).toEqual(['Stay by the station door.', 'I will come right back.']);
+    expect(shots[0].prompt).toContain('in order: whispering.');
+    expect(shots[0].prompt).not.toContain('firmly');
+    expect(shots[1].prompt).toContain('in order: firmly.');
+    expect(shots[1].prompt).not.toContain('whispering');
+    expect(shots.every((shot) => shot.dialogueAudioUrl === undefined && shot.audioReferences[0].purpose === 'voice')).toBe(true);
+  });
+
+  it('keeps a tight shot on the intended speaker with a camera-relative eyeline and silent listeners', () => {
+    const planner = new DssShotPlanner(configured);
+    setup(planner);
+    const tight = planner.planGroup([
+      talk('lead'), command('look', { character: 'lead', target: { name: 'partner', bias: 'eyes' } }),
+    ], 'tight', 'block').shots[0];
+    expect(tight.prompt).toContain('close-up of Maya');
+    expect(tight.prompt).toContain('Theo is off-screen; Maya addresses them with an eyeline just off-camera');
+    expect(tight.prompt).toContain('Keep the camera on Maya');
+    expect(tight.prompt).toContain('Only Maya speaks; any other characters listen silently');
+    expect(tight.prompt).not.toContain('camera facing Theo');
+    const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full', respondent: 'Theo' })], 'wide', 'block').shots[0];
+    expect(wide.prompt).toContain('Maya directs their eyeline toward Theo');
+    expect(wide.prompt).not.toContain('Theo is off-screen');
+    const reaction = planner.planGroup([
+      command('character camera', { character: 'Theo', shot: 'Character_CloseUp' }),
+      command('talk', { character: 'Maya', dialogue: 'Stay here.', respondent: 'Theo' }),
+    ], 'reaction', 'block').shots[0];
+    expect(reaction.prompt).toContain('camera holds on Theo listening silently');
+    expect(reaction.prompt).not.toContain('Keep the camera on Maya');
+  });
+
+  it('uses only a neutral style or set anchor for global style, never a character portrait fallback', () => {
+    const explicit = new DssShotPlanner(configured);
+    setup(explicit);
+    expect(explicit.planGroup([talk()], 'style', 'block').shots[0].prompt).toContain('Use Image 1 for the overall rendering style');
+    const setOnly = new DssShotPlanner({ ...configured, styleImageUrl: undefined });
+    setup(setOnly);
+    expect(setOnly.planGroup([talk()], 'set-style', 'block').shots[0].prompt).toContain('Use Image 3 for the overall rendering style');
+    const portraitsOnly = new DssShotPlanner({ characters: configured.characters });
+    setup(portraitsOnly);
+    const portraitShot = portraitsOnly.planGroup([talk()], 'portraits', 'block').shots[0];
+    expect(portraitShot.prompt).toContain('Maya has the character design in Image 1');
+    expect(portraitShot.prompt).not.toContain('for the overall rendering style');
+    expect(portraitShot.prompt).not.toContain('art style of the supplied references');
+  });
+
+  it('does not treat a POV viewpoint as a close-up of the speaker', () => {
+    const planner = new DssShotPlanner(configured);
+    setup(planner);
+    const pov = planner.planGroup([command('talk', {
+      character: 'Maya', respondent: 'Theo', dialogue: 'Stay here.', camera_shot: 'Character_POV',
+    })], 'pov', 'block').shots[0];
+    expect(pov.prompt).toContain('point-of-view shot');
+    expect(pov.prompt).toContain('Maya directs their eyeline toward Theo');
+    expect(pov.prompt).not.toContain('Theo is off-screen');
+    expect(pov.prompt).not.toContain('Keep the camera on Maya');
+    expect(pov.prompt).not.toContain('Maya speaks from off-screen');
   });
 
   it('uses authoritative audio duration and never silently truncates long dialogue or repeats its audio', () => {
@@ -163,6 +247,10 @@ describe('DSS shot planning', () => {
     expect(exact.durationSeconds).toBe(9);
     expect(exact.dialogueAudioUrl).toBe('https://assets.example/line.wav');
     expect(exact.audioReferences[0]).toMatchObject({ purpose: 'dialogue', url: 'https://assets.example/line.wav', durationSeconds: 8.75 });
+    expect(exact.prompt).toContain("Audio 1 contains Maya's exact spoken performance for this line; match its words, timing, delivery and voice");
+    const sample = planner.planGroup([talk()], 'sample', 'block').shots[0];
+    expect(sample.prompt).toContain("rather than copying the sample's words or timing");
+    expect(sample.prompt).not.toContain('exact spoken performance');
     const crowded = new DssShotPlanner({ characters: Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`Person${i}`, { imageUrl: `https://assets.example/${i}.png` }])) });
     crowded.planGroup(Array.from({ length: 13 }, (_, i) => command('add character', { name: `Person${i}` })), 'cast', 'block');
     expect(() => crowded.planGroup([talk('Person0')], 'crowd', 'block')).toThrow('more than 12');

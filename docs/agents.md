@@ -37,7 +37,7 @@ identifiers and will not authenticate. Pass its path, never the credentials, on 
 | `rendererConfig.continuity` | `none`, `last-frame-chain`, or `camera-anchors`; supported combinations are listed below |
 | `initialImageUrl` | Public HTTPS scene image, required for Turbo; Max can use this or `shotPlanner` image references |
 | `rendererConfig.concurrency` | Integer 1–8, default 2; Turbo remains sequential because of last-frame chaining |
-| `rendererConfig.maxBufferedSeconds` | Integer 5–120, default 30; larger lookahead trades audience responsiveness for smoother playback |
+| `rendererConfig.maxBufferedSeconds` | Integer 5–120, default 30; bounds reserved unplayed video work, including pending and in-flight jobs, not startup-ready footage |
 | `shotPlanner` | Named `characters`/`sets`, optional `styleImageUrl`, `styleDescription`, `initialImageUrl`, `markNames`, `useDialogueAudioReferences`, and `defaultDurationSeconds` |
 
 Model and continuity are separate choices. Current support is `auto` + `none`, Turbo +
@@ -57,6 +57,13 @@ Each `shotPlanner.characters` entry can supply `name`, `aliases`, `description`,
 `description` and/or `imageUrl`. Use media owned or authorized by the user. Turbo uses only the
 initial and chained scene images; do not promise voice conditioning, ElevenLabs mixing, or lip-sync.
 Selecting camera anchors with Max ref2vid maintains camera setup references for independent parallel shots, with ordered playback.
+Connected explicit fal modes prepare later received DSS while earlier clips play. Keep enough
+work budget for the chosen concurrency: eight eight-second clips need at least 64 seconds, before
+considering other pending work. This is a planning calculation, not authorization to submit a batch.
+Playback starts with one ready clip so a short or acknowledgement-gated story cannot deadlock.
+The kernel must actually deliver future DSS; never acknowledge unplayed work to obtain lookahead.
+The configured-provider (`auto`) adapter remains serial. Validate the chosen model and strategy
+with a bounded authorized live run before claiming sustained realtime rendering or voice quality.
 Changing the handoff only affects the next run; stop before changing active run settings.
 
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.

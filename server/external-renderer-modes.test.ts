@@ -76,7 +76,7 @@ describe('explicit bridge generation modes', () => {
         return;
       }
       await vi.waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(2));
-      expect(enqueue).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2));
       expect(events.filter(event => event.event === 'completed')).toHaveLength(0);
       const calls = vi.mocked(generateVideo).mock.calls;
       expect(calls[0][1].apiKey).toBe('mock-fal');
