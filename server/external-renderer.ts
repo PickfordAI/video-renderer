@@ -731,6 +731,10 @@ export class ExternalRendererRunManager {
     return this.runs.get(runId)?.status ?? null;
   }
 
+  latest(): ExternalRendererRunStatus | null {
+    return [...this.runs.values()].at(-1)?.status ?? null;
+  }
+
   async stop(runId: string): Promise<ExternalRendererRunStatus | null> {
     const run = this.runs.get(runId);
     if (!run) return null;

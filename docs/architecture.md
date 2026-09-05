@@ -23,11 +23,16 @@ clip and waits for that clip to play before acknowledging its groups. Nonvisual 
 a transition when necessary. This preserves frame order but does not reproduce a 3D renderer's
 exact animation, timing, or voice identity. It does not import local CVD/EVD exports into the kernel.
 
-`src/lib/dss.ts` is the studio's richer shot planner, used by its legacy room/SSE flow. The studio
-can render up to three clips concurrently, while `src/lib/render-pipeline.ts` preserves story
-positions. The studio's optional character reference mode supports user-supplied HTTPS images
-and voice/exact dialogue audio. The bridge uses text mode. These are intentionally separate
-protocol adapters; changing one does not prove the other works.
+The sole frontend is `viewer/`, served on both the local operator listener and public media
+listener. The old React room/SSE studio and manual credential form are removed. Renderer runtime
+uses the installation-credential bridge only. The remaining private generation/provisioning API
+helpers are available for diagnostics; they are not a second user setup flow.
+
+`scripts/onboarding.mjs` resolves a registered handoff path, STORY_HANDOFF_PATH, or the STORY_*
+environment bundle for the CLI. `setup` persists only the file path and discovered service URLs.
+The browser receives a fixed allowlist of readiness flags, story state and HLS URL. It never
+receives the handoff, provider keys, setup token, renderer credentials, or backend diagnostics.
+Start/stop stays with the agent; opening the player never starts paid generation.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
 hold frames while generation catches up. MediaMTX exposes fMP4 HLS internally. FFmpeg progress
@@ -45,16 +50,16 @@ Operator API (local only, or bearer-authenticated private Fly/SSH proxy):
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Provider model names and whether a fal key is configured; never the key |
-| `GET /api/config` | Allowlisted service URLs for local studio setup |
+| `GET /api/viewer-status` | Sanitized setup readiness and current playback; private listener only |
 | `POST /api/narrative/provision-external-story` | Create private room, inactive story, and resolve distinct channels |
 | `POST /api/external-renderer/runs` | Start one bridge worker run; returns 202 while connecting |
 | `GET /api/external-renderer/runs/:id` | Run progress/diagnostics |
 | `DELETE /api/external-renderer/runs/:id` | Stop worker activity and playout; CLI separately stops the kernel story |
 | `POST /api/narrative/stop-show` | Cancel kernel story and leave room using a valid user session |
-| `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Local studio adapter routes |
+| `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Private generation/protocol diagnostics |
 
 Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healthz`, and `GET`/`HEAD /hls/h3-:session/:file`. Other routes/methods
-return 404. Static files are served only from dist/viewer; neither the studio nor the server
+return 404. Static files are served only from dist/viewer; neither agent configuration nor server
 source is accessible. Fly/Render derive the public origin from platform metadata; VMs use
 PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen host.
 

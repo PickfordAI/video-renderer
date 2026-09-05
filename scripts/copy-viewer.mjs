@@ -1,5 +1,4 @@
-import { cp, copyFile, mkdir } from 'node:fs/promises';
+import { cp, rm } from 'node:fs/promises';
+// Remove retired application assets, including builds left from the old studio.
+await rm('dist', { recursive: true, force: true });
 await cp('viewer-dist', 'dist/viewer', { recursive: true });
-
-await mkdir('dist/licenses', { recursive: true });
-for (const name of ['hls.js', 'react', 'react-dom']) await copyFile(`node_modules/${name}/LICENSE`, `dist/licenses/${name}.txt`);

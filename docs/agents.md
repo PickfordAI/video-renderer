@@ -20,7 +20,8 @@ second hosting account for the viewer. The kernel remains an earlier onboarding 
 
 Have the earlier kernel onboarding step write a JSON file with mode `0600`, outside tracked files.
 Start with [examples/handoff.example.json](../examples/handoff.example.json). It contains dummy
-identifiers and will not authenticate. Pass its path, never the credentials, on the command line.
+identifiers and will not authenticate. Register its path once with `npm run setup -- --handoff /absolute/path/to/handoff.json`, or set
+`STORY_HANDOFF_PATH`. Never pass credentials on the command line.
 
 | Field | Source |
 |---|---|
@@ -66,16 +67,53 @@ Never scrape arbitrary container environments, databases, or another user's brow
    one matching the onboarding session with `--project`.
 4. Run `docker compose up -d media-relay`, `npm run build`, and `npm start` as a managed persistent
    process. Read startup output for a port conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
-5. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
+5. Register the onboarding handoff with `npm run setup -- --handoff /absolute/path/to/handoff.json`
+   (or configure the environment as described below). Open `http://localhost:4173`. It shows only
+   setup status and playback; do not send the user to an installation form. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
    protocol compatibility. Resolve errors; do not hide a failed check.
-6. Run `npm run story -- start --handoff /absolute/path/to/handoff.json` once. This submits paid
+6. Run `npm run story -- start` once. This submits paid
    fal jobs when DSS arrives, so the user must have requested rendering.
 7. Poll `npm run story -- status`. Return the watch URL once the first clip is actually playable,
    or report a startup failure. `connecting` is not success. A manifest HTTP 200 plus playable
    video is stronger evidence than `clipsRendered` alone.
-8. On stop: `npm run story -- stop --handoff /absolute/path/to/handoff.json`, then end the worker
+8. On stop: `npm run story -- stop`, then end the worker
    and relay if no longer needed. Stop needs a valid setup user session; refresh through onboarding
    when expired. Failed cleanup must be reported and retried, not silently ignored.
+
+## Environment and persistent configuration
+
+The agent, never the browser user, supplies these values in its process environment or a private
+`.env` file with mode `0600`:
+
+| Variable | Handoff field / source |
+|---|---|
+| `FAL_KEY` | User's fal account or secret manager |
+| `STORY_HANDOFF_PATH` | Private onboarding handoff path; recommended alternative to individual variables |
+| `STORY_EVD_ID` | `evdId` |
+| `STORY_SETUP_TOKEN` | `setupToken`, required for stop even with a pre-provisioned story |
+| `STORY_RENDERER_ID` | `rendererId` |
+| `STORY_CREDENTIAL_ID` | `credentialId` |
+| `STORY_CLIENT_SECRET` | `clientSecret` |
+| `STORY_ENVIRONMENT`, `STORY_TYPE`, `STORY_ROOM_NAME` | `environment`, `storyType`, `roomName` |
+| `STORY_RESOLUTION`, `STORY_CLIP_SECONDS`, `STORY_RENDERER_VERSION` | Optional rendering settings |
+| `STORY_CONFIG_JSON`, `STORY_JSON` | Optional JSON `storyConfig` and inactive pre-provisioned `story` |
+
+Service variables in `.env.example` override local Docker discovery. Hosted commands accept those
+same HTTPS service variables. Never copy example IDs as if they were valid identities.
+
+Configuration precedence: explicit `--handoff`, then `STORY_HANDOFF_PATH`, then the environment
+identity bundle when `STORY_EVD_ID` is present, then the registered handoff path. A handoff is one
+identity bundle: missing fields in a selected file are not filled from another credential source.
+A bad selected file fails closed. The agent should use one source and clear stale overrides.
+`npm run setup` validates service discovery; its sanitized `onboarding` result reports missing
+account configuration. `npm run doctor` also checks story access and reachability. No browser
+form is needed. After configuration, `story -- start`, `status`, and `stop` reuse it.
+
+Restart the local worker after `.env` changes. On hosted deployments, keep story setup credentials
+and handoff registration on the agent's machine; the CLI sends only runtime credentials to the
+worker. Host preparation/deployment scripts transfer fal/operator keys, not setup user tokens.
+The local player polls `/api/viewer-status` for readiness and playback only; it cannot start paid
+jobs or stop a story. The agent owns start/stop and reports any cleanup failure.
 
 ## Hosted workflow
 
@@ -93,7 +131,7 @@ onboarding before continuing.
 Open the selected provider's private connection with `npm run hosted:connect`. Then:
 
 ```sh
-npm run story -- start --hosted --handoff /absolute/path/to/handoff.json
+npm run story -- start --hosted
 npm run story -- status --hosted
 npm run share -- --hosted
 ```

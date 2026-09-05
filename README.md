@@ -1,134 +1,135 @@
 # Pickford Video Renderer
 
-An open-source renderer for **DSS**, the story format emitted by the Pickford Story Kernel.
-It turns ordered story commands into MiniMax H3 video through [fal](https://fal.ai), then uses
-FFmpeg and MediaMTX to play a continuous HLS stream. It is a standalone repository: no kernel
-source code, monorepo packages, or database access is required.
+An open-source player for **DSS**, the story format emitted by the Pickford Story Kernel.
+The worker turns story commands into MiniMax H3 video through [fal](https://fal.ai), then uses
+FFmpeg and MediaMTX to play a continuous HLS stream.
+
+There is **one interface** for local and hosted viewing. Your agent connects the accounts,
+configures the worker, and starts the story. The page shows setup status and playback;
+there are no credential, IP address, service URL, or episode ID forms.
 
 Choose how to watch:
 
-1. **Locally:** the worker and player run on your computer. Only you can access them.
-2. **With friends:** the worker and viewer deploy together to your chosen host—Fly.io, Render,
-   or a Docker VM on AWS, GCP, or another provider. Share the watch link; your computer can go offline.
+1. **Locally:** everything in this renderer runs on your computer and is visible only to you.
+2. **With friends:** worker and viewer deploy together to Fly.io, Render, or a Docker VM on
+   AWS, GCP, or another provider. Your agent returns a watch link.
 
-The Story Kernel runs separately. A compatible kernel installation, a fal account, and an
-onboarding handoff are required to render a live story. You can build and test without any keys.
+The Story Kernel runs separately and supplies the story and renderer installation credentials.
+A fal account and compatible kernel onboarding are required for live generation. You can
+build and test without keys.
 
 ## Let an agent set it up
 
-Give your agent this repository and [the agent runbook](docs/agents.md). The agent can discover
-local Docker ports, consume the kernel's onboarding handoff, configure the worker, start the
-story, and return a watch link. The user only chooses where to watch and connects the required
-accounts. The agent returns a watch link on the same host; no second hosting tool is needed.
-Credentials never enter the viewer or watch link.
+Give the agent [the runbook](docs/agents.md). You choose local or hosted viewing and connect your
+accounts. The agent obtains the onboarding handoff, supplies the environment, discovers local
+Docker services or resolves hosted URLs, and returns the player. Secrets stay server-side.
 
-## Local quick start
+## Local setup — agent or developer
 
-Requires **Node.js 22+**, FFmpeg, and Docker. Start your Story Kernel stack first.
+Requires **Node.js 22+**, FFmpeg, and Docker, with a compatible Story Kernel stack running.
 
 ```sh
 npm ci
-cp .env.example .env
-# Set FAL_KEY in .env, or provide it through the process environment.
-npm run setup
+# The agent supplies FAL_KEY through the environment or a private .env.
+# Register the private handoff from earlier kernel onboarding once:
+npm run setup -- --handoff /absolute/path/to/handoff.json
 npm run build
 docker compose up -d media-relay
 npm start
 ```
 
-In another terminal:
+Open [the local player](http://localhost:4173). It shows which account connections the agent
+still needs to finish. In another managed terminal:
 
 ```sh
 npm run doctor
-npm run story -- start --handoff /absolute/path/to/handoff.json
+npm run story -- start
 npm run story -- status
+npm run story -- stop
 ```
 
-Open the returned `watchUrl`. The first scene can take a few minutes. The agent uses
-[the handoff contract](docs/agents.md#handoff-contract) to obtain the episode and renderer
-credentials from earlier onboarding steps. `npm run setup` discovers published Docker ports
-and writes a private `.renderer/services.json`; it never asks for container IP addresses.
-When multiple kernel stacks are running, specify `npm run setup -- --project <compose-project>`.
+The player follows the agent-started story automatically. The agent should wait for playable
+video before declaring the story ready; the first scene can take a few minutes. Starting a
+story submits paid fal jobs when DSS arrives. Stop also cancels the kernel story using the
+onboarding user session. Stop the worker with Ctrl+C when finished.
 
-Stop generation, playout, and the kernel story:
+`setup` discovers published Docker ports and stores them privately in `.renderer/services.json`.
+If multiple kernel stacks are running, the agent selects the matching `--project`. It stores
+only a path to the handoff in `.renderer/onboarding.json`; the handoff remains in its original
+private location. Neither file is included in Git or Docker builds.
 
-```sh
-npm run story -- stop --handoff /absolute/path/to/handoff.json
+## Environment-based onboarding
+
+The agent can set **STORY_HANDOFF_PATH** instead of registering a file, or supply the identity
+bundle entirely through environment variables:
+
+```dotenv
+FAL_KEY=<from the user's fal account>
+STORY_EVD_ID=<from story authoring>
+STORY_SETUP_TOKEN=<from kernel login>
+STORY_RENDERER_ID=<from renderer installation>
+STORY_CREDENTIAL_ID=<from renderer installation>
+STORY_CLIENT_SECRET=<from renderer installation>
 ```
 
-Then stop the worker with Ctrl+C. `docker compose down` stops this repository's relay.
-Stopping a story does not delete its room or change another room's state.
+These are agent/server variables, never browser inputs. See [.env.example](.env.example) for
+service overrides and optional story settings. Do not put real values in prompts, logs, or Git.
+With this approach, run `npm run setup`, then use the same start/status/stop commands. Restart
+the worker after changing `.env`; changes to a registered handoff are read on the next command.
+The agent obtains or refreshes account access through the supported onboarding flow.
 
 ## Host for friends
 
-Follow [the deployment guide](docs/deployment.md). **One Docker image serves the worker and
-viewer from one HTTPS address.** Choose Fly.io for the included CLI deployment, Render for a
-single-service Blueprint, or the Compose/Caddy template for an existing AWS/GCP/Docker VM.
-The agent resolves service URLs and returns the watch link automatically.
+[The deployment guide](docs/deployment.md) includes Fly CLI deployment, a single-service Render
+Blueprint, and a Compose/Caddy template for AWS/GCP/other Docker VMs. Each serves the same player
+and HLS stream from one HTTPS origin. The agent configures deployment plumbing.
 
 ```sh
-# Fly example; FAL_KEY is already available to the agent.
 npm run deploy:fly -- --app <existing-fly-app>
 npm run hosted:connect
-# In another managed terminal:
-npm run story -- start --hosted --handoff /absolute/path/to/handoff.json
+# In another managed terminal with the agent's registered handoff or environment:
+npm run story -- start --hosted
 npm run share -- --hosted
 ```
 
-Render and VM deployments use the same story/share commands. Vercel remains an optional separate
-viewer for existing deployments; it is not required for any of the combined hosting options.
+Hosted workers must reach HTTPS kernel services. The setup user credential remains with the
+agent; only the runtime installation credential is sent to the worker. The public page receives
+only the watch link and media. Opening the public root without a link does not reveal active
+stories or account setup status. Vercel is an optional standalone build of the **same player**.
 
-Anyone with a watch link can watch while that story is running. The viewer has playback controls;
-it does not expose generation controls, kernel credentials, or audience chat. Hosting and fal
-usage are billed by their providers. Stop or destroy an unused hosted worker to stop compute costs.
+Anyone with the watch link can watch while the story runs. Hosting and fal usage are billed by
+their providers. Sessions are volatile: restarts or deployments end the run. One active story
+is supported per worker; durable resume, recording, and audience chat are not included.
 
-## Developer studio
+## Development and verification
 
-`npm run dev` serves the existing studio at `http://localhost:4173`. Use it to inspect DSS,
-preview imported CVD/EVD exports, configure your own character references, and render manually.
-The studio's legacy room/SSE/chat connection is separate from the agent's renderer-credential
-bridge. Use one rendering flow at a time. `/external-run.html` is the advanced protocol test page.
-All operator pages stay private; the public listener serves only the viewer and its media.
-
-The studio stores service preferences in localStorage and its user token in sessionStorage.
-Agent-started stories keep runtime credentials in worker memory. Handoff files remain wherever
-the caller stored them. There are no bundled character portraits or remote voice samples; supply
-media you have permission to use. The studio supports character-reference generation; the agent
-bridge currently renders text prompts.
-
-For the entire local renderer in Docker, including FFmpeg:
+The only frontend source is `viewer/`. Both worker listeners serve its built files. The private
+local listener adds a read-only status endpoint; the public listener exposes only player assets
+and live media. The retired `/external-run.html` address redirects to the player locally.
+The former React studio and manual credential form have been removed.
 
 ```sh
-docker compose --profile full up --build
-```
-
-Set `FAL_KEY` in `.env` first. This starts the operator on loopback port 4173 and the viewer/media
-port on loopback port 4174. Host-based discovery generates host URLs; when the worker runs inside
-Docker, supply `services` in the handoff using `http://host.docker.internal:<published-port>` for
-the Show API and **HTTPS** for Renderer Platform, or run the agent bridge worker on the host.
-The supported zero-plumbing local agent path is `npm start` plus the relay container.
-
-## Configuration and validation
-
-See [.env.example](.env.example) for optional overrides and [architecture](docs/architecture.md)
-for the protocol and process boundaries.
-
-```sh
-npm run check          # tests, type checking, studio/server/viewer builds
-npm run build:viewer   # standalone viewer artifact; no credentials needed
+npm run check          # protocol/configuration tests, type checking, player/server builds
+npm run dev            # build player and watch the server for changes
+npm run build:viewer   # standalone player artifact
 npm audit
 docker compose config --quiet
 docker build --target hosted -t pickford-video-renderer .
+npm run release:source
 ```
 
-This is an early release with volatile live sessions: worker restarts, deployments, or bridge
-failures end the run. Start a fresh story after recovery; there is no durable resume or recording.
-One agent renderer run is allowed per worker. See [release checks](docs/releasing.md); `npm run release:source` creates a clean source archive.
+Rebuild after editing `viewer/`. Protocol details and limitations: [architecture](docs/architecture.md).
+Release checklist: [releasing](docs/releasing.md).
+
+The full local Docker profile is available with `docker compose --profile full up --build`.
+Supply FAL_KEY in `.env`. The supported automatic discovery path runs the agent and `npm start`
+on the host with the relay in Docker; a container worker needs kernel services reachable from
+inside Docker, supplied by the agent.
 
 ## License and contributions
 
-[MIT](LICENSE) for this repository's code and documentation. Third-party components retain their
-own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license does not grant
-rights to Story Kernel, user stories, media, provider output, or Pickford trademarks.
+[MIT](LICENSE) for repository code and documentation. Dependencies retain their own licenses;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license does not grant rights to the
+Story Kernel, stories, generated media, provider output, or Pickford trademarks.
 
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+[Contributing](CONTRIBUTING.md) · [Security reports](SECURITY.md)

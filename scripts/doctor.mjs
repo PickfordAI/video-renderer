@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { services, rendererOrigin } from './config.mjs';
+import { onboardingStatus } from './onboarding.mjs';
 const checks = [];
 const falCheck = { name: 'fal credential (environment or running worker)', ok: Boolean(process.env.FAL_KEY || process.env.FAL_API_KEY) };
 const major = Number(process.versions.node.split('.')[0]);
 checks.push({ name: 'Node.js 22+', ok: major >= 22 });
 checks.push(falCheck);
+checks.push({ name: 'agent-managed story access', ok: !onboardingStatus().missing.includes('storyAccess'), fix: 'Have the agent configure STORY_HANDOFF_PATH or STORY_* environment variables. See docs/agents.md.' });
 try { execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], { stdio: 'ignore' }); checks.push({ name: 'FFmpeg', ok: true }); }
 catch { checks.push({ name: 'FFmpeg', ok: false, fix: 'Install FFmpeg or use the full Docker profile.' }); }
 for (const [name, url] of Object.entries({ ...services(), worker: rendererOrigin, mediaRelay: process.env.MEDIA_RELAY_HLS_BASE_URL || 'http://127.0.0.1:8888' })) {

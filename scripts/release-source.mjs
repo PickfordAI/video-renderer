@@ -11,8 +11,8 @@ const destination = join(releases, name);
 const entries = ['.github', '.dockerignore', '.env.example', '.gitignore', '.nvmrc', '.vercelignore',
   'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md',
   'Dockerfile', 'docker-compose.yml', 'fly.toml', 'render.yaml', 'vercel.json', 'package.json', 'package-lock.json',
-  'index.html', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.server.json', 'tsconfig.server.build.json',
-  'vite.config.ts', 'vitest.config.ts', 'docs', 'deploy', 'examples', 'media-relay', 'public', 'scripts', 'server', 'src', 'viewer'];
+  'tsconfig.json', 'tsconfig.server.json', 'tsconfig.server.build.json',
+  'vitest.config.ts', 'docs', 'deploy', 'examples', 'media-relay', 'scripts', 'server', 'viewer'];
 mkdirSync(releases, { recursive: true });
 rmSync(destination, { recursive: true, force: true });
 mkdirSync(destination);

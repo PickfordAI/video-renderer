@@ -107,10 +107,11 @@ volumes. The agent's prepared origin becomes PUBLIC_APP_URL; all watch links use
 
 ## Start, share, and stop — same commands for every provider
 
-With the private connection running:
+With the private connection running and the agent's `STORY_HANDOFF_PATH`, registered handoff, or
+STORY_* environment bundle configured locally (see [agents.md](agents.md)):
 
 ```sh
-npm run story -- start --hosted --handoff /absolute/path/to/handoff.json
+npm run story -- start --hosted
 npm run story -- status --hosted
 npm run share -- --hosted
 ```
@@ -125,12 +126,12 @@ previous story before switching providers. Do not run two active replicas: resta
 interrupt sessions, and durable resume is not implemented.
 
 Verify the actual viewer loads from `/`, then that its manifest, playlist and segments are playable.
-Public `/api/*`, `/external-run.html`, and studio files must return 404. `/healthz` reports process
+Public `/api/*`, `/external-run.html`, and agent configuration files must return 404. `/healthz` reports process
 reachability; it does not verify kernel credentials or fal access. Test playback from an external
 device after deployment. Use the play button to enable sound.
 
 ```sh
-npm run story -- stop --hosted --handoff /absolute/path/to/handoff.json
+npm run story -- stop --hosted
 ```
 
 The stopped stream returns 404. Close the private connection. Compute is still billed while the

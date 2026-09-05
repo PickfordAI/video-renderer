@@ -12,7 +12,7 @@ to loopback locally. Hosted deployments require RENDERER_ADMIN_TOKEN and private
 only the separate media port is internet-facing. Watch URLs are capabilities: anyone with the URL
 can watch until the session stops. This is a single-owner worker, not a multi-tenant hosted service.
 
-Do not expose the studio's proxy endpoints or MediaMTX ingest/admin ports through a public reverse
-proxy. Browser storage is not a secret vault; the studio uses sessionStorage for its local token.
-Prefer the agent handoff workflow for credential-based renderer sessions. Delete/rotate secrets
+Do not expose operator proxy endpoints or MediaMTX ingest/admin ports through a public reverse
+proxy. The single player accepts no credentials and stores no account secrets in browser storage.
+Agents supply a private handoff or environment bundle for renderer sessions. Delete/rotate secrets
 through the issuer when a machine or handoff file is compromised.

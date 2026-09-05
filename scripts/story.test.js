@@ -11,7 +11,7 @@ const cli = fileURLToPath(new URL('./story.mjs', import.meta.url));
 const story = { storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'STORY', storyMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', roomMainMessageChannelId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' };
 const runId = '12345678-1234-4234-8234-123456789abc';
 describe('agent story lifecycle', () => {
-  it('provisions, returns a real watch URL, persists no secrets and stops both worker and kernel', async () => {
+  it.each(['explicit-file', 'registered-file', 'env-file', 'environment'])('starts and stops through %s configuration without a browser form', async (source) => {
     const root = await mkdtemp(join(tmpdir(), 'renderer-cli-'));
     const calls = [];
     const server = createServer(async (req, res) => {
@@ -31,8 +31,24 @@ describe('agent story lifecycle', () => {
     const path = join(root, 'handoff.json');
     await writeFile(path, JSON.stringify(handoff));
     const options = { cwd: root, env: { ...process.env, PORT: String(port) } };
+    for (const key of Object.keys(options.env)) if (key.startsWith('STORY_')) delete options.env[key];
+    const flags = source === 'explicit-file' ? ['--handoff', path] : [];
+    if (source === 'env-file') options.env.STORY_HANDOFF_PATH = path;
+    if (source === 'environment') Object.assign(options.env, {
+      STORY_EVD_ID: handoff.evdId, STORY_RENDERER_ID: handoff.rendererId,
+      STORY_CREDENTIAL_ID: handoff.credentialId, STORY_CLIENT_SECRET: handoff.clientSecret,
+      STORY_SETUP_TOKEN: handoff.setupToken, NARRATIVE_ENGINE_URL: handoff.services.narrativeEngineUrl,
+      RENDERER_PLATFORM_URL: handoff.services.rendererBaseUrl,
+    });
     try {
-      const { stdout } = await exec(process.execPath, [cli, 'start', '--handoff', path], options);
+      if (source === 'registered-file') {
+        const setup = fileURLToPath(new URL('./setup.mjs', import.meta.url));
+        const prepared = await exec(process.execPath, [setup, '--handoff', path], options);
+        expect(prepared.stdout).not.toContain(handoff.clientSecret);
+        const registered = await readFile(join(root, '.renderer/onboarding.json'), 'utf8');
+        expect(JSON.parse(registered)).toEqual({ handoffPath: path });
+      }
+      const { stdout } = await exec(process.execPath, [cli, 'start', ...flags], options);
       const result = JSON.parse(stdout);
       expect(result.watchUrl).toContain('http://127.0.0.1:4174/#http');
       expect(decodeURIComponent(new URL(result.watchUrl).hash.slice(1))).toContain('/hls/h3-');
@@ -41,7 +57,7 @@ describe('agent story lifecycle', () => {
       const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
       expect(run.storyConfig.message_channel_ids).toEqual([story.storyMessageChannelId]);
       expect(run).not.toHaveProperty('setupToken');
-      await exec(process.execPath, [cli, 'stop', '--handoff', path], options);
+      await exec(process.execPath, [cli, 'stop', ...flags], options);
       expect(calls.some(c => c.method === 'DELETE' && c.path.endsWith(runId))).toBe(true);
       expect(calls.at(-1)).toMatchObject({ path: '/api/narrative/stop-show', body: { token: handoff.setupToken, shortlink: story.roomShortlink } });
     } finally {

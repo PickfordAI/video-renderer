@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
 
@@ -7,8 +8,12 @@ dotenv.config({ quiet: true });
 export const stateDir = resolve('.renderer');
 export function writePrivate(path, value) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-  chmodSync(path, 0o600);
+  chmodSync(stateDir, 0o700);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
 }
 export function readState(name) {
   const path = resolve(stateDir, name);
@@ -67,7 +72,11 @@ export async function api(path, body, method = 'POST') {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(120_000),
   });
-  const value = await response.json();
-  if (!response.ok) throw new Error(`${path} failed (HTTP ${response.status}). Check the local worker diagnostics.`);
-  return value;
+  if (!response.ok) {
+    await response.body?.cancel();
+    const error = new Error(`${path} failed (HTTP ${response.status}). Check the worker diagnostics.`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
 }
