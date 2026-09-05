@@ -269,6 +269,13 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const fallbackStoryChannel = '00000000-0000-4000-8000-000000000001';
   const fallbackRoomChannel = '00000000-0000-4000-8000-000000000002';
   const storyConfig = asObject(body.storyConfig ?? { message_channel_ids: [fallbackStoryChannel] }, 'storyConfig');
+  const resumeExistingStory = body.resumeExistingStory === true;
+  if (!resumeExistingStory) {
+    uuid(storyConfig.evd_id, 'storyConfig.evd_id');
+    if (!['MINIMAX', 'CREATOR', 'WHISPERS'].includes(String(storyConfig.base_structure))) {
+      throw new Error('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
+    }
+  }
   const rendererId = uuid(body.rendererId, 'rendererId');
   const configuredChannels = storyConfig.message_channel_ids;
   const storyMessageChannelId = uuid(body.storyMessageChannelId ?? fallbackStoryChannel, 'storyMessageChannelId');
@@ -308,7 +315,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     storyStatusToken: body.storyStatusToken === undefined ? null : requiredString(body.storyStatusToken, 'storyStatusToken'),
     resolution,
     clipDurationSeconds,
-    resumeExistingStory: body.resumeExistingStory === true,
+    resumeExistingStory,
   };
 }
 

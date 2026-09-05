@@ -8,7 +8,7 @@ vi.mock('./fal.js', () => ({ generateVideo: vi.fn(async () => ({ videoUrl: 'http
 const rendererId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const storyChannel = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function config(baseUrl = 'http://127.0.0.1:9999') {
-  return { baseUrl, rendererId, credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'test-installation', rendererVersion: 'h3.test.v1.0', environment: 'local', storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'TEST', storyMessageChannelId: storyChannel, roomMainMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', storyConfig: { message_channel_ids: [storyChannel] } };
+  return { baseUrl, rendererId, credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'test-installation', rendererVersion: 'h3.test.v1.0', environment: 'local', storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roomShortlink: 'TEST', storyMessageChannelId: storyChannel, roomMainMessageChannelId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', storyConfig: { base_structure: 'MINIMAX', evd_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', message_channel_ids: [storyChannel] } };
 }
 function playout() {
   const enqueue = vi.fn();

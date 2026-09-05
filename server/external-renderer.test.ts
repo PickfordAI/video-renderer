@@ -29,7 +29,11 @@ function config() {
     roomShortlink,
     storyMessageChannelId: storyChannelId,
     roomMainMessageChannelId: roomChannelId,
-    storyConfig: { message_channel_ids: [storyChannelId] },
+    storyConfig: {
+      base_structure: 'MINIMAX',
+      evd_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      message_channel_ids: [storyChannelId],
+    },
     enableAudience: true,
   };
 }
@@ -74,6 +78,18 @@ describe('external renderer run configuration', () => {
     value.roomMainMessageChannelId = storyChannelId;
 
     expect(() => parseExternalRendererRunConfig(value)).toThrow('story and room-main channels must be distinct');
+  });
+
+  it('rejects a start configuration that could fall through to the wrong story type', () => {
+    const value = config();
+    expect(() => parseExternalRendererRunConfig({
+      ...value,
+      storyConfig: { message_channel_ids: [storyChannelId] },
+    })).toThrow('storyConfig.evd_id is required');
+    expect(() => parseExternalRendererRunConfig({
+      ...value,
+      storyConfig: { ...value.storyConfig, base_structure: 'FIRST_DATE' },
+    })).toThrow('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
   });
 });
 

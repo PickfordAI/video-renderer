@@ -65,6 +65,8 @@ describe('agent story lifecycle', () => {
       expect(saved + stdout).not.toContain('private-');
       expect(JSON.parse(saved)).toMatchObject({ showBaseUrl: handoff.services.narrativeEngineUrl, workerStopped: false, kernelStopped: false });
       const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
+      expect(run.storyConfig.base_structure).toBe('CREATOR');
+      expect(run.storyConfig.evd_id).toBe(handoff.evdId);
       expect(run.storyConfig.message_channel_ids).toEqual([story.storyMessageChannelId]);
       expect(run).not.toHaveProperty('setupToken');
       expect(run).toMatchObject({ rendererConfig: expectedConfig, initialImageUrl: handoff.initialImageUrl, shotPlanner: handoff.shotPlanner });
