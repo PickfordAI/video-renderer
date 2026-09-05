@@ -10,6 +10,7 @@ import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type Planne
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
+import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import { extractVideoFrame } from './video-frame.js';
 import type { PlayoutManager, PlayoutSession } from './playout.js';
 
@@ -89,6 +90,8 @@ interface DssFrame {
   assignmentGeneration: number;
   storyBlockId: string;
   episodeId?: number;
+  sceneIndex?: number;
+  sceneContext?: MinimaxSceneContext | null;
   groups: DssGroup[];
 }
 
@@ -416,6 +419,8 @@ function parseDssFrame(raw: JsonObject): DssFrame {
   const episodeId = script.episode_id ?? raw.episode_id ?? undefined;
   if (episodeId !== undefined && (!Number.isInteger(episodeId) || (episodeId as number) < 0)) throw new Error('DSS episode_id must be a non-negative integer');
   if (!Number.isInteger(sequence) || sequence < 0) throw new Error('DSS sequence must be a non-negative integer');
+  const sceneIndex = script.scene_index === undefined ? -1 : Number(script.scene_index);
+  if (!Number.isInteger(sceneIndex)) throw new Error('DSS scene_index must be an integer');
   const rawGroups = script.command_groups;
   if (!Array.isArray(rawGroups)) throw new Error('DSS command_groups must be an array');
   const groups = rawGroups.map((value, index) => {
@@ -427,6 +432,14 @@ function parseDssFrame(raw: JsonObject): DssFrame {
       commands: commands.map((command, commandIndex) => asObject(command, `DSS command ${commandIndex}`)),
     };
   });
+  const storyType = Number(script.story_type);
+  const rawSceneContext = script.scene_context;
+  if (rawSceneContext !== undefined && rawSceneContext !== null && storyType !== 4) {
+    throw new Error('scene_context is only valid for Minimax DSS');
+  }
+  const sceneContext = rawSceneContext === undefined || rawSceneContext === null
+    ? null
+    : parseMinimaxSceneContext(rawSceneContext);
   return {
     raw,
     sequence,
@@ -434,6 +447,8 @@ function parseDssFrame(raw: JsonObject): DssFrame {
     assignmentGeneration: Number(raw.assignment_generation ?? 0),
     storyBlockId: uuid(raw.story_block_id ?? script.story_block_id, 'DSS story_block_id'),
     episodeId: episodeId as number | undefined,
+    sceneIndex,
+    sceneContext,
     groups,
   };
 }
@@ -680,6 +695,9 @@ class ExternalRendererRun {
   private readonly scheduler: ShotScheduler<GeneratedShot>;
   private readonly anchorShots = new Map<string, ScheduledShot<GeneratedShot>>();
   private readonly sceneTails = new Map<string, ScheduledShot<GeneratedShot>>();
+  private readonly scenePositions = new Map<number, string>();
+  private readonly assetIdentities = new Map<string, string>();
+  private readonly sceneAssets = new MinimaxSceneAssetCache();
   private assignmentKey: string | null = null;
 
   constructor(
@@ -810,6 +828,30 @@ class ExternalRendererRun {
     }
   }
 
+  private validateSceneContext(frame: DssFrame): void {
+    const context = frame.sceneContext;
+    if (!context) return;
+    for (const image of [context.setImage, ...context.characterImages]) {
+      const previous = this.assetIdentities.get(image.assetId);
+      if (previous && previous !== image.sourceId) throw new Error('Certified image asset identity changed');
+      this.assetIdentities.set(image.assetId, image.sourceId);
+    }
+    const positions = canonicalJson(context.characterPositions);
+    const sceneIndex = frame.sceneIndex ?? -1;
+    const previousPositions = this.scenePositions.get(sceneIndex);
+    if (previousPositions && previousPositions !== positions) {
+      throw new Error('Certified character_positions changed within a scene');
+    }
+    this.scenePositions.set(sceneIndex, positions);
+  }
+
+  private async resolveSceneContext(frame: DssFrame): Promise<void> {
+    this.validateSceneContext(frame);
+    if (frame.sceneContext) {
+      frame.sceneContext = await this.sceneAssets.resolve(frame.sceneContext, this.abortController.signal);
+    }
+  }
+
   private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
     const mode = this.config.renderMode;
     const continuity = this.config.continuityStrategy;
@@ -858,6 +900,7 @@ class ExternalRendererRun {
 
   private preparePlannedFrame(frame: DssFrame): PreparedFrame {
     this.assertCurrentAssignment(frame);
+    this.shotPlanner.applySceneContext(frame.sceneContext ?? null);
     // Compile the entire accepted frame before submitting any of its paid work.
     const groups = frame.groups.map(group => ({ group, plan: this.shotPlanner.planGroup(group.commands, group.id, frame.storyBlockId) }));
     if (this.config.renderMode === 'fal-max-ref2v') {
@@ -927,6 +970,7 @@ class ExternalRendererRun {
 
   private async renderFrame(frame: DssFrame): Promise<void> {
     if (!this.acceptFrame(frame)) return;
+    await this.resolveSceneContext(frame);
     const groupsWithCommands = frame.groups.filter((group) => group.commands.length > 0);
     if (groupsWithCommands.length === 0) {
       frame.groups.forEach((group) => this.sendRendererEvent(this.completedEvent(frame, group, 0), frame));
@@ -938,7 +982,13 @@ class ExternalRendererRun {
         this.sendRendererEvent(this.completedEvent(frame, group, 0), frame);
         continue;
       }
-      const planned = planGroupClips(frame, group, this.config.clipDurationSeconds, this.sceneContext);
+      const certifiedContext = frame.sceneContext ? sceneContextPrompt(frame.sceneContext) : null;
+      const planned = planGroupClips(
+        frame,
+        group,
+        this.config.clipDurationSeconds,
+        certifiedContext ? [...this.sceneContext, certifiedContext] : this.sceneContext,
+      );
       if (planned.length === 0) {
         const controlDuration = controlGroupDurationSeconds(group);
         if (controlDuration === null) throw new Error(`DSS group ${group.id} contains no supported renderable commands`);
@@ -960,6 +1010,7 @@ class ExternalRendererRun {
           duration: clip.durationSeconds,
           resolution: this.config.resolution,
           aspectRatio: '16:9' as const,
+          ...(frame.sceneContext ? { referenceImageUrls: sceneContextImageUrls(frame.sceneContext) } : {}),
         };
         const generated = this.provider.kind === 'minimax-direct'
           ? await generateMiniMaxVideo(input, {
@@ -1185,7 +1236,10 @@ class ExternalRendererRun {
             try { message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]); }
             finally { waitController.abort(); }
             const frame = parseDssFrame(message);
-            if (this.acceptFrame(frame)) await prepared.prepare(() => this.preparePlannedFrame(frame));
+            if (this.acceptFrame(frame)) {
+              await this.resolveSceneContext(frame);
+              await prepared.prepare(() => this.preparePlannedFrame(frame));
+            }
           }
         })();
         const feeder = (async () => {

@@ -1,3 +1,5 @@
+import { sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
+
 /** PIC-1410: Deterministic DSS compilation; generation and playback belong to the caller. */
 export interface VoiceReference {
   url: string;
@@ -138,6 +140,12 @@ function httpsUrl(value: string, label: string): string {
   if (url.protocol !== 'https:' || url.username || url.password) throw new Error(`${label} must be an absolute HTTPS URL without credentials`);
   return value;
 }
+function resolvedSceneImage(value: string, label: string): string {
+  if (!/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]+={0,2}$/i.test(value)) {
+    throw new Error(`${label} must be a resolved image data URL`);
+  }
+  return value;
+}
 function clone<T>(value: T): T { return structuredClone(value); }
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -195,6 +203,7 @@ export class DssShotPlanner {
   private readonly aliases = new Map<string, string>();
   private readonly characterReferences = new Map<string, CharacterReference>();
   private readonly setReferences = new Map<string, { description?: string; imageUrl?: string }>();
+  private sceneContext: MinimaxSceneContext | null = null;
   private current: MutableState = { set: null, characters: {}, camera: { shot: 'medium shot' }, sceneRevision: 0, continuityRevision: 0 };
 
   constructor(settings: ShotPlannerSettings = {}) {
@@ -233,6 +242,20 @@ export class DssShotPlanner {
   }
 
   get state(): ShotPlannerState { return stateSnapshot(this.current); }
+
+  applySceneContext(context: MinimaxSceneContext | null): void {
+    this.sceneContext = context;
+    if (context === null) return;
+    if (this.current.set !== context.setImage.sourceId) {
+      this.current = {
+        set: context.setImage.sourceId,
+        characters: {},
+        camera: { shot: 'medium shot' },
+        sceneRevision: this.current.sceneRevision + 1,
+        continuityRevision: this.current.continuityRevision + 1,
+      };
+    }
+  }
 
   private registerAlias(alias: string, name: string): void {
     const key = normalize(alias);
@@ -435,13 +458,22 @@ export class DssShotPlanner {
     const images: PlannedImageReference[] = [];
     const audios: PlannedAudioReference[] = [];
     if (this.settings.referenceMode === 'initial-frame') return { images, audios };
-    const image = (name: string, url?: string): void => {
-      if (url) images.push({ name, url: httpsUrl(url, `${name} image`), label: `Image ${images.length + 1}` });
+    const image = (name: string, url?: string, certified = false): void => {
+      if (url) images.push({
+        name,
+        url: certified ? resolvedSceneImage(url, `${name} image`) : httpsUrl(url, `${name} image`),
+        label: `Image ${images.length + 1}`,
+      });
     };
     image('style', this.settings.styleImageUrl);
     image('initial frame', this.settings.initialImageUrl);
-    for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);
-    image('set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
+    if (this.sceneContext) {
+      for (const character of this.sceneContext.characterImages) image(`character:${character.sourceId}`, character.imageUrl, true);
+      image('set', this.sceneContext.setImage.imageUrl, true);
+    } else {
+      for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);
+      image('set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
+    }
     // Each shot contains one speaker. Other cast members need appearance grounding,
     // but their voice samples consume budget and can confuse speaker attribution.
     for (const name of line ? [line.speaker] : []) {
@@ -505,6 +537,7 @@ export class DssShotPlanner {
     return [
       `subject_definitions: ${subjects.join(' ')}`,
       `summary: ${scene ? `Setting: ${scene}. ` : ''}${style}${styleImage ? ` Use ${styleImage} for the overall rendering style.` : ''}`,
+      ...(this.sceneContext ? [`certified_scene_context: ${sceneContextPrompt(this.sceneContext)}`] : []),
       `set: ${scene || 'Preserve the established setting'}${imageFor('set') ? `; match the set design and lighting in ${imageFor('set')}` : ''}.`,
       `starting_state: ${staging(start) || 'Use the established staging.'}${initialFrameOnly ? ' The supplied initial frame provides the visual context; preserve its character designs, set and lighting.' : initialImage ? ` ${initialImage} is the supplied initial visual context.` : ''}`,
       `shot: ${CAMERA_NAMES[camera.shot] ?? humanize(camera.shot)}${camera.character ? ` of ${camera.character}` : ''}. ${cut} ${blocking} ${actions.join(' ')} ${expressions.join(' ')} ${eyeline} ${delivery}${line ? ` ${line.speaker}${line.tone ? `, speaking in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; any other characters listen silently.` : ''}`,
