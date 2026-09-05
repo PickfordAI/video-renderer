@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: pickford-renderer
+    runtime: docker
+    plan: 2c-4g
+    numInstances: 1
+    autoDeployTrigger: "off"
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: "4174"
+      - key: MEDIA_HOST
+        value: 0.0.0.0
+      - key: HOST
+        value: 127.0.0.1
+      - key: FAL_KEY
+        sync: false
+      - key: RENDERER_ADMIN_TOKEN
+        sync: false

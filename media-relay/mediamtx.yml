@@ -1,9 +1,9 @@
 logLevel: info
 logDestinations: [stdout]
 
-api: yes
+api: no
 apiAddress: :9997
-metrics: yes
+metrics: no
 metricsAddress: :9998
 
 rtsp: yes

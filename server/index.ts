@@ -1,32 +1,23 @@
 import 'dotenv/config';
 
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { extname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { ViteDevServer } from 'vite';
 
+import { allowOperatorRequest } from './access.js';
+import { serveMedia } from './media.js';
+import { servePublicViewer } from './public-viewer.js';
+import { viewerStatus } from './viewer-status.js';
+import { onboardingStatus } from '../scripts/onboarding.mjs';
+import { ExternalRendererRunManager } from './external-renderer.js';
 import { FalVideoError, generateVideo, type GenerateVideoInput } from './fal.js';
 import { parseGenerationInput } from './generation-input.js';
 import { handleNarrativeEngineApi } from './narrative-engine.js';
 import { PlayoutManager } from './playout.js';
 import { prepareReferenceAudioUrls } from './reference-audio.js';
 
-const isDevelopment = process.argv.includes('--dev');
-const appRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const distRoot = resolve(appRoot, 'dist');
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
-const builtInReferenceAssets = new Set([
-  'whispers/kent.jpg',
-  'whispers/nathan.jpg',
-  'whispers/richard.jpg',
-  'whispers/cassandra.jpg',
-  'whispers/june.jpg',
-  'whispers/song.jpg',
-  'whispers/autumn.jpg',
-]);
+const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -35,6 +26,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   });
   response.end(JSON.stringify(body));
 }
+
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -48,17 +40,17 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
-function referenceAssetDataUrl(assetKey: string): string {
-  if (!builtInReferenceAssets.has(assetKey)) throw new Error(`unknown character reference asset: ${assetKey}`);
-  const assetRoot = isDevelopment ? join(appRoot, 'public', 'reference-assets') : join(distRoot, 'reference-assets');
-  const assetPath = join(assetRoot, assetKey);
-  if (!existsSync(assetPath)) throw new Error(`character reference asset is missing: ${assetKey}`);
-  return `data:image/jpeg;base64,${readFileSync(assetPath).toString('base64')}`;
+function referenceAssetDataUrl(_assetKey: string): string {
+  throw new Error('Bundled reference assets are not supported; provide an HTTPS image URL.');
 }
 
 async function handleApi(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
   const requestUrl = new URL(request.url ?? '/', 'http://local');
   const pathname = requestUrl.pathname;
+  if (pathname === '/api/viewer-status' && request.method === 'GET') {
+    sendJson(response, 200, viewerStatus(onboardingStatus(), externalRendererRuns.latest()));
+    return true;
+  }
   if (pathname === '/api/health' && request.method === 'GET') {
     sendJson(response, 200, {
       ok: true,
@@ -76,6 +68,27 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
       sendJson(response, 201, session.status());
     } catch (error) {
       sendJson(response, 503, { error: error instanceof Error ? error.message : 'could not start playout' });
+    }
+    return true;
+  }
+  if (pathname === '/api/external-renderer/runs' && request.method === 'POST') {
+    try {
+      sendJson(response, 202, externalRendererRuns.start(await readJson(request)));
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : 'invalid external renderer run' });
+    }
+    return true;
+  }
+  const externalRunMatch = pathname.match(/^\/api\/external-renderer\/runs\/([0-9a-f-]{36})$/i);
+  if (externalRunMatch) {
+    if (request.method === 'GET') {
+      const run = externalRendererRuns.get(externalRunMatch[1]);
+      sendJson(response, run ? 200 : 404, run ?? { error: 'external renderer run not found' });
+    } else if (request.method === 'DELETE') {
+      const run = await externalRendererRuns.stop(externalRunMatch[1]);
+      sendJson(response, run ? 200 : 404, run ?? { error: 'external renderer run not found' });
+    } else {
+      sendJson(response, 405, { error: 'method not allowed' });
     }
     return true;
   }
@@ -152,57 +165,46 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
   return true;
 }
 
-const mimeTypes: Record<string, string> = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.jpg': 'image/jpeg',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-};
-
-function serveProduction(request: IncomingMessage, response: ServerResponse): void {
-  const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://local').pathname);
-  const requested = resolve(distRoot, `.${pathname}`);
-  const isSafe = requested === distRoot || requested.startsWith(`${distRoot}/`);
-  const filePath = isSafe && existsSync(requested) && statSync(requested).isFile()
-    ? requested
-    : join(distRoot, 'index.html');
-  response.writeHead(200, {
-    'Content-Type': mimeTypes[extname(filePath)] ?? 'application/octet-stream',
-  });
-  createReadStream(filePath).pipe(response);
-}
-
-let vite: ViteDevServer | null = null;
-
 const server = createServer(async (request, response) => {
-  if (await handleNarrativeEngineApi(request, response)) return;
-  if (await handleApi(request, response)) return;
-  if (vite) {
-    vite.middlewares(request, response, () => {
-      response.statusCode = 404;
-      response.end('Not found');
-    });
+  if (!allowOperatorRequest(request)) {
+    sendJson(response, 403, { error: 'This is the private operator port. Use the local agent or authenticated private proxy.' });
     return;
   }
-  serveProduction(request, response);
+  try {
+  if (new URL(request.url ?? '/', 'http://local').pathname === '/external-run.html' && request.method === 'GET') {
+    response.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+    response.end();
+    return;
+  }
+  if (await handleNarrativeEngineApi(request, response)) return;
+  if (await handleApi(request, response)) return;
+  if (await servePublicViewer(request, response)) return;
+  response.writeHead(404);
+  response.end();
+  } catch {
+    if (!response.headersSent) sendJson(response, 500, { error: 'Renderer request failed' });
+    else response.destroy();
+  }
 });
 
-if (isDevelopment) {
-  vite = await (await import('vite')).createServer({
-    root: appRoot,
-    server: { middlewareMode: true, hmr: { server } },
-    appType: 'spa',
-  });
-}
-
-server.listen(port, '0.0.0.0', () => {
-  console.log(`H3 Director listening at http://localhost:${port}`);
+const mediaServer = createServer((request, response) => {
+  void serveMedia(request, response, playoutManager).catch(() => response.destroy());
 });
+
+server.listen(port, process.env.HOST ?? '127.0.0.1', () => {
+  console.log(`Pickford renderer listening at http://localhost:${port}`);
+});
+
+mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), process.env.MEDIA_HOST ?? '127.0.0.1');
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void playoutManager.stopAll().finally(() => server.close());
+    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).finally(() => {
+      server.close();
+      server.closeAllConnections();
+      mediaServer.close();
+      mediaServer.closeAllConnections();
+      setTimeout(() => process.exit(0), 3000).unref();
+    });
   });
 }
