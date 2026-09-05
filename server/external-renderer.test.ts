@@ -5,6 +5,8 @@ import {
   createCommandProgressEvent,
   createGroupFinishedEvent,
   classifyStoryLifecycle,
+  createRendererAudienceMessage,
+  parseRendererAudienceResult,
   planGroupClips,
   parseExternalRendererRunConfig,
 } from './external-renderer.js';
@@ -92,6 +94,43 @@ describe('story lifecycle observation', () => {
       running_key: null,
       errors: { story_error_type: 'renderer_unavailable' },
     }, true, false)).toMatchObject({ state: 'failed', failure: 'renderer_unavailable' });
+  });
+});
+
+describe('renderer audience relay protocol', () => {
+  it('binds the browser message to the active story without browser-supplied auth or channel data', () => {
+    const message = createRendererAudienceMessage(42, {
+      externalSubject: 'viewer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      idempotencyKey: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      displayName: 'Ada',
+      content: 'Turn left',
+    });
+    expect(message).toEqual({
+      type: 'audience.message',
+      protocol_version: 1,
+      story_id: 42,
+      external_subject: 'viewer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      message_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      display_name: 'Ada',
+      content: 'Turn left',
+    });
+    expect(message).not.toHaveProperty('message_channel_id');
+    expect(message).not.toHaveProperty('token');
+  });
+
+  it('correlates accepted, duplicate, and rejected acknowledgements without exposing principals', () => {
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.accepted', source_message_id: 'source-1', message_id: storyChannelId,
+    })).toEqual({ key: 'source-1', result: { accepted: true, duplicate: false, messageId: storyChannelId } });
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.duplicate', source_message_id: 'source-2', message_id: roomChannelId,
+    })?.result).toMatchObject({ accepted: true, duplicate: true });
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.rejected', source_message_id: 'source-3', code: 'rate_limited', detail: 'Try later', retry_after_seconds: 2,
+    })).toEqual({
+      key: 'source-3',
+      result: { accepted: false, code: 'rate_limited', detail: 'Try later', retryAfterSeconds: 2 },
+    });
   });
 });
 

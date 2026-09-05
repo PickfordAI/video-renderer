@@ -97,15 +97,17 @@ agent; only the runtime installation credential is sent to the worker. The publi
 only the watch link and media. Opening the public root without a link does not reveal active
 stories or account setup status. Vercel is an optional standalone build of the **same player**.
 
-Anyone with the watch link can watch while the story runs. Hosting and fal usage are billed by
+Anyone with the watch link can watch and submit audience suggestions while the story runs. The
+renderer relays messages through its authenticated Story Kernel connection; credentials never
+enter the page. Treat the watch link as permission to participate. Hosting and fal usage are billed by
 their providers. Sessions are volatile: restarts or deployments end the run. One active story
-is supported per worker; durable resume, recording, and audience chat are not included.
+is supported per worker; durable resume and recording are not included.
 
 ## Development and verification
 
 The only frontend source is `viewer/`. Both worker listeners serve its built files. The private
-local listener adds a read-only status endpoint; the public listener exposes only player assets
-and live media. The retired `/external-run.html` address redirects to the player locally.
+local listener adds a read-only status endpoint; the public listener exposes player assets,
+live media, and same-origin audience chat for the active story. The retired `/external-run.html` address redirects to the player locally.
 The former React studio and manual credential form have been removed.
 
 ```sh

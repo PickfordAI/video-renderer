@@ -8,7 +8,8 @@ the Story Kernel is an external service, not a local package dependency.
   merely to run tests. Tests use fixtures/mocks and require no keys.
 - Treat .env, handoff JSON, and .renderer files as secrets. Never print credentials or include them
   in public artifacts, browser bundles, links, commits, logs, or build contexts.
-- Keep the operator port private. The public port serves only the built viewer and read-only HLS.
+- Keep the operator port private. The public port serves the built viewer, read-only HLS, and
+  same-origin audience messages bound to its active renderer run.
   Deploy worker and viewer together by default. Vercel is an optional standalone viewer only.
 - There is one frontend in viewer/. Never add a credential or service-URL setup form.
   Agents configure STORY_* environment variables or register a private onboarding handoff.
