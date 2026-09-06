@@ -655,7 +655,17 @@ export function createGroupFinishedEvent(input: {
 }
 
 async function jsonResponse(response: Response, label: string, expected: number): Promise<JsonObject> {
-  if (response.status !== expected) throw new Error(`${label} failed with HTTP ${response.status}`);
+  if (response.status !== expected) {
+    const text = await response.text();
+    let detail = '';
+    try {
+      const body = JSON.parse(text) as { detail?: unknown };
+      if (typeof body.detail === 'string' && body.detail) detail = `: ${body.detail.slice(0, 300)}`;
+    } catch {
+      // Preserve the bounded status-only error when the response is not JSON.
+    }
+    throw new Error(`${label} failed with HTTP ${response.status}${detail}`);
+  }
   return asObject(await response.json(), label);
 }
 
@@ -1219,7 +1229,7 @@ class ExternalRendererRun {
             renderer_id: this.config.rendererId,
             story_id: this.config.storyId,
             room_id: this.config.roomId,
-            config: this.config.storyConfig,
+            idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.storyId}`,
           }),
         });
         this.status.storyStartStatus = startResponse.status;
