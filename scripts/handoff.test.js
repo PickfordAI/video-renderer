@@ -26,7 +26,7 @@ describe('render mode handoff', () => {
     expect(renderingOptions({ renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://example.com/scene.jpg' })).toMatchObject({ rendererConfig: { model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 2, maxBufferedSeconds: 30 } });
   });
   it('rejects incomplete models and unsafe reference settings before provisioning', () => {
-    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { renderMode: 'fal-max-ref2v' }, { generationConcurrency: 9 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
+    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { generationConcurrency: 9 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
       expect(() => validateHandoff({ ...valid(), ...change })).toThrow();
     }
   });
@@ -50,4 +50,25 @@ describe('separate model and continuity policy', () => {
     expect(renderingOptions(value).rendererConfig).toEqual(rendererConfig);
     for (const continuity of ['none', 'camera-anchors']) expect(() => validateHandoff({ ...value, rendererConfig: { ...rendererConfig, model: 'fal-turbo-i2v', continuity } })).toThrow('does not yet support');
   });
+});
+
+describe('MINIMAX story handoff', () => {
+  it.each(['auto', 'fal-turbo-i2v', 'fal-max-ref2v'])('accepts MINIMAX independently of rendering model %s', model => {
+    const handoff = { ...valid(), storyType: 'MINIMAX', storyConfig: { base_structure: 'MINIMAX' }, rendererConfig: { model }, initialImageUrl: 'https://images.example/scene.jpg' };
+    expect(validateHandoff(handoff)).toBe(handoff);
+    expect(renderingOptions(handoff).rendererConfig.model).toBe(model);
+  });
+  it('rejects invalid and conflicting story types before provisioning', () => {
+    for (const storyType of ['MINIMAX_TYPO', '', null, 3]) expect(() => validateHandoff({ ...valid(), storyType })).toThrow('storyType must be');
+    expect(() => validateHandoff({ ...valid(), storyType: 'MINIMAX', storyConfig: { base_structure: 'WHISPERS' } })).toThrow('must match storyType');
+    expect(() => validateHandoff({ ...valid(), storyConfig: { base_structure: 'INVALID' } })).toThrow('must match storyType');
+    for (const storyType of ['CREATOR', 'WHISPERS']) expect(validateHandoff({ ...valid(), storyType }).storyType).toBe(storyType);
+  });
+});
+
+it('accepts Max handoff references supplied later by Kernel scene_context', () => {
+  const handoff = { ...valid(), storyType: 'MINIMAX', rendererConfig: { model: 'fal-max-ref2v', continuity: 'camera-anchors' } };
+  expect(validateHandoff(handoff)).toBe(handoff);
+  expect(renderingOptions(handoff)).toMatchObject({ rendererConfig: { model: 'fal-max-ref2v', continuity: 'camera-anchors' } });
+  expect(() => validateHandoff({ ...handoff, shotPlanner: { styleImageUrl: 'http://example.com/style.jpg' } })).toThrow('HTTPS');
 });

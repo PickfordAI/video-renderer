@@ -18,7 +18,7 @@ handling, and correlated command completion. It validates the separate story and
 channels. The setup user token is used by the provisioning/stop proxy only; renderer runtime
 uses the installation credential. Login tier is derived from the kernel environment.
 
-The configured-provider adapter combines each DSS frame into one clip. Explicit fal modes compile
+The configured-provider adapter compiles each DSS group serially. Explicit fal modes compile
 ordered groups into immutable shot plans, carrying staging across payloads. Their shared scheduler
 can generate later received DSS while earlier clips play. Group acknowledgements follow actual
 playback; generation completion does not advance the kernel cursor. Supported nonvisual controls
@@ -78,8 +78,10 @@ PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen h
 
 ## Compatibility and recovery
 
-The renderer-start and event-verdict contracts were inspected at StoryKernel commit
-`8ca50d8fcb6bfddc0a9d9db1fcffc54c72f0d6ed`. This is contract evidence, not proof of a complete
+The streaming DSS and playback-credit contracts were inspected at StoryKernel commit
+`d4894200eec9d462150923d7f4dd220d891c78ef`. The current certified start supplies the renderer,
+story/room identity and stable start idempotency key; Kernel resolves the story configuration.
+This is contract evidence, not proof of a complete
 live story. The protocol is still evolving; verify login, start, assignment, DSS, media, verdicts
 and Stop when upgrading. Offline fixtures do not establish provider or deployed-kernel acceptance.
 
@@ -132,6 +134,20 @@ duration, including payloads that contain only control commands. Enqueue and gro
 waits complete before their group acknowledgement; generation progress does not advance the
 kernel's sequence high-water mark. Stop aborts provider and frame-extraction jobs and drains them.
 A changed assignment terminates the run; it cannot enqueue stale results or silently resume.
+
+Kernel normally streams one command group per payload; its wire contract also permits multiple
+groups. Setup, camera and dialogue can therefore arrive separately. One planner consumes all
+groups in order and carries cast, set and camera state. `scene_index` advances the scene identity
+even when no `scene_context` is present or two scenes share the same set. Repeated preambles within
+one scene do not themselves start a new scene. A payload's numeric sequence is not a command type;
+setup is classified by its commands rather than silently dropping every sequence-zero payload.
+Original payload sequences and group IDs are retained for completion events.
+
+Kernel releases more contiguous DSS until the weighted duration of outstanding unplayed commands
+reaches its target, then waits for playback cursor advancement. The renderer processes whatever
+lookahead has arrived without requiring a scene-sized batch. `Group_Finished` advances that cursor;
+the separate exact verdict ACK confirms receipt of the authoritative outcome. Neither compilation
+nor provider completion is grounds for a playback acknowledgement.
 
 A FIFO feeder sends each generated clip to media preparation as soon as preceding clips have been
 enqueued. An independent playback consumer waits for the played position before releasing its
@@ -199,16 +215,22 @@ generation completion alone is insufficient to acknowledge DSS.
 
 ### Canonical references and derived images
 
-The intended upstream boundary is for StoryKernel to deliver the story's approved character,
-empty-set and style references with stable entity identities and asset versions. That delivery
-contract is not implemented by this renderer or the offline DSS-renderer experiment; today the
-private handoff supplies `shotPlanner` images. Avoid treating a local reference picker as the
-canonical store for every run.
+StoryKernel owns the canonical character and empty-set images. The renderer accepts the additive
+certified `scene_context` contract, binds character IDs and exact command names, validates complete
+positions, and caches successful image downloads by immutable asset ID across signed-URL refreshes.
+The inspected deployed Kernel at `d4894200` does not yet emit that context; private handoff
+`shotPlanner` images remain available for this path. Max checks its final per-shot references
+before provider submission, so a Kernel-only reference stream does not need a duplicate manual
+image list. Missing images fail explicitly. Turbo still needs an approved initial frame at start.
 
-The compiler selects identity pictures for the shot's visible characters while retaining off-screen
-state for later shots. Tight shots omit the listener's portrait. Set and style references remain
+The compiler selects identity pictures for the shot's visible characters while retaining the full
+certified cast and fixed positions for later shots. Tight shots omit the listener's portrait.
+Legacy spawn marks cannot overwrite certified positions; conflicting explicit movement, posture
+changes or cast removal require a new scene context instead of contradictory prompt instructions.
+Reference citations are assigned from the final ordered picture list; initial-frame-only prompts
+carry staging without inventing reference-array citations. Set and style references remain
 separate from character identity. Derived camera anchors and last-frame continuity belong to the
 renderer. A future Turbo opening-frame composition should use the relevant canonical set/cast and
 be cached separately; it must not overwrite those source assets. Refreshable references or cross-run
-caches would also need upstream asset versions in their cache keys. Neither automatic opening-frame
-generation nor a new Kernel asset wire format is introduced here.
+caches would also need upstream asset versions in their cache keys. Automatic opening-frame
+generation and changes to the Kernel wire format are outside this renderer integration.

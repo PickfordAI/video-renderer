@@ -1,3 +1,42 @@
+# Verification — incremental MiniMax DSS compilation, 2026-09-06
+
+The streaming integration combines scene-context PR #4 (`6a880bce`) with the runtime contracts
+merged in PR #5 (`c32c4510`). Kernel wire behavior was inspected at
+`d4894200eec9d462150923d7f4dd220d891c78ef`: numeric MiniMax story type 4, per-group delivery,
+scene indexes, and duration-weighted playback credit. That source does not emit `scene_context`.
+
+- `npm run check` passed: **238 tests across 32 files**, TypeScript, and server/player production
+  builds. Tests used Node 22 and local fixture networking. `docker compose config --quiet` and
+  `git diff --check` passed. No Python code or tests changed in this standalone repository.
+- An independent source review found no concrete blocker in streaming state retention, scene
+  resets, reference validation, sequence-zero handling, provisioning, or playback/ACK ordering.
+- A separate no-cost harness exercised the real compiler, scheduler, fal adapters, FFmpeg and
+  MediaMTX with fake Kernel/fal endpoints and synthetic media. It used a **source-derived MiniMax
+  fixture**, not captured live MiniMax DSS. Each mode was capped at three five-second video jobs.
+- Both Max ref2vid and Turbo i2v played all three clips, reached the natural end, and acknowledged
+  all six simulated event verdicts with zero pending or refused verdicts and final frontier 3.
+  HLS variants and video segments returned 200; each sampled segment contained 356,824 bytes.
+- The fixture imposed a ten-second weighted delivery budget. The third visual group arrived only
+  after the first group's actual playback completion advanced the cursor in both modes.
+  Generation completion alone did not release that credit.
+- Max's first two camera setups submitted two milliseconds apart; the returning camera used its
+  extracted anchor. Turbo's successors used extracted predecessor frames. All 19 executed source
+  hashes were unchanged across the final pair, and neither run attempted outbound provider calls.
+- Stop left both completed runs stable at three jobs. Temporary relay/services were stopped and
+  processes exited; the existing local renderer and Kernel were left untouched.
+- Read-only edge discovery rejected the saved local account token with 401 at both the published
+  MiniMax EVD listing and owned-renderer listing. The token still authenticated against local
+  authoring. No edge login, credential creation, story start, or provider generation was attempted.
+
+Not established: live current-Kernel MiniMax delivery, paid provider latency or visual/voice
+fidelity, sustained realtime performance, or a hosted deployment. A live edge run needs valid edge
+onboarding for a MiniMax EVD and approved cast/set images (Max) or an opening frame (Turbo), because
+the inspected Kernel does not deliver those references. The saved local WHISPERS handoff does not
+establish that setup. The monorepo completion command is unavailable here: this standalone repo
+has no `make agent-done` target; its own checks are reported above.
+
+---
+
 # Verification — StoryKernel generation integration, 2026-09-05
 
 The generation branch incorporates Cole's single-player revision `47f00743` and keeps renderer

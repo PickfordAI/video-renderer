@@ -80,7 +80,7 @@ describe('Narrative Engine server proxy', () => {
     ]);
   });
 
-  it('provisions an inactive story with a distinct room-bound audience channel', async () => {
+  it.each(['WHISPERS', 'CREATOR', 'MINIMAX', undefined])('provisions an inactive %s story with a distinct room-bound audience channel', async (storyType) => {
     const roomId = '11111111-1111-4111-8111-111111111111';
     const roomChannelId = '22222222-2222-4222-8222-222222222222';
     const storyChannelId = '33333333-3333-4333-8333-333333333333';
@@ -123,7 +123,7 @@ describe('Narrative Engine server proxy', () => {
         password: 'setup-only',
         roomName: 'Public H3',
         evdId,
-        storyType: 'WHISPERS',
+        storyType,
       }),
     });
 
@@ -135,6 +135,8 @@ describe('Narrative Engine server proxy', () => {
       storyMessageChannelId: storyChannelId,
       roomMainMessageChannelId: roomChannelId,
     });
+    expect(calls.find((call) => call.path === '/room/')?.body).toMatchObject({ story_type: storyType ?? 'WHISPERS' });
+    expect(calls.some((call) => /renderer|features|admin/.test(call.path))).toBe(false);
     expect(calls.find((call) => call.path === '/story/')?.body).toEqual({ room_id: roomId, active: false });
     expect(calls.find((call) => call.path === '/message_channel/' && call.method === 'POST')?.body).toEqual({
       name: 'External audience',
@@ -209,7 +211,7 @@ describe('Narrative Engine server proxy', () => {
     expect(paths).toEqual(['/room/join']);
   });
 
-  it('creates, joins, configures, starts, and rereads an EVD-backed show in order', async () => {
+  it.each(['CREATOR', 'MINIMAX'])('creates and starts an EVD-backed %s show in order', async (storyType) => {
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
     const upstream = await listen(createServer(async (request, response) => {
       const chunks: Buffer[] = [];
@@ -240,7 +242,7 @@ describe('Narrative Engine server proxy', () => {
         token: 'session-token',
         roomName: 'H3 Show',
         evdId: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
-        storyType: 'CREATOR',
+        storyType,
       }),
     });
 
@@ -253,7 +255,7 @@ describe('Narrative Engine server proxy', () => {
       {
         method: 'POST',
         path: '/room/',
-        body: { name: 'H3 Show', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: 'CREATOR' },
+        body: { name: 'H3 Show', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: storyType },
       },
       { method: 'POST', path: '/room/join', body: { shortlink: 'h3-show' } },
       { method: 'PATCH', path: '/room/playback-mode', body: { room_id: 'room-1', mode: 'video' } },
@@ -275,7 +277,7 @@ describe('Narrative Engine server proxy', () => {
     ]);
   });
 
-  it('prepares an inactive story and active story channel for a renderer-pinned start', async () => {
+  it.each(['WHISPERS', 'MINIMAX'])('prepares an inactive %s story and channel for a renderer-pinned start', async (storyType) => {
     const roomId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const channelId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
@@ -306,7 +308,7 @@ describe('Narrative Engine server proxy', () => {
         token: 'session-token',
         roomName: 'Renderer Room',
         evdId: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
-        storyType: 'WHISPERS',
+        storyType,
       }),
     });
 
@@ -321,14 +323,14 @@ describe('Narrative Engine server proxy', () => {
       storyId: 42,
       storyMessageChannelId: channelId,
       storyConfig: {
-        base_structure: 'WHISPERS',
+        base_structure: storyType,
         evd_id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
         character_ids: [],
         message_channel_ids: [channelId],
       },
     });
     expect(calls).toEqual([
-      { method: 'POST', path: '/room/', body: { name: 'Renderer Room', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: 'WHISPERS' } },
+      { method: 'POST', path: '/room/', body: { name: 'Renderer Room', visibility: 'PRIVATE', state: 'ACTIVE', redundant_renderer_count: 1, story_type: storyType } },
       { method: 'POST', path: '/room/join', body: { shortlink: 'renderer-room' } },
       { method: 'PATCH', path: '/room/playback-mode', body: { room_id: roomId, mode: 'video' } },
       { method: 'POST', path: '/story/', body: { room_id: roomId, evd_id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4', active: false } },
@@ -611,7 +613,9 @@ describe('Narrative Engine server proxy', () => {
     ]);
   });
 
-  it('loads visible draft and published EVDs from Narrative Authoring', async () => {
+  it.each(['CREATOR', 'WHISPERS', 'MINIMAX'])('loads only %s draft and published EVDs from Narrative Authoring', async (storyType) => {
+    const cvdId = `cvd-${storyType.toLowerCase()}`;
+    const cvdName = `${storyType} Show`;
     const calls: Array<{ path: string; authorization: string }> = [];
     const upstream = await listen(createServer((request, response) => {
       calls.push({
@@ -621,15 +625,16 @@ describe('Narrative Engine server proxy', () => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       if (request.url === '/admin/cvds') {
         response.end(JSON.stringify([
-          { id: 'cvd-whispers', name: 'Whispers Show', story_type: 'WHISPERS' },
-          { id: 'cvd-creator', name: 'Creator Show', story_type: 'CREATOR' },
+          { id: 'cvd-whispers', name: 'WHISPERS Show', story_type: 'WHISPERS' },
+          { id: 'cvd-creator', name: 'CREATOR Show', story_type: 'CREATOR' },
+          { id: 'cvd-minimax', name: 'MINIMAX Show', story_type: 'MINIMAX' },
         ]));
         return;
       }
       response.end(JSON.stringify([
         {
           id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
-          cvd_id: 'cvd-creator',
+          cvd_id: cvdId,
           name: 'Draft pilot',
           episode_number: 1,
           is_active: true,
@@ -637,7 +642,7 @@ describe('Narrative Engine server proxy', () => {
         },
         {
           id: '55a03fb0-3c2e-49cd-8eca-70441289678d',
-          cvd_id: 'cvd-creator',
+          cvd_id: cvdId,
           name: 'Published follow-up',
           episode_number: 2,
           is_active: false,
@@ -652,7 +657,7 @@ describe('Narrative Engine server proxy', () => {
       body: JSON.stringify({
         baseUrl: upstream,
         token: 'session-token',
-        storyType: 'CREATOR',
+        storyType,
       }),
     });
 
@@ -660,8 +665,8 @@ describe('Narrative Engine server proxy', () => {
     expect(await response.json()).toEqual([
       {
         id: 'c7dfcb7c-5908-48bc-851c-f39f67a04ac4',
-        cvd_id: 'cvd-creator',
-        cvd_name: 'Creator Show',
+        cvd_id: cvdId,
+        cvd_name: cvdName,
         name: 'Draft pilot',
         episode_number: 1,
         is_active: true,
@@ -669,8 +674,8 @@ describe('Narrative Engine server proxy', () => {
       },
       {
         id: '55a03fb0-3c2e-49cd-8eca-70441289678d',
-        cvd_id: 'cvd-creator',
-        cvd_name: 'Creator Show',
+        cvd_id: cvdId,
+        cvd_name: cvdName,
         name: 'Published follow-up',
         episode_number: 2,
         is_active: false,
@@ -679,7 +684,7 @@ describe('Narrative Engine server proxy', () => {
     ]);
     expect(calls).toEqual([
       { path: '/admin/cvds', authorization: 'Bearer session-token' },
-      { path: '/admin/cvds/cvd-creator/evds', authorization: 'Bearer session-token' },
+      { path: `/admin/cvds/${cvdId}/evds`, authorization: 'Bearer session-token' },
     ]);
   });
 
@@ -741,5 +746,20 @@ describe('Narrative Engine server proxy', () => {
     });
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({ error: 'service base URL must use http or https' });
+  });
+});
+
+describe('story type validation', () => {
+  it.each(['start-show', 'prepare-show', 'provision-external-story', 'available-evds'])('rejects an unknown story type in %s before upstream calls', async (endpoint) => {
+    const calls: string[] = [];
+    const upstream = await listen(createServer((request, response) => { calls.push(request.url ?? ''); response.writeHead(500).end(); }));
+    const proxy = await proxyServer();
+    const response = await fetch(`${proxy}/api/narrative/${endpoint}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl: upstream, token: endpoint === 'provision-external-story' ? undefined : 'fixture-token', email: 'fixture@example.test', password: 'fixture-password', roomName: 'Fixture', evdId: '44444444-4444-4444-8444-444444444444', storyType: 'MINIMAX_TYPO' }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'storyType must be CREATOR, WHISPERS, or MINIMAX.' });
+    expect(calls).toEqual([]);
   });
 });
