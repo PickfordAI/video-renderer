@@ -39,6 +39,12 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `shotPlanner` | Named cast/set references, style, readable marks, and optional 2–15-second voice samples |
 
 
+For Minimax `scene_context`, fail closed before paid generation unless the payload contains one
+authored set image, every participating character image (including silent characters), and exactly
+matching `character_positions`. Fetch HTTPS assets into the per-run stable-ID cache; refreshed
+access URLs must never replace a successfully cached asset. Keep authoring set IDs separate from
+physical Unity/Creator set identifiers.
+
 Optional `story` lets onboarding provide an **inactive** story already provisioned for this run.
 It must contain `storyId`, `roomId`, `roomShortlink`, `storyMessageChannelId`, and
 `roomMainMessageChannelId`. Obtain channel IDs from the kernel; never invent them or substitute
