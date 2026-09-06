@@ -1310,13 +1310,19 @@ class ExternalRendererRun {
             const waitSignal = AbortSignal.any([this.abortController.signal, waitController.signal]);
             // ACK-gated kernels may legitimately deliver no next DSS throughout
             // generation and playback. Their idle timeout starts after real ACKs.
-            const idleTimeout = (async () => {
-              await prepared.waitForIdle(waitSignal);
-              await waitWithAbort(DSS_IDLE_TIMEOUT_MS, waitSignal);
-              throw new Error('timed out waiting for DSS after playback became idle');
-            })();
             let message: JsonObject;
-            try { message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]); }
+            try {
+              if (!this.status.firstAssignmentAt) {
+                message = await dssMessages.next(null, waitSignal);
+              } else {
+                const idleTimeout = (async () => {
+                  await prepared.waitForIdle(waitSignal);
+                  await waitWithAbort(DSS_IDLE_TIMEOUT_MS, waitSignal);
+                  throw new Error('timed out waiting for DSS after playback became idle');
+                })();
+                message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]);
+              }
+            }
             finally { waitController.abort(); }
             const frame = parseDssFrame(message);
             if (this.acceptFrame(frame)) await prepared.prepare(() => this.preparePlannedFrame(frame));
@@ -1343,7 +1349,10 @@ class ExternalRendererRun {
         return;
       }
       while (!this.stopped && this.socket.readyState === WebSocket.OPEN) {
-        const message = await dssMessages.next(DSS_IDLE_TIMEOUT_MS, this.abortController.signal);
+        const message = await dssMessages.next(
+          this.status.firstAssignmentAt ? DSS_IDLE_TIMEOUT_MS : null,
+          this.abortController.signal,
+        );
         if (message.type === 'websocket.closed') break;
         if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
         const frame = parseDssFrame(message);
