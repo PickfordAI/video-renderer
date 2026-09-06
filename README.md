@@ -207,6 +207,25 @@ Environment onboarding supports `STORY_RENDERER_CONFIG_JSON`, `STORY_SHOT_PLANNE
 `generationConcurrency`, and `maxBufferedSeconds` remain accepted; explicit `rendererConfig`
 fields take precedence. Stop the active run before changing its settings.
 
+## Replay recorded DSS offline
+
+`npm run replay` feeds a recorded DSS stream through the same compiler, scheduler, and continuity
+policy the live bridge uses, without a kernel connection. Recordings can be a JSON array, JSONL, or
+`{received_at, event}` capture rows. Planning is free; `--render` submits the same paid fal jobs the
+bridge would and assembles the clips into `story.mp4`.
+
+```sh
+npm run replay -- --dss recordings/story.jsonl --continuity camera-anchors --shot-planner refs.json
+npm run replay -- --dss recordings/story.jsonl --from 40 --to 52 --model fal-turbo-i2v --initial-image https://... --render
+```
+
+Payloads before `--from` still replay staging, so a later range keeps its set and blocking, but
+anchor and chain sources are chosen only inside the range. The summary lists each shot's dependency
+(`anchor: establish`, `anchor: reuse <shot>`, `chain: from <shot>`) and, after rendering, provider
+time against video time. `plan.json` / `run.json` land in `--out` (default `.renderer/replay/<time>`).
+Replay skips kernel transport, playback pacing, and acknowledgements, so it measures generation
+throughput and compilation, not sustained live playout.
+
 ## Hackathon rendering limits
 
 Dialogue and supported character actions become generated video. Set and cast setup becomes prompt
