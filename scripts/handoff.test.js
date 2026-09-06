@@ -12,6 +12,15 @@ describe('handoff validation before provisioning', () => {
   it('rejects credentials, duration and version mistakes before creating a room', () => {
     for (const change of [{ rendererId: 'wrong' }, { clientSecret: '' }, { clipDurationSeconds: 99 }, { rendererVersion: 'v1' }, { environment: 'wrong' }]) expect(() => validateHandoff({ ...valid(), ...change })).toThrow();
   });
+  it('accepts a loopback ws bridge override while still requiring wss elsewhere', () => {
+    const local = { ...valid(), environment: 'local', services: { rendererWebsocketUrl: 'ws://127.0.0.1:8293/api/v1/renderer-bridge/ws' } };
+    expect(validateHandoff(local)).toEqual(local);
+    expect(() => validateHandoff(local, true)).toThrow('must use WSS');
+    expect(validateHandoff({ ...valid(), services: { rendererWebsocketUrl: 'wss://edge.pickford.ai/api/v1/renderer-bridge/ws' } }, true)).toBeTruthy();
+    for (const url of ['https://127.0.0.1:8293/ws', 'ws://bridge.example/ws', 'wss://127.0.0.1:8293/ws?token=secret']) {
+      expect(() => validateHandoff({ ...valid(), services: { rendererWebsocketUrl: url } })).toThrow();
+    }
+  });
   it('rejects local and credential-bearing URLs for hosted workers', () => {
     for (const url of ['http://127.0.0.1:8281', 'https://localhost', 'https://token@example.com', 'https://example.com?token=secret']) expect(() => validateHandoff({ ...valid(), services: { narrativeEngineUrl: url } }, true)).toThrow();
   });

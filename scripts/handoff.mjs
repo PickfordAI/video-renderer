@@ -72,12 +72,19 @@ export function validateHandoff(value, hosted = false) {
   if (value.clipDurationSeconds !== undefined && (!Number.isInteger(value.clipDurationSeconds) || value.clipDurationSeconds < 5 || value.clipDurationSeconds > 15)) throw new Error('clipDurationSeconds must be an integer from 5 to 15.');
   if (value.storyConfig !== undefined && (!value.storyConfig || typeof value.storyConfig !== 'object' || Array.isArray(value.storyConfig))) throw new Error('storyConfig must be an object.');
   if (value.storyConfig?.base_structure !== undefined && value.storyConfig.base_structure !== (value.storyType ?? 'CREATOR')) throw new Error('storyConfig.base_structure must match storyType (CREATOR when omitted).');
-  for (const url of Object.values(value.services ?? {})) {
+  for (const [name, url] of Object.entries(value.services ?? {})) {
     let parsed;
     try { parsed = new URL(url); } catch { throw new Error('Handoff contains an invalid service URL.'); }
     if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('Service URLs cannot contain credentials, queries, or fragments.');
     const local = ['localhost', '127.0.0.1', '[::1]', 'host.docker.internal'].includes(parsed.hostname);
-    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local && !hosted)) throw new Error('Services must use HTTPS; local mode also permits loopback HTTP.');
+    // The renderer bridge is a WebSocket endpoint; every other service is HTTP.
+    const secure = name === 'rendererWebsocketUrl' ? 'wss:' : 'https:';
+    const plain = name === 'rendererWebsocketUrl' ? 'ws:' : 'http:';
+    if (parsed.protocol !== secure && !(parsed.protocol === plain && local && !hosted)) {
+      throw new Error(name === 'rendererWebsocketUrl'
+        ? 'rendererWebsocketUrl must use WSS; local mode also permits loopback WS.'
+        : 'Services must use HTTPS; local mode also permits loopback HTTP.');
+    }
     if (hosted && local) throw new Error('Hosted workers cannot reach local Docker services.');
   }
   if (value.story) {
