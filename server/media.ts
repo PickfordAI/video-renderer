@@ -3,13 +3,21 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PlayoutManager } from './playout.js';
+import type { AudienceChatGateway } from './audience-chat.js';
 
 export function mediaPath(pathname: string): { sessionId: string; relayPath: string } | null {
   const match = pathname.match(/^\/hls\/h3-([0-9a-f-]{36})\/([a-zA-Z0-9_-]+\.(?:m3u8|mp4|m4s|ts))$/);
   return match ? { sessionId: match[1], relayPath: `/h3-${match[1]}/${match[2]}` } : null;
 }
 
-export async function serveMedia(request: IncomingMessage, response: ServerResponse, manager: PlayoutManager, viewerRoot?: string): Promise<void> {
+export async function serveMedia(
+  request: IncomingMessage,
+  response: ServerResponse,
+  manager: PlayoutManager,
+  viewerRoot?: string,
+  audienceChat?: AudienceChatGateway,
+): Promise<void> {
+  if (audienceChat && await audienceChat.handle(request, response)) return;
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');

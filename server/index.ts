@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import { allowOperatorRequest } from './access.js';
+import { AudienceChatGateway } from './audience-chat.js';
 import { serveMedia } from './media.js';
 import { servePublicViewer } from './public-viewer.js';
 import { viewerStatus } from './viewer-status.js';
@@ -20,6 +21,7 @@ const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
 const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
+const audienceChat = new AudienceChatGateway(externalRendererRuns);
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -277,7 +279,7 @@ const server = createServer(async (request, response) => {
 });
 
 const mediaServer = createServer((request, response) => {
-  void serveMedia(request, response, playoutManager).catch(() => response.destroy());
+  void serveMedia(request, response, playoutManager, undefined, audienceChat).catch(() => response.destroy());
 });
 
 server.listen(port, process.env.HOST ?? '127.0.0.1', () => {

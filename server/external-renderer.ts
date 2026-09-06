@@ -77,6 +77,65 @@ export interface ExternalRendererRunStatus {
   failures: string[];
 }
 
+export interface AudienceChatMessageInput {
+  externalSubject: string;
+  displayName: string;
+  content: string;
+  idempotencyKey: string;
+}
+
+export interface AudienceChatMessageResult {
+  accepted: boolean;
+  messageId?: string;
+  duplicate?: boolean;
+  code?: string;
+  detail?: string;
+  retryAfterSeconds?: number;
+}
+
+export function createRendererAudienceMessage(storyId: number, input: AudienceChatMessageInput): JsonObject {
+  return {
+    type: 'audience.message',
+    protocol_version: 1,
+    story_id: storyId,
+    external_subject: input.externalSubject,
+    message_id: input.idempotencyKey,
+    display_name: input.displayName,
+    content: input.content,
+  };
+}
+
+export function parseRendererAudienceResult(message: JsonObject): { key: string; result: AudienceChatMessageResult } | null {
+  if (!['audience.message.accepted', 'audience.message.duplicate', 'audience.message.rejected'].includes(String(message.type))) {
+    return null;
+  }
+  const key = typeof message.source_message_id === 'string'
+    ? message.source_message_id
+    : typeof message.message_id === 'string'
+      ? message.message_id
+      : '';
+  if (!key) return null;
+  if (message.type === 'audience.message.rejected') {
+    return {
+      key,
+      result: {
+        accepted: false,
+        code: typeof message.code === 'string' ? message.code : 'rejected',
+        detail: typeof message.detail === 'string' ? message.detail : 'The story did not accept the message.',
+        retryAfterSeconds: typeof message.retry_after_seconds === 'number' ? message.retry_after_seconds : undefined,
+      },
+    };
+  }
+  return {
+    key,
+    result: {
+      accepted: true,
+      duplicate: message.type === 'audience.message.duplicate',
+      messageId: typeof message.message_id === 'string' ? message.message_id : undefined,
+    },
+  };
+}
+
 interface DssGroup {
   id: string;
   commands: JsonObject[];
@@ -210,6 +269,13 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const fallbackStoryChannel = '00000000-0000-4000-8000-000000000001';
   const fallbackRoomChannel = '00000000-0000-4000-8000-000000000002';
   const storyConfig = asObject(body.storyConfig ?? { message_channel_ids: [fallbackStoryChannel] }, 'storyConfig');
+  const resumeExistingStory = body.resumeExistingStory === true;
+  if (body.storyConfig !== undefined && !resumeExistingStory) {
+    uuid(storyConfig.evd_id, 'storyConfig.evd_id');
+    if (!['MINIMAX', 'CREATOR', 'WHISPERS'].includes(String(storyConfig.base_structure))) {
+      throw new Error('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
+    }
+  }
   const rendererId = uuid(body.rendererId, 'rendererId');
   const configuredChannels = storyConfig.message_channel_ids;
   const storyMessageChannelId = uuid(body.storyMessageChannelId ?? fallbackStoryChannel, 'storyMessageChannelId');
@@ -249,7 +315,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     storyStatusToken: body.storyStatusToken === undefined ? null : requiredString(body.storyStatusToken, 'storyStatusToken'),
     resolution,
     clipDurationSeconds,
-    resumeExistingStory: body.resumeExistingStory === true,
+    resumeExistingStory,
   };
 }
 
@@ -589,7 +655,17 @@ export function createGroupFinishedEvent(input: {
 }
 
 async function jsonResponse(response: Response, label: string, expected: number): Promise<JsonObject> {
-  if (response.status !== expected) throw new Error(`${label} failed with HTTP ${response.status}`);
+  if (response.status !== expected) {
+    const text = await response.text();
+    let detail = '';
+    try {
+      const body = JSON.parse(text) as { detail?: unknown };
+      if (typeof body.detail === 'string' && body.detail) detail = `: ${body.detail.slice(0, 300)}`;
+    } catch {
+      // Preserve the bounded status-only error when the response is not JSON.
+    }
+    throw new Error(`${label} failed with HTTP ${response.status}${detail}`);
+  }
   return asObject(await response.json(), label);
 }
 
@@ -681,6 +757,10 @@ class ExternalRendererRun {
   private readonly anchorShots = new Map<string, ScheduledShot<GeneratedShot>>();
   private readonly sceneTails = new Map<string, ScheduledShot<GeneratedShot>>();
   private assignmentKey: string | null = null;
+  private readonly pendingAudienceMessages = new Map<
+    string,
+    { resolve: (value: AudienceChatMessageResult) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
+  >();
 
   constructor(
     private readonly config: ExternalRendererRunConfig,
@@ -725,25 +805,34 @@ class ExternalRendererRun {
     this.status.failures.push(detail.slice(0, 500));
     this.status.failures.splice(0, Math.max(0, this.status.failures.length - MAX_FAILURES));
     this.status.state = 'failed';
-    void this.closeResources();
+    void this.closeResources({ preservePlayableOutput: this.status.clipsRendered > 0 });
   }
 
-  private async closeResources(): Promise<void> {
-    if (this.closing) return this.closing;
-    this.stopped = true;
-    this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
-    if (this.heartbeat) clearInterval(this.heartbeat);
-    if (this.verdictWatch) clearInterval(this.verdictWatch);
-    this.heartbeat = null;
-    this.verdictWatch = null;
-    this.closing = (async () => {
-      await Promise.all([
+  private async closeResources(options: { preservePlayableOutput?: boolean } = {}): Promise<void> {
+    if (!this.closing) {
+      this.stopped = true;
+      this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      if (this.verdictWatch) clearInterval(this.verdictWatch);
+      this.heartbeat = null;
+      this.verdictWatch = null;
+      for (const pending of this.pendingAudienceMessages.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error('The story chat disconnected.'));
+      }
+      this.pendingAudienceMessages.clear();
+      this.closing = Promise.all([
         this.socket ? closeSocket(this.socket) : Promise.resolve(),
-        this.playout ? this.playoutManager.stop(this.playout.sessionId) : Promise.resolve(),
         this.scheduler.drain(),
-      ]);
-    })();
-    return this.closing;
+      ]).then(() => undefined);
+    }
+    const playoutStop = this.playout && !options.preservePlayableOutput
+      ? this.playoutManager.stop(this.playout.sessionId)
+      : Promise.resolve();
+    if (this.playout && !options.preservePlayableOutput) {
+      this.playout = null;
+    }
+    await Promise.all([this.closing, playoutStop]);
   }
 
   private progressEvent(frame: DssFrame, group: DssGroup, current: number, total: number): JsonObject {
@@ -1030,6 +1119,40 @@ class ExternalRendererRun {
     }
   }
 
+  async submitAudienceMessage(input: AudienceChatMessageInput): Promise<AudienceChatMessageResult> {
+    if (this.stopped || this.status.state !== 'running' || this.socket?.readyState !== WebSocket.OPEN) {
+      throw new Error('The story chat is not connected yet.');
+    }
+    if (this.pendingAudienceMessages.has(input.idempotencyKey)) {
+      throw new Error('That message is already being sent.');
+    }
+    return await new Promise<AudienceChatMessageResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingAudienceMessages.delete(input.idempotencyKey);
+        reject(new Error('The story chat did not acknowledge the message.'));
+      }, 10_000);
+      this.pendingAudienceMessages.set(input.idempotencyKey, { resolve, reject, timeout });
+      try {
+        send(this.socket!, createRendererAudienceMessage(this.config.storyId, input));
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingAudienceMessages.delete(input.idempotencyKey);
+        reject(error instanceof Error ? error : new Error('The story chat could not send the message.'));
+      }
+    });
+  }
+
+  private resolveAudienceMessage(message: JsonObject): boolean {
+    const parsed = parseRendererAudienceResult(message);
+    if (!parsed) return false;
+    const pending = this.pendingAudienceMessages.get(parsed.key);
+    if (!pending) return true;
+    clearTimeout(pending.timeout);
+    this.pendingAudienceMessages.delete(parsed.key);
+    pending.resolve(parsed.result);
+    return true;
+  }
+
   async start(): Promise<void> {
     try {
       const playout = await this.playoutManager.start({ startupBufferClips: 1 });
@@ -1106,7 +1229,7 @@ class ExternalRendererRun {
             renderer_id: this.config.rendererId,
             story_id: this.config.storyId,
             room_id: this.config.roomId,
-            config: this.config.storyConfig,
+            idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.storyId}`,
           }),
         });
         this.status.storyStartStatus = startResponse.status;
@@ -1138,6 +1261,7 @@ class ExternalRendererRun {
             this.status.lastHeartbeatAt = new Date().toISOString();
             continue;
           }
+          if (this.resolveAudienceMessage(message)) continue;
           if (message.type === 'renderer.event.verdict') {
             const ack = this.verdicts.receiveVerdict(message, this.assignmentKey);
             if (ack) await this.acknowledgeVerdict(ack);
@@ -1308,6 +1432,12 @@ export class ExternalRendererRunManager {
 
   latest(): ExternalRendererRunStatus | null {
     return [...this.runs.values()].at(-1)?.status ?? null;
+  }
+
+  async submitAudienceMessage(input: AudienceChatMessageInput): Promise<AudienceChatMessageResult> {
+    const run = [...this.runs.values()].at(-1);
+    if (!run) throw new Error('There is no active story.');
+    return await run.submitAudienceMessage(input);
   }
 
   async stop(runId: string): Promise<ExternalRendererRunStatus | null> {

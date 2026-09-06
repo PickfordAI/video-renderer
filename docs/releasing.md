@@ -40,6 +40,7 @@ and publish an immutable digest. Source-release CI does not publish a container 
 ## Current operational limits
 
 Sessions are in memory; restarts/deploys interrupt playback. One active agent run per worker,
-no durable resume, recording, audience chat UI, or per-viewer authentication. The agent bridge
+no durable resume, recording, or per-viewer authentication. The watch-link audience chat uses a
+browser-local pseudonym and the renderer's fenced backend connection. The agent bridge
 uses text prompts. The old reference-editing studio is removed; the single player has no manual
 rendering or credential setup controls. Verify provider pricing before budgeting real runs.
