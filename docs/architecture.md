@@ -175,8 +175,11 @@ distinguishes exact dialogue audio from a generic voice sample. Dedicated style 
 anchor visual style; character portraits remain identity references. Camera cuts hold established
 blocking unless an action changes it, while Turbo's supplied frame retains its framing. Repeated
 character declarations update carried state; they are not assumed to replace the complete cast.
-The kernel's in-place `talking` animation retains the camera anchor. Position-changing and unknown
-animations still invalidate anchors conservatively.
+The kernel's in-place performance animations (`talking`, `hands on hips`, `thinking`, and the other
+known stationary gestures) retain the camera anchor. Position-changing and unknown animations still
+invalidate anchors conservatively. A camera anchor is keyed by scene, framing, speaker and eyeline
+partner, and the blocking of on-screen cast only, so an off-screen character changing marks does not
+discard an established close-up frame.
 
 The private operator `POST /api/video-frame` extracts first/last continuity frames. The public
 viewer cannot call it. Extraction is restricted to the supported fal media CDN, with bounded

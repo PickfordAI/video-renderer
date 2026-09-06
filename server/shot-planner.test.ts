@@ -226,6 +226,30 @@ describe('DSS shot planning', () => {
     expect(moved.hasMovement).toBe(true);
   });
 
+  it('reuses camera anchors across stationary performances and off-screen blocking changes, but not a changed eyeline partner', () => {
+    const planner = new DssShotPlanner(configured);
+    setup(planner);
+    planner.planGroup([command('add character', { name: 'Rex', point: { mark: 'Station.Platform' } })], 'rex', 'block');
+    const first = planner.planGroup([command('talk', { character: 'Maya', respondent: 'Theo', dialogue: 'Well?', audio_duration: 2, camera_shot: 'Character_CloseUp' })], 'a1', 'block').shots[0];
+    const gesture = planner.planGroup([
+      command('play animation', { character: 'Maya', animation: 'hands_on_hips' }),
+      command('talk', { character: 'Maya', respondent: 'Theo', dialogue: 'Well?', audio_duration: 2, camera_shot: 'Character_CloseUp' }),
+    ], 'a2', 'block').shots[0];
+    expect(gesture.hasMovement).toBe(false);
+    expect(gesture.anchorKey).toBe(first.anchorKey);
+    planner.planGroup([command('character move to', { character: 'Rex', location: { name: 'Station.Door' } })], 'rex-moves', 'block');
+    const afterOffscreenMove = planner.planGroup([command('talk', { character: 'Maya', respondent: 'Theo', dialogue: 'Well?', audio_duration: 2, camera_shot: 'Character_CloseUp' })], 'a3', 'block').shots[0];
+    expect(afterOffscreenMove.continuityKey).not.toBe(first.continuityKey);
+    expect(afterOffscreenMove.anchorKey).toBe(first.anchorKey);
+    const otherListener = planner.planGroup([command('talk', { character: 'Maya', respondent: 'Rex', dialogue: 'Well?', audio_duration: 2, camera_shot: 'Character_CloseUp' })], 'a4', 'block').shots[0];
+    expect(otherListener.setupKey).toBe(first.setupKey);
+    expect(otherListener.anchorKey).not.toBe(first.anchorKey);
+    const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Everyone.', audio_duration: 2, camera_shot: 'Wide' })], 'w1', 'block').shots[0];
+    planner.planGroup([command('character move to', { character: 'Theo', location: { name: 'Station.Door' } })], 'theo-moves', 'block');
+    const wideAfterVisibleMove = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Everyone.', audio_duration: 2, camera_shot: 'Wide' })], 'w2', 'block').shots[0];
+    expect(wideAfterVisibleMove.anchorKey).not.toBe(wide.anchorKey);
+  });
+
   it.each(['walking', 'unrecognized gesture'])('invalidates anchors for animation %s with unknown staging effects', animation => {
     const planner = new DssShotPlanner(configured);
     setup(planner);
