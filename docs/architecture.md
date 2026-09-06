@@ -18,6 +18,15 @@ handling, and correlated command completion. It validates the separate story and
 channels. The setup user token is used by the provisioning/stop proxy only; renderer runtime
 uses the installation credential. Login tier is derived from the kernel environment.
 
+In opaque start mode the run never learns a story ahead of time. The start request carries only
+`{evd_id, idempotency_key}`; the key embeds the renderer ID, EVD ID, and the run ID so a rerun of
+the same EVD is a new story rather than a replay. The kernel answers 202 with `story_run_id`, a
+shareable `audience_join_url`, and `status: audience_ready`. The run then POSTs the join URL's opaque
+handle to the public audience exchange (`Origin` set to the join URL origin) and reads `story_id`
+and `message_channel_id` from the returned session; that ID is used for the audience relay and
+cross-checked against the DSS `episode_id`. Assignment fencing is unchanged: it keys on the
+assignment ID and generation carried by every DSS frame, not on a pre-known story.
+
 The configured-provider adapter compiles each DSS group serially. Explicit fal modes compile
 ordered groups into immutable shot plans, carrying staging across payloads. Their shared scheduler
 can generate later received DSS while earlier clips play. Group acknowledgements follow actual
@@ -62,10 +71,10 @@ Operator API (local only, or bearer-authenticated private Fly/SSH proxy):
 | `GET /api/health` | Provider model names and whether a fal key is configured; never the key |
 | `GET /api/viewer-status` | Sanitized setup readiness and current playback; private listener only |
 | `POST /api/narrative/provision-external-story` | Create private room, inactive story, and resolve distinct channels |
-| `POST /api/external-renderer/runs` | Start one bridge worker run; returns 202 while connecting |
+| `POST /api/external-renderer/runs` | Start one bridge worker run; returns 202 while connecting. `startMode: opaque` starts from `evdId` alone |
 | `GET /api/external-renderer/runs/:id` | Run progress/diagnostics |
 | `DELETE /api/external-renderer/runs/:id` | Stop worker activity and playout; CLI separately stops the kernel story |
-| `POST /api/narrative/stop-show` | Cancel kernel story and leave room using a valid user session |
+| `POST /api/narrative/stop-show` | Cancel kernel story and leave room using a valid user session; `storyId` instead of `shortlink` resolves the room for opaque runs |
 | `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Private generation/protocol diagnostics |
 
 Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healthz`,

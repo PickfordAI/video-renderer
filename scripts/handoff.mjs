@@ -62,7 +62,9 @@ export function validateHandoff(value, hosted = false) {
   renderingOptions(value);
   for (const field of ['rendererId', 'credentialId', 'evdId']) if (typeof value[field] !== 'string' || !uuid.test(value[field])) throw new Error(`Handoff ${field} must be a UUID supplied by Story Kernel.`);
   if (typeof value.clientSecret !== 'string' || !value.clientSecret.trim()) throw new Error('Handoff clientSecret is required.');
-  if (!value.story && (typeof value.setupToken !== 'string' || !value.setupToken.trim())) throw new Error('Provide setupToken or an already-provisioned story.');
+  if (value.startMode !== undefined && !['legacy', 'opaque'].includes(value.startMode)) throw new Error('startMode must be legacy or opaque.');
+  if (value.setupToken !== undefined && (typeof value.setupToken !== 'string' || !value.setupToken.trim())) throw new Error('setupToken must be non-empty text when supplied.');
+  if (value.startMode !== 'opaque' && !value.story && !value.setupToken) throw new Error('Provide setupToken or an already-provisioned story.');
   if (value.storyType !== undefined && !['CREATOR', 'WHISPERS', 'MINIMAX'].includes(value.storyType)) throw new Error('storyType must be CREATOR, WHISPERS, or MINIMAX.');
   if (value.environment && !['local', 'test', 'dev', 'edge', 'staging', 'creator', 'prod', 'demo'].includes(value.environment)) throw new Error('Unknown Story Kernel environment.');
   if (value.rendererVersion && !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+){3}$/.test(value.rendererVersion)) throw new Error('rendererVersion must have four dot-separated components.');
