@@ -8,10 +8,10 @@ import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
+import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
-import { extractVideoFrame } from './video-frame.js';
 import type { PlayoutManager, PlayoutSession } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
@@ -137,12 +137,12 @@ export function parseRendererAudienceResult(message: JsonObject): { key: string;
   };
 }
 
-interface DssGroup {
+export interface DssGroup {
   id: string;
   commands: JsonObject[];
 }
 
-interface DssFrame {
+export interface DssFrame {
   raw: JsonObject;
   sequence: number;
   assignmentId: string;
@@ -480,7 +480,7 @@ function textArg(command: JsonObject, key: string): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function parseDssFrame(raw: JsonObject): DssFrame {
+export function parseDssFrame(raw: JsonObject): DssFrame {
   const script = asObject(raw.script, 'DSS script');
   const sequence = Number(script.sequence ?? raw.sequence);
   const episodeId = script.episode_id ?? raw.episode_id ?? undefined;
@@ -744,7 +744,6 @@ function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
-interface GeneratedShot { videoUrl: string; continuityFrame?: string }
 interface CompletionLatch { promise: Promise<void>; resolve(): void }
 function completionLatch(): CompletionLatch {
   let resolve!: () => void;
@@ -779,8 +778,7 @@ class ExternalRendererRun {
   private readonly abortController = new AbortController();
   private readonly shotPlanner: DssShotPlanner;
   private readonly scheduler: ShotScheduler<GeneratedShot>;
-  private readonly anchorShots = new Map<string, ScheduledShot<GeneratedShot>>();
-  private readonly sceneTails = new Map<string, ScheduledShot<GeneratedShot>>();
+  private readonly generator: ShotGenerator;
   private readonly scenePositions = new Map<number, string>();
   private readonly assetIdentities = new Map<string, string>();
   private readonly sceneAssets = new MinimaxSceneAssetCache();
@@ -797,6 +795,11 @@ class ExternalRendererRun {
   ) {
     this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds });
     this.scheduler = new ShotScheduler(config.generationConcurrency, config.maxBufferedSeconds, this.abortController.signal);
+    this.generator = new ShotGenerator({
+      renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
+      initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
+      signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
+    });
     this.status = {
       runId: this.runId,
       state: 'connecting',
@@ -953,49 +956,12 @@ class ExternalRendererRun {
   }
 
   private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
-    const mode = this.config.renderMode;
-    const continuity = this.config.continuityStrategy;
-    const key = shot.anchorKey;
-    const dependency = continuity === 'last-frame-chain' ? this.sceneTails.get(shot.sceneKey)
-      : continuity === 'camera-anchors' ? this.anchorShots.get(key) : undefined;
-    const handle = this.scheduler.add(shot.durationSeconds, async () => {
-      this.assertCurrentAssignment(frame);
-      this.verdicts.assertHealthy();
-      const previous = dependency ? await dependency.result : undefined;
-      this.assertCurrentAssignment(frame);
-      const continuityFrame = previous?.continuityFrame;
-      if (dependency && !continuityFrame) throw new Error('Required shot continuity frame is unavailable');
-      const images = [...shot.referenceImageUrls];
-      let prompt = shot.prompt;
-      if (continuity === 'camera-anchors' && continuityFrame) {
-        images.push(continuityFrame);
-        prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
-      }
-      const generated = await generateVideo({
-        prompt, duration: shot.durationSeconds, resolution: this.config.resolution, aspectRatio: '16:9',
-        renderMode: mode,
-        initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.config.initialImageUrl : undefined,
-        referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
-        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
-      }, {
-        apiKey: this.provider.apiKey, queueBaseUrl: process.env.FAL_QUEUE_BASE_URL,
-        timeoutMs: 300_000, signal: this.abortController.signal,
-      });
-      this.assertCurrentAssignment(frame);
-      const nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !dependency
-        ? await extractVideoFrame(generated.videoUrl, {
-          position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal: this.abortController.signal,
-        })
-        : continuityFrame;
-      this.assertCurrentAssignment(frame);
-      return { videoUrl: generated.videoUrl, continuityFrame: nextFrame };
-    }, dependency?.result);
-    if (continuity === 'last-frame-chain') this.sceneTails.set(shot.sceneKey, handle);
-    else if (continuity === 'camera-anchors' && !dependency) this.anchorShots.set(key, handle);
+    this.assertCurrentAssignment(frame);
+    const { job } = this.generator.schedule(shot, () => this.assertCurrentAssignment(frame));
     // A future shot can fail while an earlier clip is playing. Fence the whole run
     // immediately, before another scheduler slot submits additional paid work.
-    void handle.result.catch(error => { if (!this.stopped) this.fail(error); });
-    return handle;
+    void job.result.catch(error => { if (!this.stopped) this.fail(error); });
+    return job;
   }
 
   private preparePlannedFrame(frame: DssFrame): PreparedFrame {
@@ -1003,17 +969,7 @@ class ExternalRendererRun {
     this.shotPlanner.applySceneContext(frame.sceneContext ?? null, frame.sceneIndex);
     // Compile the entire accepted frame before submitting any of its paid work.
     const groups = frame.groups.map(group => ({ group, plan: this.shotPlanner.planGroup(group.commands, group.id, frame.storyBlockId) }));
-    if (this.config.renderMode === 'fal-max-ref2v') {
-      for (const { plan } of groups) for (const shot of plan.shots) {
-        if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
-        const referenceLimit = this.config.continuityStrategy === 'camera-anchors' ? 11 : 12;
-        if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
-          throw new Error(this.config.continuityStrategy === 'camera-anchors'
-            ? 'fal-max-ref2v allows at most 11 configured image/audio references, reserving one slot for the camera anchor'
-            : 'fal-max-ref2v allows at most 12 image/audio references');
-        }
-      }
-    }
+    for (const { plan } of groups) for (const shot of plan.shots) this.generator.validate(shot);
     return { frame, groups: groups.map(({ group, plan }) => ({
       group, plan, completed: completionLatch(), shots: plan.shots.map(shot => ({
         shot, job: this.scheduleShot(frame, shot), position: this.clipPosition++, enqueued: completionLatch(),

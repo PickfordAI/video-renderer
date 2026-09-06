@@ -13,6 +13,7 @@
     "doctor": "node scripts/doctor.mjs",
     "story": "node scripts/story.mjs",
     "share": "node scripts/share.mjs",
+    "replay": "tsx server/replay-cli.ts",
     "deploy:worker": "node scripts/deploy-worker.mjs",
     "build:viewer": "node scripts/build-viewer.mjs",
     "check": "npm test && npm run typecheck && npm run build",
