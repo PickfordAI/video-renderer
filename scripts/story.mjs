@@ -25,11 +25,13 @@ try {
     if (action === 'stop') {
       if (!saved) throw new Error('No saved story.');
       const failures = [];
+      let retainedMedia = null;
       if (!saved.workerStopped) {
         try {
           if (saved.runId) {
             const run = await api(`/api/external-renderer/runs/${saved.runId}`, undefined, 'DELETE');
             if (opaque) Object.assign(saved, { storyRunId: run.storyRunId ?? saved.storyRunId, audienceJoinUrl: run.audienceJoinUrl ?? saved.audienceJoinUrl, storyId: run.storyId ?? saved.storyId });
+            if (run.mediaDir) retainedMedia = { mediaDir: run.mediaDir, finalMp4: run.finalMp4 ?? null };
           }
           saved.workerStopped = true;
         } catch (error) {
@@ -45,7 +47,7 @@ try {
           saved.kernelCancelUnavailable = !saved.storyId ? 'story id was never resolved' : !handoff.setupToken ? 'no setupToken in the handoff' : 'no narrativeEngineUrl';
           writePrivate(resolve(stateDir, sessionFile), saved);
           if (failures.length) throw new Error(`Cleanup incomplete (${failures.join(', ')}). Restore worker/private connection, then retry stop. Saved recovery state has been retained.`);
-          console.log(JSON.stringify({ stopped: true, kernelStopped: false, kernelCancel: `not possible: ${saved.kernelCancelUnavailable}. The Story Kernel owns this run; end it from the kernel if it is still active.` }, null, 2));
+          console.log(JSON.stringify({ stopped: true, kernelStopped: false, ...retainedMedia, kernelCancel: `not possible: ${saved.kernelCancelUnavailable}. The Story Kernel owns this run; end it from the kernel if it is still active.` }, null, 2));
           process.exit(0);
         }
         try {
@@ -60,7 +62,7 @@ try {
         writePrivate(resolve(stateDir, sessionFile), saved);
       }
       if (failures.length) throw new Error(`Cleanup incomplete (${failures.join(', ')}). Restore worker/private connection or refresh kernel login, then retry stop. Saved recovery state has been retained.`);
-      console.log(JSON.stringify({ stopped: true }));
+      console.log(JSON.stringify({ stopped: true, ...retainedMedia }));
     } else if (action === 'start') {
       if (!handoff.rendererId || !handoff.credentialId || !handoff.clientSecret || !handoff.evdId) throw new Error('Handoff requires rendererId, credentialId, clientSecret, and evdId. See docs/agents.md.');
       if (!opaque && !handoff.story && !handoff.setupToken) throw new Error('Handoff requires setupToken to provision a story, or an existing story object.');
@@ -82,6 +84,9 @@ try {
       const identity = {
         rendererId: handoff.rendererId, credentialId: handoff.credentialId, clientSecret: handoff.clientSecret,
         environment: handoff.environment,
+        // An explicit bridge URL beats the platform's advertised one, which a local stack
+        // publishes as its self-signed TLS port rather than its plain WebSocket port.
+        ...(endpoints.rendererWebsocketUrl ? { websocketUrl: endpoints.rendererWebsocketUrl } : {}),
         rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.0',
         resolution: handoff.resolution || '480P', clipDurationSeconds: handoff.clipDurationSeconds || 6,
       };

@@ -59,6 +59,33 @@ interface VideoProvider {
   apiKey: string;
 }
 
+/** How a shot used the camera-anchor cache: it established the key, reused it, or the run has no anchors. */
+export type ClipAnchorRole = 'establish' | 'reuse' | 'none';
+
+export interface RendererClipRecord {
+  shotId: string;
+  groupId: string;
+  storyBlockId: string;
+  sequence: number;
+  position: number;
+  durationSeconds: number;
+  /** When the provider call actually began, which is after any scheduler or dependency wait. */
+  submittedAt: string | null;
+  readyAt: string | null;
+  generationMs: number | null;
+  playedAt: string | null;
+  providerRequestId: string | null;
+  continuity: ContinuityStrategy;
+  anchor: ClipAnchorRole;
+  anchorKey: string | null;
+}
+
+export interface GenerationMsPercentiles {
+  min: number;
+  median: number;
+  max: number;
+}
+
 export interface ExternalRendererRunStatus {
   runId: string;
   state: 'connecting' | 'running' | 'ended' | 'stopped' | 'failed';
@@ -83,6 +110,12 @@ export interface ExternalRendererRunStatus {
   dssSequences: number[];
   dssCommandsRendered: number;
   clipsRendered: number;
+  clips: RendererClipRecord[];
+  anchorsEstablished: number;
+  anchorsReused: number;
+  generationMsPercentiles: GenerationMsPercentiles | null;
+  mediaDir: string | null;
+  finalMp4: string | null;
   hlsUrl: string | null;
   lastHeartbeatAt: string | null;
   eventVerdicts: RendererEventVerdictStatus;
@@ -212,6 +245,18 @@ const MAX_PENDING_DSS_FRAMES = 256;
 const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
 const DSS_IDLE_TIMEOUT_MS = 300_000;
+const MAX_CLIP_RECORDS = 1_000;
+
+export function generationMsPercentiles(records: readonly RendererClipRecord[]): GenerationMsPercentiles | null {
+  const samples = records.map(record => record.generationMs).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  if (samples.length === 0) return null;
+  const middle = (samples.length - 1) / 2;
+  return {
+    min: samples[0],
+    median: Math.round((samples[Math.floor(middle)] + samples[Math.ceil(middle)]) / 2),
+    max: samples[samples.length - 1],
+  };
+}
 
 function asObject(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -223,6 +268,7 @@ function requiredString(value: unknown, label: string): string {
   return value.trim();
 }
 
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', 'host.docker.internal'];
 // A local unified stack runs renderer-platform as ENV=dev behind plain loopback ports.
 const LOOPBACK_PLAINTEXT_ENVIRONMENTS = new Set(['local', 'test', 'dev']);
 
@@ -232,7 +278,7 @@ function requiredUrl(value: unknown, label: string, environment = 'edge'): strin
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error(`${label} must not contain credentials, query, or fragment`);
   }
-  const localHost = ['localhost', '127.0.0.1', 'host.docker.internal'].includes(parsed.hostname);
+  const localHost = LOOPBACK_HOSTS.includes(parsed.hostname);
   if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && localHost && LOOPBACK_PLAINTEXT_ENVIRONMENTS.has(environment))) {
     throw new Error(`${label} must use HTTPS`);
   }
@@ -242,7 +288,7 @@ function requiredUrl(value: unknown, label: string, environment = 'edge'): strin
 function requiredWebSocketUrl(value: unknown, label: string, environment: string): string {
   const raw = requiredString(value, label);
   const parsed = new URL(raw);
-  const localHost = ['localhost', '127.0.0.1', 'host.docker.internal'].includes(parsed.hostname);
+  const localHost = LOOPBACK_HOSTS.includes(parsed.hostname);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error(`${label} must not contain credentials, query, or fragment`);
   }
@@ -738,16 +784,21 @@ async function rendererLogin(config: ExternalRendererRunConfig, signal?: AbortSi
   throw new Error('renderer login remained rate limited after sequential Retry-After waits');
 }
 
-function rendererWebSocketUrl(config: ExternalRendererRunConfig, advertised: unknown): string {
+export function rendererWebSocketUrl(config: Pick<ExternalRendererRunConfig, 'baseUrl'>, advertised: unknown): string {
   const raw = requiredString(advertised, 'websocket_url');
   const url = new URL(raw);
   if (url.search) throw new Error('renderer websocket_url must be query-free');
   const service = new URL(config.baseUrl);
-  const localService = service.protocol === 'http:' && ['localhost', '127.0.0.1', 'host.docker.internal'].includes(service.hostname);
+  const localService = service.protocol === 'http:' && LOOPBACK_HOSTS.includes(service.hostname);
   if (localService && url.hostname.endsWith('.local')) {
     url.protocol = 'ws:';
     url.hostname = service.hostname;
     url.port = service.port;
+  } else if (localService && url.protocol === 'wss:' && LOOPBACK_HOSTS.includes(url.hostname)) {
+    // A local stack advertises its self-signed TLS front, whose cert no client trusts.
+    // Its plain bridge port is unknown here, so keep the advertised port and let an
+    // explicit handoff services.rendererWebsocketUrl override this best-effort guess.
+    url.protocol = 'ws:';
   }
   if (url.protocol !== 'wss:' && !(localService && url.protocol === 'ws:')) {
     throw new Error('renderer websocket_url must use WSS (or WS for a loopback service)');
@@ -767,7 +818,7 @@ function closeSocket(socket: WebSocket): Promise<void> {
   });
 }
 
-interface GeneratedShot { videoUrl: string; continuityFrame?: string }
+interface GeneratedShot { videoUrl: string; continuityFrame?: string; requestId?: string }
 interface CompletionLatch { promise: Promise<void>; resolve(): void }
 function completionLatch(): CompletionLatch {
   let resolve!: () => void;
@@ -780,7 +831,7 @@ interface PreparedFrame {
     group: DssGroup;
     plan: PlannedGroup;
     completed: CompletionLatch;
-    shots: ReadonlyArray<{ shot: PlannedShot; job: ScheduledShot<GeneratedShot>; position: number; enqueued: CompletionLatch }>;
+    shots: ReadonlyArray<{ shot: PlannedShot; job: ScheduledShot<GeneratedShot>; position: number; enqueued: CompletionLatch; record: RendererClipRecord }>;
   }>;
 }
 
@@ -844,6 +895,12 @@ class ExternalRendererRun {
       dssSequences: [],
       dssCommandsRendered: 0,
       clipsRendered: 0,
+      clips: [],
+      anchorsEstablished: 0,
+      anchorsReused: 0,
+      generationMsPercentiles: null,
+      mediaDir: null,
+      finalMp4: null,
       hlsUrl: null,
       lastHeartbeatAt: null,
       eventVerdicts: this.verdicts.status,
@@ -880,13 +937,17 @@ class ExternalRendererRun {
         this.scheduler.drain(),
       ]).then(() => undefined);
     }
-    const playoutStop = this.playout && !options.preservePlayableOutput
-      ? this.playoutManager.stop(this.playout.sessionId)
-      : Promise.resolve();
-    if (this.playout && !options.preservePlayableOutput) {
-      this.playout = null;
-    }
+    const closingPlayout = this.playout && !options.preservePlayableOutput ? this.playout : null;
+    const playoutStop = closingPlayout ? this.playoutManager.stop(closingPlayout.sessionId) : Promise.resolve();
+    if (closingPlayout) this.playout = null;
     await Promise.all([this.closing, playoutStop]);
+    if (closingPlayout) this.recordRetainedMedia(closingPlayout);
+  }
+
+  private recordRetainedMedia(playout: PlayoutSession): void {
+    const status = playout.status();
+    this.status.mediaDir = status.mediaDir ?? null;
+    this.status.finalMp4 = status.finalMp4 ?? null;
   }
 
   private progressEvent(frame: DssFrame, group: DssGroup, current: number, total: number): JsonObject {
@@ -978,14 +1039,54 @@ class ExternalRendererRun {
     }
   }
 
-  private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
+  /** Bounded per-run clip instrumentation: one record per planned shot, in playback order. */
+  private trackClip(
+    frame: DssFrame,
+    shot: Pick<PlannedShot, 'id' | 'groupId' | 'storyBlockId' | 'durationSeconds' | 'anchorKey'>,
+    position: number,
+    anchor: ClipAnchorRole,
+  ): RendererClipRecord {
+    const record: RendererClipRecord = {
+      shotId: shot.id,
+      groupId: shot.groupId,
+      storyBlockId: shot.storyBlockId,
+      sequence: frame.sequence,
+      position,
+      durationSeconds: shot.durationSeconds,
+      submittedAt: null,
+      readyAt: null,
+      generationMs: null,
+      playedAt: null,
+      providerRequestId: null,
+      continuity: this.config.continuityStrategy,
+      anchor,
+      anchorKey: anchor === 'none' ? null : shot.anchorKey,
+    };
+    if (anchor === 'establish') this.status.anchorsEstablished += 1;
+    else if (anchor === 'reuse') this.status.anchorsReused += 1;
+    this.status.clips.push(record);
+    this.status.clips.splice(0, Math.max(0, this.status.clips.length - MAX_CLIP_RECORDS));
+    return record;
+  }
+
+  private completeClip(record: RendererClipRecord, requestId: unknown): void {
+    const readyAt = Date.now();
+    record.readyAt = new Date(readyAt).toISOString();
+    record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
+    if (typeof requestId === 'string' && requestId) record.providerRequestId = requestId;
+    this.status.generationMsPercentiles = generationMsPercentiles(this.status.clips);
+  }
+
+  private scheduleShot(frame: DssFrame, shot: PlannedShot, position: number): { job: ScheduledShot<GeneratedShot>; record: RendererClipRecord } {
     const mode = this.config.renderMode;
     const continuity = this.config.continuityStrategy;
     const key = shot.anchorKey;
     const dependency = continuity === 'last-frame-chain' ? this.sceneTails.get(shot.sceneKey)
       : continuity === 'camera-anchors' ? this.anchorShots.get(key) : undefined;
+    const record = this.trackClip(frame, shot, position, continuity !== 'camera-anchors' ? 'none' : dependency ? 'reuse' : 'establish');
     const handle = this.scheduler.add(shot.durationSeconds, async () => {
       this.assertCurrentAssignment(frame);
+      record.submittedAt = new Date().toISOString();
       this.verdicts.assertHealthy();
       const previous = dependency ? await dependency.result : undefined;
       this.assertCurrentAssignment(frame);
@@ -1014,14 +1115,15 @@ class ExternalRendererRun {
         })
         : continuityFrame;
       this.assertCurrentAssignment(frame);
-      return { videoUrl: generated.videoUrl, continuityFrame: nextFrame };
+      this.completeClip(record, generated.requestId);
+      return { videoUrl: generated.videoUrl, continuityFrame: nextFrame, requestId: generated.requestId };
     }, dependency?.result);
     if (continuity === 'last-frame-chain') this.sceneTails.set(shot.sceneKey, handle);
     else if (continuity === 'camera-anchors' && !dependency) this.anchorShots.set(key, handle);
     // A future shot can fail while an earlier clip is playing. Fence the whole run
     // immediately, before another scheduler slot submits additional paid work.
     void handle.result.catch(error => { if (!this.stopped) this.fail(error); });
-    return handle;
+    return { job: handle, record };
   }
 
   private preparePlannedFrame(frame: DssFrame): PreparedFrame {
@@ -1041,9 +1143,10 @@ class ExternalRendererRun {
       }
     }
     return { frame, groups: groups.map(({ group, plan }) => ({
-      group, plan, completed: completionLatch(), shots: plan.shots.map(shot => ({
-        shot, job: this.scheduleShot(frame, shot), position: this.clipPosition++, enqueued: completionLatch(),
-      })),
+      group, plan, completed: completionLatch(), shots: plan.shots.map(shot => {
+        const position = this.clipPosition++;
+        return { shot, position, ...this.scheduleShot(frame, shot, position), enqueued: completionLatch() };
+      }),
     })) };
   }
 
@@ -1067,9 +1170,10 @@ class ExternalRendererRun {
       this.assertCurrentAssignment(frame);
       let seconds = 0;
       // Only actual playback advances the kernel high-water mark and frees paid-work budget.
-      for (const { shot, job, position, enqueued } of shots) {
+      for (const { shot, job, position, enqueued, record } of shots) {
         await abortable(enqueued.promise, this.abortController.signal);
         await this.waitForPlayback(position);
+        record.playedAt ??= new Date().toISOString();
         this.assertCurrentAssignment(frame);
         job.release();
         seconds += shot.durationSeconds;
@@ -1131,6 +1235,13 @@ class ExternalRendererRun {
       for (const clip of planned) {
         if (this.stopped) throw this.abortController.signal.reason;
         this.verdicts.assertHealthy();
+        const record = this.trackClip(
+          frame,
+          { id: `${clip.groupId}:${this.clipPosition}`, groupId: clip.groupId, storyBlockId: clip.storyBlockId, durationSeconds: clip.durationSeconds, anchorKey: '' },
+          this.clipPosition,
+          'none',
+        );
+        record.submittedAt = new Date().toISOString();
         const input = {
           prompt: clip.prompt,
           duration: clip.durationSeconds,
@@ -1155,6 +1266,7 @@ class ExternalRendererRun {
               signal: this.abortController.signal,
             });
         if (this.stopped) throw this.abortController.signal.reason;
+        this.completeClip(record, generated.requestId);
         const position = this.clipPosition;
         this.playout!.enqueue({
           position,
@@ -1165,6 +1277,7 @@ class ExternalRendererRun {
         this.clipPosition += 1;
         this.status.clipsRendered += 1;
         await this.waitForPlayback(position);
+        record.playedAt = new Date().toISOString();
         playedSeconds += clip.durationSeconds;
       }
       this.sendRendererEvent(this.completedEvent(frame, group, playedSeconds), frame);
@@ -1249,6 +1362,7 @@ class ExternalRendererRun {
       if (this.stopped) { await this.playoutManager.stop(playout.sessionId); return; }
       this.playout = playout;
       this.status.hlsUrl = this.playout.hlsUrl;
+      this.status.mediaDir = playout.status().mediaDir ?? null;
       const loginPayload = await rendererLogin(this.config, this.abortController.signal);
       if (this.stopped) return;
       const websocketUrl = this.config.websocketUrl ?? rendererWebSocketUrl(this.config, loginPayload.websocket_url);
