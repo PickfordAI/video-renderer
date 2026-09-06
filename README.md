@@ -207,8 +207,10 @@ Stop cancels local generation/playout; the CLI separately stops the kernel story
 cleanup that must be retried.
 
 New Minimax DSS payloads can additionally carry certified `scene_context`. The bridge validates
-the authored set identity, the complete participating cast, and an exact position for every cast
-member before submitting any video work. It downloads the supplied HTTPS images once per stable
-asset ID, passes those fixed references to every shot in the scene, and keeps the successful cached
-image when a later payload refreshes only its signed URL. Legacy Minimax payloads without this
-field and non-Minimax configured-reference flows remain unchanged.
+the authored set identity, each character's stable ID and exact DSS command name, the complete
+participating cast, and an exact position for every cast member before submitting any video work.
+It binds name-based talk commands to portraits through that certified identity, downloads the
+supplied HTTPS images once per stable asset ID, passes those fixed references to every shot in the
+scene, and keeps the successful cached image when a later payload refreshes only its signed URL.
+Legacy Minimax payloads without this field and non-Minimax configured-reference flows remain
+unchanged.

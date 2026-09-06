@@ -3,6 +3,7 @@ type JsonObject = Record<string, unknown>;
 export interface MinimaxSceneImage {
   assetId: string;
   sourceId: string;
+  characterName?: string;
   imageUrl: string;
 }
 
@@ -14,6 +15,7 @@ export interface MinimaxSceneContext {
 
 interface CachedSceneImage {
   sourceId: string;
+  characterName?: string;
   dataUrl: string;
 }
 
@@ -27,6 +29,11 @@ function object(value: unknown, label: string): JsonObject {
 function text(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`);
   return value.trim();
+}
+
+function exactText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`);
+  return value;
 }
 
 function uuid(value: unknown, label: string): string {
@@ -54,6 +61,9 @@ function image(value: unknown, label: string, sourceField: 'set_id' | 'character
     sourceId: sourceField === 'character_id'
       ? uuid(raw[sourceField], `${label}.${sourceField}`)
       : text(raw[sourceField], `${label}.${sourceField}`),
+    ...(sourceField === 'character_id'
+      ? { characterName: exactText(raw.character_name, `${label}.character_name`) }
+      : {}),
     imageUrl: https(raw.image_url, `${label}.image_url`),
   };
 }
@@ -73,6 +83,8 @@ export function parseMinimaxSceneContext(value: unknown): MinimaxSceneContext {
   ]));
   const characterIds = characterImages.map(item => item.sourceId);
   if (new Set(characterIds).size !== characterIds.length) throw new Error('scene_context character IDs must be unique');
+  const characterNames = characterImages.map(item => item.characterName!);
+  if (new Set(characterNames).size !== characterNames.length) throw new Error('scene_context character names must be unique');
   const assetIds = [setImage.assetId, ...characterImages.map(item => item.assetId)];
   if (new Set(assetIds).size !== assetIds.length) throw new Error('scene_context asset IDs must be unique');
   if (characterIds.length !== Object.keys(characterPositions).length
@@ -92,7 +104,7 @@ export function sceneContextImageUrls(context: MinimaxSceneContext): string[] {
 
 export function sceneContextPrompt(context: MinimaxSceneContext): string {
   const positions = context.characterImages.map((image, index) =>
-    `Character reference Image ${index + 1} (${image.sourceId}) remains ${context.characterPositions[image.sourceId]} throughout the shot.`);
+    `Character reference Image ${index + 1} is ${image.characterName} (${image.sourceId}) and remains ${context.characterPositions[image.sourceId]} throughout the shot.`);
   return [
     ...positions,
     `The final reference image is the complete environment for authored set ${context.setImage.sourceId}; preserve its design and include no additional characters.`,
@@ -119,7 +131,11 @@ export class MinimaxSceneAssetCache {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength === 0) throw new Error('Certified scene image response is empty');
     if (bytes.byteLength > MAX_SCENE_IMAGE_BYTES) throw new Error('Certified scene image exceeds the renderer size limit');
-    return { sourceId: image.sourceId, dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}` };
+    return {
+      sourceId: image.sourceId,
+      ...(image.characterName === undefined ? {} : { characterName: image.characterName }),
+      dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`,
+    };
   }
 
   private async resolveImage(image: MinimaxSceneImage, signal?: AbortSignal): Promise<MinimaxSceneImage> {
@@ -132,7 +148,9 @@ export class MinimaxSceneAssetCache {
       });
     }
     const cached = await pending;
-    if (cached.sourceId !== image.sourceId) throw new Error('Certified image asset identity changed');
+    if (cached.sourceId !== image.sourceId || cached.characterName !== image.characterName) {
+      throw new Error('Certified image asset identity changed');
+    }
     return Object.freeze({ ...image, imageUrl: cached.dataUrl });
   }
 

@@ -468,7 +468,10 @@ export class DssShotPlanner {
     image('style', this.settings.styleImageUrl);
     image('initial frame', this.settings.initialImageUrl);
     if (this.sceneContext) {
-      for (const character of this.sceneContext.characterImages) image(`character:${character.sourceId}`, character.imageUrl, true);
+      const certifiedNames = new Set(this.sceneContext.characterImages.map(character => character.characterName!));
+      const missingName = names.find(name => !certifiedNames.has(name));
+      if (missingName) throw new Error(`DSS character has no certified scene image: ${missingName}`);
+      for (const character of this.sceneContext.characterImages) image(character.characterName!, character.imageUrl, true);
       image('set', this.sceneContext.setImage.imageUrl, true);
     } else {
       for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);

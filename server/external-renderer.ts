@@ -932,8 +932,9 @@ class ExternalRendererRun {
     if (!context) return;
     for (const image of [context.setImage, ...context.characterImages]) {
       const previous = this.assetIdentities.get(image.assetId);
-      if (previous && previous !== image.sourceId) throw new Error('Certified image asset identity changed');
-      this.assetIdentities.set(image.assetId, image.sourceId);
+      const identity = JSON.stringify([image.sourceId, image.characterName ?? null]);
+      if (previous && previous !== identity) throw new Error('Certified image asset identity changed');
+      this.assetIdentities.set(image.assetId, identity);
     }
     const positions = canonicalJson(context.characterPositions);
     const sceneIndex = frame.sceneIndex ?? -1;
