@@ -16,6 +16,11 @@ import type { PlayoutManager, PlayoutSession } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
 
+/** `legacy` pre-provisions a story; `opaque` lets the kernel allocate it from an EVD (PIC-1545). */
+export type StoryStartMode = 'legacy' | 'opaque';
+
+export const AUDIENCE_EXCHANGE_PATH = '/api/v1/external-audience/exchange';
+
 interface ExternalRendererRunConfig {
   baseUrl: string;
   environment: string;
@@ -26,7 +31,10 @@ interface ExternalRendererRunConfig {
   credentialId: string;
   clientSecret: string;
   rendererVersion: string;
-  storyId: number;
+  startMode: StoryStartMode;
+  evdId: string | null;
+  audienceExchangeUrl: string | null;
+  storyId: number | null;
   roomId: string;
   roomShortlink: string;
   storyMessageChannelId: string;
@@ -56,7 +64,10 @@ export interface ExternalRendererRunStatus {
   state: 'connecting' | 'running' | 'ended' | 'stopped' | 'failed';
   rendererId: string;
   rendererVersion: string;
-  storyId: number;
+  startMode: StoryStartMode;
+  storyRunId: string | null;
+  audienceJoinUrl: string | null;
+  storyId: number | null;
   roomId: string;
   roomShortlink: string;
   storyMessageChannelId: string;
@@ -274,7 +285,11 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const fallbackRoomChannel = '00000000-0000-4000-8000-000000000002';
   const storyConfig = asObject(body.storyConfig ?? { message_channel_ids: [fallbackStoryChannel] }, 'storyConfig');
   const resumeExistingStory = body.resumeExistingStory === true;
-  if (body.storyConfig !== undefined && !resumeExistingStory) {
+  const startMode = body.startMode ?? 'legacy';
+  if (startMode !== 'legacy' && startMode !== 'opaque') throw new Error('startMode must be legacy or opaque');
+  const opaque = startMode === 'opaque';
+  const evdId = opaque ? uuid(body.evdId ?? storyConfig.evd_id, 'evdId') : null;
+  if (body.storyConfig !== undefined && !resumeExistingStory && !opaque) {
     uuid(storyConfig.evd_id, 'storyConfig.evd_id');
     if (!['MINIMAX', 'CREATOR', 'WHISPERS'].includes(String(storyConfig.base_structure))) {
       throw new Error('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
@@ -307,7 +322,12 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     credentialId: uuid(body.credentialId, 'credentialId'),
     clientSecret: requiredString(body.clientSecret, 'clientSecret'),
     rendererVersion,
-    storyId: positiveInteger(body.storyId, 1, 'storyId'),
+    startMode,
+    evdId,
+    audienceExchangeUrl: body.audienceExchangeUrl === undefined
+      ? null
+      : requiredUrl(body.audienceExchangeUrl, 'audienceExchangeUrl', environment),
+    storyId: opaque && body.storyId === undefined ? null : positiveInteger(body.storyId, 1, 'storyId'),
     roomId: uuid(body.roomId ?? '00000000-0000-4000-8000-000000000003', 'roomId'),
     roomShortlink: typeof body.roomShortlink === 'string' ? body.roomShortlink : '',
     storyMessageChannelId,
@@ -802,6 +822,9 @@ class ExternalRendererRun {
       state: 'connecting',
       rendererId: config.rendererId,
       rendererVersion: config.rendererVersion,
+      startMode: config.startMode,
+      storyRunId: null,
+      audienceJoinUrl: null,
       storyId: config.storyId,
       roomId: config.roomId,
       roomShortlink: config.roomShortlink,
@@ -1148,10 +1171,10 @@ class ExternalRendererRun {
   }
 
   private async observeStoryLifecycle(): Promise<void> {
-    if (!this.config.storyStatusBaseUrl || !this.config.storyStatusToken) return;
+    if (!this.config.storyStatusBaseUrl || !this.config.storyStatusToken || this.status.storyId === null) return;
     let observedRunning = false;
     while (!this.stopped) {
-      const response = await fetch(`${this.config.storyStatusBaseUrl}/story/?id=${this.config.storyId}`, {
+      const response = await fetch(`${this.config.storyStatusBaseUrl}/story/?id=${this.status.storyId}`, {
         headers: { Authorization: `Bearer ${this.config.storyStatusToken}` },
         signal: this.abortController.signal,
       });
@@ -1159,7 +1182,7 @@ class ExternalRendererRun {
       const observation = classifyStoryLifecycle(payload, observedRunning, this.status.firstAssignmentAt !== null);
       observedRunning = observation.observedRunning;
       if (observation.state === 'failed') {
-        throw new Error(`Story ${this.config.storyId} failed: ${observation.failure}`);
+        throw new Error(`Story ${this.status.storyId} failed: ${observation.failure}`);
       }
       if (observation.state === 'ended') {
         this.status.storyEndedAt = new Date().toISOString();
@@ -1185,6 +1208,8 @@ class ExternalRendererRun {
     if (this.stopped || this.status.state !== 'running' || this.socket?.readyState !== WebSocket.OPEN) {
       throw new Error('The story chat is not connected yet.');
     }
+    const storyId = this.status.storyId;
+    if (storyId === null) throw new Error('The story identity is not resolved yet.');
     if (this.pendingAudienceMessages.has(input.idempotencyKey)) {
       throw new Error('That message is already being sent.');
     }
@@ -1195,7 +1220,7 @@ class ExternalRendererRun {
       }, 10_000);
       this.pendingAudienceMessages.set(input.idempotencyKey, { resolve, reject, timeout });
       try {
-        send(this.socket!, createRendererAudienceMessage(this.config.storyId, input));
+        send(this.socket!, createRendererAudienceMessage(storyId, input));
       } catch (error) {
         clearTimeout(timeout);
         this.pendingAudienceMessages.delete(input.idempotencyKey);
@@ -1287,17 +1312,16 @@ class ExternalRendererRun {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           signal: this.abortController.signal,
-          body: JSON.stringify({
-            renderer_id: this.config.rendererId,
-            story_id: this.config.storyId,
-            room_id: this.config.roomId,
-            idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.storyId}`,
-          }),
+          body: JSON.stringify(this.storyStartBody()),
         });
         this.status.storyStartStatus = startResponse.status;
         const startPayload = await jsonResponse(startResponse, 'renderer story start', 202);
         if (this.stopped) return;
-        if (startPayload.renderer_id !== undefined && startPayload.renderer_id !== this.config.rendererId) {
+        if (this.config.startMode === 'opaque') {
+          this.acceptOpaqueStart(startPayload);
+          await this.resolveOpaqueStoryIdentity();
+          if (this.stopped) return;
+        } else if (startPayload.renderer_id !== undefined && startPayload.renderer_id !== this.config.rendererId) {
           throw new Error('renderer story start returned a mismatched renderer ID');
         }
       }
@@ -1337,6 +1361,7 @@ class ExternalRendererRun {
           if (message.script) {
             if (this.ending) continue;
             const frame = parseDssFrame(message);
+            this.adoptAssignedStory(frame);
             if (this.config.renderMode !== 'auto') {
               if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
               if (!frame.assignmentId || !Number.isInteger(frame.assignmentGeneration) || frame.assignmentGeneration < 1) throw new Error('DSS assignment identity is required');
@@ -1418,6 +1443,55 @@ class ExternalRendererRun {
     } catch (error) {
       if (!this.stopped) this.fail(error);
     }
+  }
+
+  private storyStartBody(): JsonObject {
+    if (this.config.startMode === 'legacy') {
+      return {
+        renderer_id: this.config.rendererId,
+        story_id: this.config.storyId,
+        room_id: this.config.roomId,
+        idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.storyId}`,
+      };
+    }
+    // The kernel replays a start under a reused key, so the per-run nonce makes each start of an EVD a new story.
+    return {
+      evd_id: this.config.evdId,
+      idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.evdId}:${this.runId}`,
+    };
+  }
+
+  private acceptOpaqueStart(payload: JsonObject): void {
+    if (payload.status !== 'audience_ready') throw new Error('renderer story start did not commit audience readiness');
+    this.status.storyRunId = uuid(payload.story_run_id, 'story_run_id');
+    this.status.audienceJoinUrl = requiredString(payload.audience_join_url, 'audience_join_url');
+  }
+
+  // The opaque start hides the platform story; the audience exchange is the public route that names it.
+  private async resolveOpaqueStoryIdentity(): Promise<void> {
+    const joinUrl = new URL(requiredString(this.status.audienceJoinUrl, 'audience_join_url'));
+    const segments = joinUrl.pathname.split('/').filter(Boolean);
+    if (!['http:', 'https:'].includes(joinUrl.protocol) || segments.length !== 2 || segments[0] !== 'audience') {
+      throw new Error('renderer story start returned an invalid audience join URL');
+    }
+    const exchangeUrl = this.config.audienceExchangeUrl ?? `${this.config.baseUrl}${AUDIENCE_EXCHANGE_PATH}`;
+    const response = await fetch(exchangeUrl, {
+      method: 'POST',
+      headers: { Origin: joinUrl.origin, 'Content-Type': 'application/json' },
+      signal: this.abortController.signal,
+      body: JSON.stringify({ opaque_handle: segments[1] }),
+    });
+    const session = asObject((await jsonResponse(response, 'audience exchange', 200)).session, 'audience exchange session');
+    this.status.storyId = positiveInteger(session.story_id, Number.NaN, 'audience exchange story_id');
+    if (session.message_channel_id !== undefined) {
+      this.status.storyMessageChannelId = uuid(session.message_channel_id, 'audience exchange message_channel_id');
+    }
+  }
+
+  private adoptAssignedStory(frame: DssFrame): void {
+    if (this.config.startMode !== 'opaque' || frame.episodeId === undefined || frame.episodeId <= 0) return;
+    if (this.status.storyId === null) this.status.storyId = frame.episodeId;
+    else if (this.status.storyId !== frame.episodeId) throw new Error('DSS command targeted another story');
   }
 
   async stop(): Promise<void> {

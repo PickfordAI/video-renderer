@@ -17,6 +17,17 @@ describe('handoff validation before provisioning', () => {
   });
 });
 
+describe('opaque start handoff', () => {
+  it('starts from the EVD alone and keeps the setup token optional', () => {
+    const { setupToken: _token, ...opaque } = { ...valid(), startMode: 'opaque' };
+    expect(validateHandoff(opaque)).toEqual(opaque);
+    expect(validateHandoff({ ...opaque, setupToken: 'test' })).toBeTruthy();
+    expect(() => validateHandoff({ ...opaque, startMode: 'magic' })).toThrow('startMode must be legacy or opaque');
+    expect(() => validateHandoff({ ...opaque, startMode: 'legacy' })).toThrow('Provide setupToken');
+    expect(() => validateHandoff({ ...opaque, setupToken: ' ' })).toThrow('setupToken');
+  });
+});
+
 describe('render mode handoff', () => {
   it('retains explicit modes, image grounding, and scheduler settings', () => {
     const shotPlanner = { characters: { Lily: { name: 'Lily', imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/lily.mp3', durationSeconds: 4 } } } };

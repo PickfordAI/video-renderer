@@ -473,10 +473,23 @@ async function proxyStopShow(request: IncomingMessage, response: ServerResponse)
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('request body must be an object');
   const body = raw as Record<string, unknown>;
   const baseUrl = serviceBaseUrl(body.baseUrl);
-  const shortlink = requiredString(body.shortlink, 'room code');
   const token = await setupToken(body, baseUrl, response);
   if (!token) return;
   const headers = narrativeHeaders(token);
+  // Opaque starts never learn the room; the setup user reads it back through the resolved story.
+  const resolveRoom = body.shortlink === undefined && body.storyId !== undefined;
+  let shortlink: string;
+  if (resolveRoom) {
+    const storyId = requiredPositiveInteger(body.storyId, 'story id');
+    const story = await requireUpstreamJson(await fetch(`${baseUrl}/story/?id=${storyId}`, { headers }), response);
+    if (!story) return;
+    const roomId = requiredString(story.room_id, 'story room id');
+    const room = await requireUpstreamJson(await fetch(`${baseUrl}/room/?id=${encodeURIComponent(roomId)}`, { headers }), response);
+    if (!room) return;
+    shortlink = requiredString(room.shortlink, 'room code');
+  } else {
+    shortlink = requiredString(body.shortlink, 'room code');
+  }
 
   const cancelled = await fetch(
     `${baseUrl}/story/cancel?room_shortlink=${encodeURIComponent(shortlink)}`,
@@ -502,6 +515,11 @@ async function proxyStopShow(request: IncomingMessage, response: ServerResponse)
     }
   } else {
     await cancelled.body?.cancel();
+  }
+  if (resolveRoom) {
+    // The renderer never joined a kernel-allocated room, so there is nothing to leave.
+    sendJson(response, 200, { stopped: true });
+    return;
   }
 
   const left = await fetch(`${baseUrl}/room/leave`, {

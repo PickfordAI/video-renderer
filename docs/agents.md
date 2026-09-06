@@ -26,7 +26,8 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | Field | Source |
 |---|---|
 | `evdId` | Actual published/available EVD UUID returned by narrative authoring; a local export label is insufficient |
-| `setupToken` | Verified user session from the kernel login; used only for room/story provisioning and stop |
+| `setupToken` | Verified user session from the kernel login; used only for room/story provisioning and stop. Optional in opaque mode |
+| `startMode` | `legacy` (default) provisions a room and story first; `opaque` sends only `evdId` to the kernel, which allocates the story and returns a shareable audience join URL |
 | `rendererId`, `credentialId`, `clientSecret` | The kernel's developer renderer installation creation response |
 | `environment` | Kernel environment: `local`, `test`, `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `edge` for the reference stack |
 | `storyType` | Use `MINIMAX` for a MiniMax EVD; `CREATOR` (legacy default) and `WHISPERS` remain supported |
@@ -50,6 +51,13 @@ It must contain `storyId`, `roomId`, `roomShortlink`, `storyMessageChannelId`, a
 `roomMainMessageChannelId`. Obtain channel IDs from the kernel; never invent them or substitute
 one for the other. Without `story`, the CLI creates the room and separate story channel itself.
 Keep a fresh `setupToken` available to stop the kernel story even when onboarding supplies `story`.
+
+**Opaque mode** (`"startMode": "opaque"`) skips provisioning entirely. `start` posts only the EVD to
+the kernel's renderer-initiated start; the kernel answers with `storyRunId`, a shareable
+`audienceJoinUrl`, and `status: audience_ready`. The CLI resolves the platform `storyId` through the
+public audience exchange and reports all three in `start`/`status` output. Kernel-side stop then
+needs a `setupToken` and `narrativeEngineUrl` to cancel through the resolved story; without them
+`stop` ends local work, states that kernel cancel was not possible, and leaves the run kernel-owned.
 
 The reference kernel exposes credential creation through `POST /bff/v1/developer/renderers`,
 body `{ "installation_name": "My video renderer" }`. It requires an authenticated browser session,
@@ -105,6 +113,7 @@ The agent, never the browser user, supplies these values in its process environm
 | `STORY_CREDENTIAL_ID` | `credentialId` |
 | `STORY_CLIENT_SECRET` | `clientSecret` |
 | `STORY_ENVIRONMENT`, `STORY_TYPE`, `STORY_ROOM_NAME` | `environment`, `storyType`, `roomName` |
+| `STORY_START_MODE` | `startMode`: `legacy` or `opaque` |
 | `STORY_RESOLUTION`, `STORY_CLIP_SECONDS`, `STORY_RENDERER_VERSION` | Optional rendering settings |
 | `STORY_CONFIG_JSON`, `STORY_JSON` | Optional JSON `storyConfig` and inactive pre-provisioned `story` |
 | `STORY_RENDERER_CONFIG_JSON` | JSON `rendererConfig`; separate from kernel story configuration |

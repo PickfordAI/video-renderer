@@ -559,6 +559,32 @@ describe('Narrative Engine server proxy', () => {
     ]);
   });
 
+  it('cancels an opaque run by resolving its room through the story without leaving it', async () => {
+    const calls: Array<{ method: string; path: string; authorization: string }> = [];
+    const upstream = await listen(createServer(async (request, response) => {
+      for await (const _chunk of request) { /* drain */ }
+      calls.push({ method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization ?? '' });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      if (request.url?.startsWith('/story/?id=')) response.end(JSON.stringify({ id: 77, room_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', active: true }));
+      else if (request.url?.startsWith('/room/?id=')) response.end(JSON.stringify({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', shortlink: 'OPAQUE7' }));
+      else response.end(JSON.stringify({ message: 'Story job cancelled; aborted script' }));
+    }));
+    const proxy = await proxyServer();
+    const response = await fetch(`${proxy}/api/narrative/stop-show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl: upstream, storyId: 77, token: 'session-token' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ stopped: true });
+    expect(calls).toEqual([
+      { method: 'GET', path: '/story/?id=77', authorization: 'Bearer session-token' },
+      { method: 'GET', path: '/room/?id=dddddddd-dddd-4ddd-8ddd-dddddddddddd', authorization: 'Bearer session-token' },
+      { method: 'POST', path: '/story/cancel?room_shortlink=OPAQUE7', authorization: 'Bearer session-token' },
+    ]);
+  });
+
   it('does not leave a room when Narrative Engine rejects story cancellation', async () => {
     const paths: string[] = [];
     const upstream = await listen(createServer((request, response) => {
