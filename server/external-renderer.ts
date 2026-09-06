@@ -197,6 +197,7 @@ const MAX_PREPARED_DSS_FRAMES = 32;
 const MAX_PENDING_DSS_FRAMES = 256;
 const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
+const DSS_IDLE_TIMEOUT_MS = 300_000;
 
 function asObject(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -511,7 +512,7 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
   for (const command of group.commands) {
     const name = commandName(command);
     const compact = name.replace(/\s/g, '');
-    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation', 'look'].includes(compact)) {
+    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation', 'look', 'stillshot'].includes(compact)) {
       throw new Error(`Unsupported DSS command: ${name || '(missing command)'}`);
     }
     const character = textArg(command, 'character') ?? textArg(command, 'name');
@@ -557,6 +558,15 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
     } else if (compact === 'playanimation') {
       const animation = textArg(command, 'animation');
       if (character && animation) { visual.push(`${character} performs ${animation}.`); hasVisualAction = true; }
+    } else if (compact === 'stillshot') {
+      const args = commandArgs(command);
+      const shot = textArg(command, 'shot name') ?? textArg(command, 'preset');
+      if (!shot) throw new Error('still shot name is required');
+      const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
+        ? textArg({ args: args.target as JsonObject }, 'name')
+        : null;
+      visual.push(target ? `Camera uses ${shot} framing on ${target}.` : `Camera uses ${shot} framing.`);
+      hasVisualAction = true;
     } else if (compact === 'cutscene') {
       continue;
     }
@@ -1300,13 +1310,19 @@ class ExternalRendererRun {
             const waitSignal = AbortSignal.any([this.abortController.signal, waitController.signal]);
             // ACK-gated kernels may legitimately deliver no next DSS throughout
             // generation and playback. Their idle timeout starts after real ACKs.
-            const idleTimeout = (async () => {
-              await prepared.waitForIdle(waitSignal);
-              await waitWithAbort(this.status.firstAssignmentAt ? 300_000 : 60_000, waitSignal);
-              throw new Error('timed out waiting for DSS after playback became idle');
-            })();
             let message: JsonObject;
-            try { message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]); }
+            try {
+              if (!this.status.firstAssignmentAt) {
+                message = await dssMessages.next(null, waitSignal);
+              } else {
+                const idleTimeout = (async () => {
+                  await prepared.waitForIdle(waitSignal);
+                  await waitWithAbort(DSS_IDLE_TIMEOUT_MS, waitSignal);
+                  throw new Error('timed out waiting for DSS after playback became idle');
+                })();
+                message = await Promise.race([dssMessages.next(null, waitSignal), idleTimeout]);
+              }
+            }
             finally { waitController.abort(); }
             const frame = parseDssFrame(message);
             if (this.acceptFrame(frame)) await prepared.prepare(() => this.preparePlannedFrame(frame));
@@ -1333,7 +1349,10 @@ class ExternalRendererRun {
         return;
       }
       while (!this.stopped && this.socket.readyState === WebSocket.OPEN) {
-        const message = await dssMessages.next(this.status.firstAssignmentAt ? 300_000 : 60_000, this.abortController.signal);
+        const message = await dssMessages.next(
+          this.status.firstAssignmentAt ? DSS_IDLE_TIMEOUT_MS : null,
+          this.abortController.signal,
+        );
         if (message.type === 'websocket.closed') break;
         if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
         const frame = parseDssFrame(message);
