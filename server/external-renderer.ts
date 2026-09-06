@@ -9,6 +9,7 @@ import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type Render
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
+import { requestStoryStart } from './story-start.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import { extractVideoFrame } from './video-frame.js';
@@ -1393,6 +1394,9 @@ class ExternalRendererRun {
       }
       this.status.sessionId = requiredString(welcome.session_id, 'session_id');
       this.status.sessionEpoch = Number(welcome.session_epoch);
+      this.socket.on('close', (code) => {
+        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code})`));
+      });
       const leaseSeconds = Number(welcome.lease_seconds ?? 30);
       this.heartbeat = setInterval(() => {
         if (this.socket?.readyState === WebSocket.OPEN) send(this.socket, { type: 'renderer.heartbeat' });
@@ -1425,14 +1429,15 @@ class ExternalRendererRun {
       }
       if (!this.config.resumeExistingStory) {
         this.status.storyStartAt = new Date().toISOString();
-        const startResponse = await fetch(`${this.config.baseUrl}/api/v1/renderers/start-story`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        const startPayload = await requestStoryStart({
+          url: `${this.config.baseUrl}/api/v1/renderers/start-story`,
+          accessToken,
           signal: this.abortController.signal,
-          body: JSON.stringify(this.storyStartBody()),
+          body: this.storyStartBody(),
+          retryAmbiguous: this.config.startMode === 'opaque',
+          onResponse: (status) => { this.status.storyStartStatus = status; },
+          readResponse: (response) => jsonResponse(response, 'renderer story start', 202),
         });
-        this.status.storyStartStatus = startResponse.status;
-        const startPayload = await jsonResponse(startResponse, 'renderer story start', 202);
         if (this.stopped) return;
         if (this.config.startMode === 'opaque') {
           this.acceptOpaqueStart(startPayload);
@@ -1450,9 +1455,6 @@ class ExternalRendererRun {
       }, 1_000);
       void this.observeStoryLifecycle().catch((error) => {
         if (!this.stopped) this.fail(error);
-      });
-      this.socket.on('close', (code) => {
-        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code})`));
       });
       if (this.socket.readyState !== WebSocket.OPEN) throw new Error('Renderer connection closed');
       const dssMessages = new AsyncJsonQueue(MAX_PENDING_DSS_FRAMES);

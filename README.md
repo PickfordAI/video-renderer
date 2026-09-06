@@ -86,6 +86,12 @@ the EVD to Story Kernel's renderer-initiated start, which allocates the story an
 opaque `storyRunId` plus a shareable `audienceJoinUrl`; `npm run story -- status` shows both along
 with the resolved `storyId`. The default `legacy` mode is unchanged.
 
+During an opaque start, transient gateway/transport failures are retried for up to
+180 seconds using the same start identity while the renderer stays connected.
+`status` remains `connecting` until the kernel confirms readiness. Stop cancels
+recovery immediately. If recovery expires, the kernel may still own the run; use
+the saved status and kernel account to reconcile it before starting a new story.
+
 ## Host for friends
 
 [The deployment guide](docs/deployment.md) includes Fly CLI deployment, a single-service Render

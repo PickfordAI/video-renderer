@@ -34,9 +34,10 @@ describe('opaque run configuration', () => {
 
 describe('opaque renderer-initiated story start', () => {
   it.each([
-    { exchange: 'kernel origin', explicitExchange: false },
-    { exchange: 'configured chat service', explicitExchange: true },
-  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange }) => {
+    { exchange: 'kernel origin', explicitExchange: false, recover: false },
+    { exchange: 'configured chat service', explicitExchange: true, recover: false },
+    { exchange: 'kernel origin after gateway timeout', explicitExchange: false, recover: true },
+  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange, recover }) => {
     vi.stubEnv('FAL_KEY', 'test-fal');
     const http = createServer();
     const ws = new WebSocketServer({ server: http });
@@ -47,7 +48,7 @@ describe('opaque renderer-initiated story start', () => {
     ws.on('connection', socket => socket.on('message', raw => {
       const frame = JSON.parse(raw.toString());
       frames.push(frame);
-      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: recover ? 4 : 30 }));
       if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
       if (frame.type === 'audience.message') socket.send(JSON.stringify({ type: 'audience.message.accepted', source_message_id: frame.message_id, message_id: 'kernel-message-1' }));
     }));
@@ -59,6 +60,7 @@ describe('opaque renderer-initiated story start', () => {
       if (target.endsWith('/api/v1/renderers/start-story')) {
         startBodies.push(JSON.parse(String(options?.body)));
         expect(new Headers(options?.headers).get('authorization')).toBe('Bearer test-token');
+        if (recover && startBodies.length === 1) return Response.json({ detail: 'upstream timed out' }, { status: 502 });
         return Response.json({ story_run_id: storyRunId, audience_join_url: 'http://audience.example:3000/audience/opaque-handle-1234567890', status: 'audience_ready' }, { status: 202 });
       }
       if (target === exchangeUrl) {
@@ -74,8 +76,14 @@ describe('opaque renderer-initiated story start', () => {
     const run = manager.start({ ...config(`http://127.0.0.1:${port}`), ...(explicitExchange ? { audienceExchangeUrl: exchangeUrl } : {}) });
     expect(run).toMatchObject({ startMode: 'opaque', storyId: null, storyRunId: null, audienceJoinUrl: null });
     try {
-      await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(1));
-      expect(startBodies).toEqual([{ evd_id: evdId, idempotency_key: `video-renderer:${rendererId}:${evdId}:${run.runId}` }]);
+      await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(1), { timeout: 3_000 });
+      const expectedStart = { evd_id: evdId, idempotency_key: `video-renderer:${rendererId}:${evdId}:${run.runId}` };
+      expect(startBodies).toEqual(recover ? [expectedStart, expectedStart] : [expectedStart]);
+      if (recover) {
+        expect(frames.filter(f => f.type === 'renderer.hello')).toHaveLength(1);
+        expect(frames.some(f => f.type === 'renderer.heartbeat')).toBe(true);
+        expect(run.failures).toEqual([]);
+      }
       expect(run.storyStartStatus).toBe(202);
       expect(run).toMatchObject({ storyRunId, audienceJoinUrl: 'http://audience.example:3000/audience/opaque-handle-1234567890', storyId: 77, storyMessageChannelId: storyChannel });
       expect(exchangeRequests).toEqual([{ url: exchangeUrl, origin: 'http://audience.example:3000', body: { opaque_handle: 'opaque-handle-1234567890' } }]);
@@ -90,6 +98,41 @@ describe('opaque renderer-initiated story start', () => {
       await new Promise<void>(resolve => http.close(() => resolve()));
     }
     expect(run.state).toBe('stopped');
+  });
+
+  it.each(['stop', 'disconnect'])('cancels pending startup recovery on %s', async action => {
+    vi.stubEnv('FAL_KEY', 'test-fal');
+    const http = createServer();
+    const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    ws.on('connection', socket => socket.on('message', raw => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
+    }));
+    let starts = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/login')) return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
+      starts++;
+      return Response.json({ detail: 'timeout' }, { status: 502 });
+    }));
+    const manager = new ExternalRendererRunManager(playout().manager);
+    const run = manager.start(config(`http://127.0.0.1:${port}`));
+    try {
+      await vi.waitFor(() => expect(starts).toBe(1));
+      expect(run.state).toBe('connecting');
+      if (action === 'stop') await manager.stopAll();
+      else for (const socket of ws.clients) socket.close();
+      await vi.waitFor(() => expect(run.state).toBe(action === 'stop' ? 'stopped' : 'failed'));
+      await new Promise(resolve => setTimeout(resolve, 1_100));
+      expect(starts).toBe(1);
+      expect(generateVideo).not.toHaveBeenCalled();
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
   });
 
   it('gives every run of the same EVD a distinct idempotency key', () => {
