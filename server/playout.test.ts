@@ -1,11 +1,16 @@
 import { EventEmitter } from 'node:events';
-import { writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { existsSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  concatToMp4Args,
   holdFrameArgs,
+  keepMediaEnabled,
   normalizeClipArgs,
   parsePlayoutClip,
   PlayoutSession,
@@ -39,6 +44,77 @@ const successfulFetch = vi.fn(async () => new Response(new Uint8Array([1, 2, 3])
   status: 200,
   headers: { 'Content-Length': '3' },
 }));
+
+afterEach(() => { vi.unstubAllEnvs(); });
+
+describe('opt-in media retention', () => {
+  const retentionSpawn = () => vi.fn((_executable: string, args: string[]) => {
+    if (args.at(-1)?.startsWith('rtsp://')) {
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      child.stdin.resume();
+      return child;
+    }
+    writeFileSync(args.at(-1)!, new Uint8Array([1, 2, 3]));
+    return successfulSpawn();
+  });
+
+  const play = async (sessionId: `${string}-${string}-${string}-${string}-${string}`, keepMedia: boolean | undefined) => {
+    const spawnImpl = retentionSpawn();
+    const session = new PlayoutSession({
+      spawnImpl: spawnImpl as never,
+      fetchImpl: successfulFetch as never,
+      startupBufferClips: 1,
+      holdPollMs: 1,
+      ...(keepMedia === undefined ? {} : { keepMedia }),
+    }, sessionId);
+    await session.initialize();
+    session.enqueue(clip);
+    session.enqueue({ ...clip, position: 1, storyBlockId: 'beat-1' });
+    await vi.waitFor(() => expect(spawnImpl.mock.calls.some(([, args]) => String(args.at(-1)).includes('000001.feed.ts'))).toBe(true));
+    await session.stop();
+    return { session, spawnImpl, mediaDir: join(tmpdir(), `pickford-h3-playout-${sessionId}`) };
+  };
+
+  it('concatenates the completed clips into final.mp4 and reports both paths when retention is on', async () => {
+    const { session, spawnImpl, mediaDir } = await play('00000000-0000-4000-8000-0000000000a1', true);
+    try {
+      const concat = spawnImpl.mock.calls.map(([, args]) => args).find(args => args.includes('concat'));
+      expect(concat).toBeDefined();
+      expect(concat).toEqual(concatToMp4Args(join(mediaDir, 'final.concat.txt'), join(mediaDir, 'final.mp4')));
+      expect(session.status().mediaDir).toBe(mediaDir);
+      expect(session.status().finalMp4).toBe(join(mediaDir, 'final.mp4'));
+      expect(existsSync(mediaDir)).toBe(true);
+      expect(existsSync(join(mediaDir, '000000.ts'))).toBe(true);
+      expect(existsSync(join(mediaDir, 'final.concat.txt'))).toBe(false);
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the media tree and reports no paths when retention is off', async () => {
+    const { session, spawnImpl, mediaDir } = await play('00000000-0000-4000-8000-0000000000a2', false);
+    expect(spawnImpl.mock.calls.map(([, args]) => args).some(args => args.includes('concat'))).toBe(false);
+    expect(session.status()).toMatchObject({ mediaDir: null, finalMp4: null });
+    expect(existsSync(mediaDir)).toBe(false);
+  });
+
+  it('reads retention from PICKFORD_KEEP_MEDIA and stays off by default', async () => {
+    expect(keepMediaEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(keepMediaEnabled({ PICKFORD_KEEP_MEDIA: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+    expect(keepMediaEnabled({ PICKFORD_KEEP_MEDIA: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    vi.stubEnv('PICKFORD_KEEP_MEDIA', '1');
+    const { session, mediaDir } = await play('00000000-0000-4000-8000-0000000000a3', undefined);
+    try {
+      expect(session.status().finalMp4).toBe(join(mediaDir, 'final.mp4'));
+    } finally {
+      await rm(mediaDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('H3 continuous playout', () => {
   it('validates clip enqueue payloads before FFmpeg sees them', () => {

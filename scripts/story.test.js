@@ -213,3 +213,85 @@ describe('persistent stop recovery', () => {
     }
   });
 });
+
+describe('local bridge override and retained media', () => {
+  it('sends the handoff websocket URL into the run and prints retained media paths on stop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'renderer-cli-bridge-'));
+    const mediaDir = '/tmp/pickford-h3-playout-fixture';
+    const calls = [];
+    const server = createServer(async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null;
+      calls.push({ path: req.url, method: req.method, body });
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/api/health') res.end(JSON.stringify({ falKeyConfigured: true }));
+      else if (req.url === '/api/external-renderer/runs') res.end(JSON.stringify({ runId, state: 'connecting', startMode: 'opaque', hlsUrl: null }));
+      else if (req.method === 'DELETE') res.end(JSON.stringify({ runId, state: 'stopped', storyId: 77, mediaDir, finalMp4: `${mediaDir}/final.mp4` }));
+      else res.end(JSON.stringify({ runId, state: 'running', startMode: 'opaque', storyId: 77, hlsUrl: `http://127.0.0.1:4174/hls/h3-${runId}/index.m3u8` }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const handoff = {
+      startMode: 'opaque', environment: 'local', storyType: 'MINIMAX',
+      evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'private-installation', setupToken: 'private-setup',
+      services: {
+        narrativeEngineUrl: 'http://127.0.0.1:8081', rendererBaseUrl: 'http://127.0.0.1:8195',
+        rendererWebsocketUrl: 'ws://127.0.0.1:8293/api/v1/renderer-bridge/ws',
+      },
+    };
+    const path = join(root, 'handoff.json');
+    await writeFile(path, JSON.stringify(handoff));
+    const options = { cwd: root, env: { ...process.env, PORT: String(server.address().port) } };
+    for (const key of Object.keys(options.env)) if (key.startsWith('STORY_')) delete options.env[key];
+    try {
+      await exec(process.execPath, [cli, 'start', '--handoff', path], options);
+      const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
+      expect(run.websocketUrl).toBe(handoff.services.rendererWebsocketUrl);
+      expect(run.baseUrl).toBe(handoff.services.rendererBaseUrl);
+      const stopped = JSON.parse((await exec(process.execPath, [cli, 'stop', '--handoff', path], options)).stdout);
+      expect(stopped).toEqual({ stopped: true, mediaDir, finalMp4: `${mediaDir}/final.mp4` });
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('omits websocketUrl and media paths when the handoff and run do not supply them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'renderer-cli-nobridge-'));
+    const calls = [];
+    const server = createServer(async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null;
+      calls.push({ path: req.url, method: req.method, body });
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/api/health') res.end(JSON.stringify({ falKeyConfigured: true }));
+      else if (req.url === '/api/external-renderer/runs') res.end(JSON.stringify({ runId, state: 'connecting', startMode: 'opaque', hlsUrl: null }));
+      else if (req.method === 'DELETE') res.end(JSON.stringify({ runId, state: 'stopped', storyId: 77, mediaDir: null, finalMp4: null }));
+      else res.end(JSON.stringify({ runId, state: 'running', startMode: 'opaque', storyId: 77, hlsUrl: `http://127.0.0.1:4174/hls/h3-${runId}/index.m3u8` }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const handoff = {
+      startMode: 'opaque', environment: 'local', storyType: 'MINIMAX',
+      evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'private-installation', setupToken: 'private-setup',
+      services: { narrativeEngineUrl: 'http://127.0.0.1:8081', rendererBaseUrl: 'http://127.0.0.1:8195' },
+    };
+    const path = join(root, 'handoff.json');
+    await writeFile(path, JSON.stringify(handoff));
+    const options = { cwd: root, env: { ...process.env, PORT: String(server.address().port) } };
+    for (const key of Object.keys(options.env)) if (key.startsWith('STORY_')) delete options.env[key];
+    try {
+      await exec(process.execPath, [cli, 'start', '--handoff', path], options);
+      expect(calls.find(c => c.path === '/api/external-renderer/runs').body).not.toHaveProperty('websocketUrl');
+      const stopped = JSON.parse((await exec(process.execPath, [cli, 'stop', '--handoff', path], options)).stdout);
+      expect(stopped).toEqual({ stopped: true });
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

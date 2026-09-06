@@ -9,6 +9,8 @@ import {
   parseRendererAudienceResult,
   planGroupClips,
   parseExternalRendererRunConfig,
+  rendererWebSocketUrl,
+  generationMsPercentiles,
 } from './external-renderer.js';
 
 const rendererId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -306,5 +308,62 @@ describe('StoryKernel look direction', () => {
     expect(() => planGroupClips(frame, { id: 'bad-look', commands: [
       { command: 'look', args: { character: 'Richard Cho', target: { type: 'Character' } } },
     ] }, 5)).toThrow('look target name');
+  });
+});
+
+describe('renderer websocket URL resolution', () => {
+  const loopback = { baseUrl: 'http://127.0.0.1:8195' };
+
+  it('downgrades a loopback wss front to ws on the advertised host and port', () => {
+    expect(rendererWebSocketUrl(loopback, 'wss://localhost:8294/api/v1/renderer-bridge/ws'))
+      .toBe('ws://localhost:8294/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl(loopback, 'wss://127.0.0.1:8294/ws')).toBe('ws://127.0.0.1:8294/ws');
+    expect(rendererWebSocketUrl({ baseUrl: 'http://host.docker.internal:8195' }, 'wss://host.docker.internal:8294/ws'))
+      .toBe('ws://host.docker.internal:8294/ws');
+  });
+
+  it('still rehosts a .local advertisement onto the base URL host and port', () => {
+    expect(rendererWebSocketUrl(loopback, 'wss://stack.local:443/ws')).toBe('ws://127.0.0.1:8195/ws');
+  });
+
+  it('leaves a non-loopback wss URL untouched, including from a loopback base URL', () => {
+    expect(rendererWebSocketUrl(loopback, 'wss://edge.pickford.ai/api/v1/renderer-bridge/ws'))
+      .toBe('wss://edge.pickford.ai/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl({ baseUrl: 'https://edge.pickford.ai' }, 'wss://localhost:8294/ws'))
+      .toBe('wss://localhost:8294/ws');
+  });
+
+  it('rejects plain ws from a non-loopback service and query strings from any', () => {
+    expect(() => rendererWebSocketUrl({ baseUrl: 'https://edge.pickford.ai' }, 'ws://localhost:8293/ws')).toThrow('must use WSS');
+    expect(() => rendererWebSocketUrl(loopback, 'wss://localhost:8294/ws?token=x')).toThrow('query-free');
+  });
+
+  it('prefers an explicit handoff websocketUrl over anything the platform advertises', () => {
+    const parsed = parseExternalRendererRunConfig({
+      environment: 'local',
+      baseUrl: 'http://127.0.0.1:8195',
+      websocketUrl: 'ws://127.0.0.1:8293/api/v1/renderer-bridge/ws',
+      rendererId,
+      credentialId,
+      clientSecret: 'test-only-secret',
+      rendererVersion: 'minimax.20260904.local.1',
+      resumeExistingStory: true,
+    });
+
+    expect(parsed.websocketUrl).toBe('ws://127.0.0.1:8293/api/v1/renderer-bridge/ws');
+    expect(parsed.websocketUrl ?? rendererWebSocketUrl(parsed, 'wss://localhost:8294/api/v1/renderer-bridge/ws'))
+      .toBe('ws://127.0.0.1:8293/api/v1/renderer-bridge/ws');
+  });
+});
+
+describe('generation latency percentiles', () => {
+  const record = (generationMs: number | null) => ({ generationMs } as Parameters<typeof generationMsPercentiles>[0][number]);
+
+  it('summarizes only completed clips and averages the two middle samples on an even count', () => {
+    expect(generationMsPercentiles([])).toBeNull();
+    expect(generationMsPercentiles([record(null)])).toBeNull();
+    expect(generationMsPercentiles([record(9), record(null), record(3), record(6)])).toEqual({ min: 3, median: 6, max: 9 });
+    expect(generationMsPercentiles([record(9), record(3), record(6), record(12)])).toEqual({ min: 3, median: 8, max: 12 });
+    expect(generationMsPercentiles([record(5)])).toEqual({ min: 5, median: 5, max: 5 });
   });
 });

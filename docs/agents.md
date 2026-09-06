@@ -94,9 +94,27 @@ Never scrape arbitrary container environments, databases, or another user's brow
 7. Poll `npm run story -- status`. Return the watch URL once the first clip is actually playable,
    or report a startup failure. `connecting` is not success. A manifest HTTP 200 plus playable
    video is stronger evidence than `clipsRendered` alone.
+   `status` also carries a `clips` array (one entry per planned shot with `submittedAt`,
+   `readyAt`, `generationMs`, `playedAt`, provider request id, and whether the shot established or
+   reused a camera anchor) plus `anchorsEstablished`, `anchorsReused`, and
+   `generationMsPercentiles`. Use these to answer latency and continuity-reuse questions.
 8. On stop: `npm run story -- stop`, then end the worker
    and relay if no longer needed. Stop needs a valid setup user session; refresh through onboarding
    when expired. Failed cleanup must be reported and retried, not silently ignored.
+
+## Keeping the rendered video
+
+Media is discarded when a run stops. Set `PICKFORD_KEEP_MEDIA=1` in the worker environment to keep
+the run's normalized clips and write a single `final.mp4` alongside them; `npm run story -- stop`
+then prints `mediaDir` and `finalMp4`. Never enable it for a user who did not ask to keep footage.
+
+## Local Story Kernel bridge
+
+A local unified stack advertises its WebSocket bridge behind a self-signed TLS port, which no client
+trusts. Put the stack's plain bridge URL in the handoff as `services.rendererWebsocketUrl`
+(for example `ws://127.0.0.1:8293/api/v1/renderer-bridge/ws`); the renderer prefers it over the
+advertised URL. Without it, a loopback `wss://` advertisement is downgraded to `ws://` on the same
+host and port, which only works when the stack serves both on that port.
 
 ## Environment and persistent configuration
 

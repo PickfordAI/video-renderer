@@ -23,6 +23,9 @@ export interface PlayoutStatus {
   playedThroughPosition: number;
   outputSeconds: number;
   error: string | null;
+  /** Absolute media directory, reported only while opt-in retention keeps it after the run. */
+  mediaDir: string | null;
+  finalMp4: string | null;
 }
 
 interface NormalizedClip extends PlayoutClipInput {
@@ -47,6 +50,23 @@ interface PlayoutOptions {
   publisherRestartDelayMs?: number;
   holdRunwaySeconds?: number;
   holdPollMs?: number;
+  keepMedia?: boolean;
+}
+
+export function keepMediaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PICKFORD_KEEP_MEDIA === '1';
+}
+
+export function concatToMp4Args(listPath: string, outputPath: string): string[] {
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'concat', '-safe', '0', '-i', listPath,
+    // Every retained segment was normalized to identical codec parameters, so the
+    // review copy needs no re-encode; only the ADTS-to-ASC audio rewrite for MP4.
+    '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
+    '-movflags', '+faststart',
+    outputPath,
+  ];
 }
 
 const MAX_CLIP_DOWNLOAD_BYTES = 256 * 1024 * 1024;
@@ -282,6 +302,9 @@ export class PlayoutSession {
   private readonly publisherRestartDelayMs: number;
   private readonly holdRunwaySeconds: number;
   private readonly holdPollMs: number;
+  private readonly keepMedia: boolean;
+  private readonly retainedFilePaths: string[] = [];
+  private finalMp4: string | null = null;
   private readonly pending = new Map<number, PlayoutClipInput>();
   private readonly normalized = new Map<number, NormalizedClip>();
   private readonly skipped = new Set<number>();
@@ -329,6 +352,7 @@ export class PlayoutSession {
     // timeout, without building several seconds of filler ahead of a real clip.
     this.holdRunwaySeconds = Math.max(0, options.holdRunwaySeconds ?? 1);
     this.holdPollMs = Math.max(1, options.holdPollMs ?? 250);
+    this.keepMedia = options.keepMedia ?? keepMediaEnabled();
   }
 
   async initialize(): Promise<void> {
@@ -375,6 +399,8 @@ export class PlayoutSession {
       playedThroughPosition,
       outputSeconds: Math.round(this.outputSeconds * 100) / 100,
       error: this.error,
+      mediaDir: this.keepMedia ? this.tempRoot : null,
+      finalMp4: this.finalMp4,
     };
   }
 
@@ -501,7 +527,8 @@ export class PlayoutSession {
         this.activeHoldFilePath = clip.holdFilePath;
         this.normalized.delete(clip.position);
         this.nextPublishPosition += 1;
-        await rm(clip.filePath, { force: true });
+        if (this.keepMedia) this.retainedFilePaths.push(clip.filePath);
+        else await rm(clip.filePath, { force: true });
         if (previousHoldFilePath && previousHoldFilePath !== clip.holdFilePath) {
           await rm(previousHoldFilePath, { force: true });
         }
@@ -591,7 +618,26 @@ export class PlayoutSession {
     this.publisher?.stdin.end();
     this.publisher?.kill('SIGTERM');
     this.publisher = null;
-    await rm(this.tempRoot, { recursive: true, force: true });
+    if (!this.keepMedia) {
+      await rm(this.tempRoot, { recursive: true, force: true });
+      return;
+    }
+    await this.writeFinalMp4();
+  }
+
+  private async writeFinalMp4(): Promise<void> {
+    if (this.retainedFilePaths.length === 0) return;
+    const listPath = join(this.tempRoot, 'final.concat.txt');
+    const outputPath = join(this.tempRoot, 'final.mp4');
+    try {
+      await writeFile(listPath, `${this.retainedFilePaths.map((path) => `file '${path}'`).join('\n')}\n`);
+      await runProcess(this.ffmpegPath, concatToMp4Args(listPath, outputPath), this.spawnImpl);
+      this.finalMp4 = outputPath;
+    } catch (cause) {
+      console.warn(`[h3 playout ${this.sessionId}] could not write final.mp4: ${cause instanceof Error ? cause.message : 'unknown failure'}`);
+    } finally {
+      await rm(listPath, { force: true });
+    }
   }
 }
 

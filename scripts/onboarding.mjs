@@ -19,6 +19,7 @@ export function loadHandoff(path, env = process.env) {
     resolution: env.STORY_RESOLUTION, rendererVersion: env.STORY_RENDERER_VERSION,
     ...(env.STORY_INITIAL_IMAGE_URL ? { initialImageUrl: env.STORY_INITIAL_IMAGE_URL } : {}),
     ...(env.STORY_CLIP_SECONDS ? { clipDurationSeconds: Number(env.STORY_CLIP_SECONDS) } : {}),
+    ...(env.STORY_RENDERER_WEBSOCKET_URL ? { services: { rendererWebsocketUrl: env.STORY_RENDERER_WEBSOCKET_URL } } : {}),
   };
   try {
     if (env.STORY_CONFIG_JSON) value.storyConfig = JSON.parse(env.STORY_CONFIG_JSON);

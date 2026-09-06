@@ -139,6 +139,75 @@ describe('rolling DSS generation and ordered playout', () => {
     } finally { await fixture.close(); }
   });
 
+  it('records per-clip timings and classifies camera anchors as established or reused', async () => {
+    const fixture = await bridge({ continuity: 'camera-anchors', shotPlanner: {
+      characters: { Alex: { imageUrl: 'https://images.example/alex.png' }, Sam: { imageUrl: 'https://images.example/sam.png' } },
+      sets: { lobby: { imageUrl: 'https://images.example/lobby.png' } },
+    } });
+    const camera = (character: string): Json => ({ command: 'character camera', args: { character, shot: 'Character_CloseUp' } });
+    const dialogue = (character: string): Json => ({ command: 'talk', args: { character, dialogue: `${character} speaks.`, audio_duration: 5 } });
+    const generated = (name: string) => ({ ...result(name), requestId: `fal-${name}` } as Generated);
+    try {
+      fixture.send(fixture.chunk(1, 0, [[
+        { command: 'enable set', args: { set: 'lobby' } },
+        { command: 'add character', args: { character: 'Alex', point: { mark: 'left_mark' } } },
+        { command: 'add character', args: { character: 'Sam', point: { mark: 'right_mark' } } },
+        camera('Alex'),
+      ]]));
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0']));
+      expect(fixture.run.clips).toHaveLength(0);
+
+      fixture.send(fixture.chunk(2, 0, [[dialogue('Alex')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      fixture.send(fixture.chunk(3, 0, [[camera('Sam')], [dialogue('Sam')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
+      fixture.send(fixture.chunk(4, 0, [[camera('Alex'), dialogue('Alex')]]));
+      await vi.waitFor(() => expect(fixture.run.clips).toHaveLength(3));
+
+      const [alexA, samB, alexReuse] = fixture.run.clips;
+      expect(fixture.run.clips.map(clip => clip.anchor)).toEqual(['establish', 'establish', 'reuse']);
+      expect(fixture.run.clips.map(clip => [clip.sequence, clip.position])).toEqual([[2, 0], [3, 1], [4, 2]]);
+      expect(fixture.run.clips.map(clip => clip.continuity)).toEqual(['camera-anchors', 'camera-anchors', 'camera-anchors']);
+      expect(alexReuse.anchorKey).toBe(alexA.anchorKey);
+      expect(samB.anchorKey).not.toBe(alexA.anchorKey);
+      expect(alexA.groupId).toBe('group-2-0');
+      expect(alexA.durationSeconds).toBe(5);
+      expect(fixture.run).toMatchObject({ anchorsEstablished: 2, anchorsReused: 1 });
+      // The reusing shot is still blocked on its anchor, so it is planned but unsubmitted.
+      expect(alexReuse.submittedAt).toBeNull();
+      expect(alexA.submittedAt).not.toBeNull();
+      expect(alexA.readyAt).toBeNull();
+      expect(fixture.run.generationMsPercentiles).toBeNull();
+
+      await sleep(5);
+      fixture.pending[0].resolve(generated('angle-a'));
+      fixture.pending[1].resolve(generated('angle-b'));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(3));
+      fixture.pending[2].resolve(generated('return-a'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(3));
+
+      for (const clip of fixture.run.clips) {
+        expect(clip.readyAt).not.toBeNull();
+        expect(Date.parse(clip.readyAt!)).toBeGreaterThanOrEqual(Date.parse(clip.submittedAt!));
+        expect(clip.generationMs).toBeGreaterThanOrEqual(0);
+        expect(clip.playedAt).toBeNull();
+      }
+      expect(fixture.run.clips.map(clip => clip.providerRequestId)).toEqual(['fal-angle-a', 'fal-angle-b', 'fal-return-a']);
+      expect(alexA.generationMs).toBeGreaterThan(0);
+      const percentiles = fixture.run.generationMsPercentiles!;
+      expect(percentiles.min).toBeLessThanOrEqual(percentiles.median);
+      expect(percentiles.median).toBeLessThanOrEqual(percentiles.max);
+      expect(percentiles.max).toBe(Math.max(...fixture.run.clips.map(clip => clip.generationMs!)));
+
+      fixture.play(0);
+      await vi.waitFor(() => expect(fixture.run.clips[0].playedAt).not.toBeNull());
+      expect(fixture.run.clips[2].playedAt).toBeNull();
+      fixture.play(2);
+      await vi.waitFor(() => expect(fixture.run.clips[2].playedAt).not.toBeNull());
+      expect(fixture.run.clipsRendered).toBe(3);
+    } finally { await fixture.close(); }
+  });
+
   it.each(['camera-anchors', 'last-frame-chain'] as const)('resets %s on a new scene_index without waiting for a whole scene or certified context', async continuity => {
     const fixture = await bridge({ model: continuity === 'camera-anchors' ? 'fal-max-ref2v' : 'fal-turbo-i2v', continuity });
     try {
