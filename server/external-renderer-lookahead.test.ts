@@ -17,7 +17,7 @@ const talk = (character = 'Alex'): Json => ({ command: 'talk', args: { character
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const result = (name: string) => ({ videoUrl: `https://video.example/${name}.mp4` } as Generated);
 
-async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; continuity?: 'none' | 'camera-anchors' | 'last-frame-chain'; concurrency?: number; budget?: number } = {}) {
+async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; continuity?: 'none' | 'camera-anchors' | 'last-frame-chain'; concurrency?: number; budget?: number; shotPlanner?: Json; verdicts?: boolean } = {}) {
   vi.stubEnv('FAL_KEY', 'fixture-key');
   vi.mocked(generateVideo).mockReset();
   vi.mocked(extractVideoFrame).mockReset().mockResolvedValue('data:image/jpeg;base64,YW5jaG9y');
@@ -35,6 +35,12 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
   ws.on('connection', socket => socket.on('message', raw => {
     const event = JSON.parse(raw.toString()); events.push(event);
     if (event.type === 'renderer.hello') send({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'fixture-session', session_epoch: 1, lease_seconds: 30 });
+    if (options.verdicts && event.type === 'renderer.event') send({ type: 'renderer.event.verdict', protocol_version: 1, verdict: {
+      verdict_id: event.client_event_id, client_event_id: event.client_event_id, event_message_id: event.client_event_id,
+      route: { tier: 'renderer-dev', environment: 'local', project_id: '11111111-1111-4111-8111-111111111111', story_run_id: '22222222-2222-4222-8222-222222222222', renderer_id: rendererId, stream_id: rendererId, renderer_lease_id: event.assignment_id, assignment_generation: event.assignment_generation },
+      correlation: { episode_id: 42, sequence: event.sequence, supplied_episode_id: 42, supplied_sequence: event.sequence },
+      outcome: 'accepted', retryable: false, confirmed_frontier: event.sequence, missing_sequence_ranges: [], occurred_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
+    } });
   }));
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => String(url).endsWith('/login')
     ? Response.json({ access_token: 'fixture-token', websocket_url: `ws://127.0.0.1:${port}` })
@@ -49,14 +55,25 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
     credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'fixture-secret', rendererVersion: 'h3.test.v1.0', storyId: 42,
     registerManifest: false, initialImageUrl: 'https://images.example/initial.png', clipDurationSeconds: 5,
     rendererConfig: { model: options.model ?? 'fal-max-ref2v', continuity: options.continuity ?? 'none', concurrency: options.concurrency ?? 2, maxBufferedSeconds: options.budget ?? 30 },
+    shotPlanner: options.shotPlanner,
   });
   await vi.waitFor(() => expect(run.state).toBe('running'));
   const frame = (sequence: number, commands: Json[] = [talk()], overrides: Json = {}) => ({
     stream_id: rendererId, assignment_id: 'fixture-assignment', assignment_generation: 1, sequence,
     story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', script: { sequence, command_groups: [{ id: `group-${sequence}`, commands }] }, ...overrides,
   });
+  // Matches the deployed protobuf-to-dict shape: metadata lives on the script,
+  // one command group normally, while the wire also permits multiple groups.
+  const chunk = (sequence: number, sceneIndex: number, commands: Json[][]) => frame(sequence, [], {
+    story_block_id: undefined,
+    script: {
+      id: `10000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`, episode_id: 42, scene_index: sceneIndex,
+      story_block_index: sequence, story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', sequence,
+      command_groups: commands.map((group, index) => ({ id: `group-${sequence}-${index}`, commands: group })),
+    },
+  });
   return {
-    run, pending, enqueue, start, stop, send, frame, manager,
+    run, pending, enqueue, start, stop, send, frame, chunk, manager,
     completed: () => events.filter(event => event.event === 'completed').map(event => event.dss_id),
     play: (position: number) => { playedThroughPosition = position; },
     disconnect: () => { for (const socket of ws.clients) socket.close(); },
@@ -67,6 +84,104 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('rolling DSS generation and ordered playout', () => {
+  it('compiles streamed setup and camera A/B/A chunks with configured references before dialogue playback ACKs', async () => {
+    const fixture = await bridge({ continuity: 'camera-anchors', verdicts: true, shotPlanner: {
+      characters: { Alex: { imageUrl: 'https://images.example/alex.png' }, Sam: { imageUrl: 'https://images.example/sam.png' } },
+      sets: { lobby: { imageUrl: 'https://images.example/lobby.png' } },
+      markNames: { left_mark: 'at the left window', right_mark: 'beside the right doorway' },
+    } });
+    vi.mocked(extractVideoFrame).mockImplementation(async url => `data:image/jpeg;base64,${Buffer.from(url).toString('base64')}`);
+    const camera = (character: string): Json => ({ command: 'character camera', args: { character, shot: 'Character_CloseUp' } });
+    const dialogue = (character: string): Json => ({ command: 'talk', args: { character, dialogue: `${character} follows the conversation.`, audio_duration: 5 } });
+    try {
+      fixture.send(fixture.chunk(1, 0, [[
+        { command: 'enable set', args: { set: 'lobby' } },
+        { command: 'add character', args: { character: 'Alex', point: { mark: 'left_mark' } } },
+        { command: 'add character', args: { character: 'Sam', point: { mark: 'right_mark' } } }, camera('Alex'),
+      ]]));
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0']));
+      expect(fixture.pending).toHaveLength(0);
+      fixture.send(fixture.chunk(2, 0, [[dialogue('Alex')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      const first = vi.mocked(generateVideo).mock.calls[0][0];
+      expect(first.prompt).toContain('close-up of Alex');
+      expect(first.prompt).toContain('at the left window');
+      expect(first.referenceImageUrls).toContain('https://images.example/alex.png');
+      expect(first.referenceImageUrls).toContain('https://images.example/lobby.png');
+      expect(first.referenceImageUrls).not.toContain('https://images.example/sam.png');
+
+      fixture.send(fixture.chunk(3, 0, [[camera('Sam')], [dialogue('Sam')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
+      expect(vi.mocked(generateVideo).mock.calls[1][0].prompt).toContain('close-up of Sam');
+      expect(vi.mocked(generateVideo).mock.calls[1][0].referenceImageUrls).toContain('https://images.example/sam.png');
+      fixture.pending[1].resolve(result('angle-b'));
+      await vi.waitFor(() => expect(extractVideoFrame).toHaveBeenCalledTimes(1));
+      expect(fixture.enqueue).not.toHaveBeenCalled();
+      fixture.send(fixture.chunk(4, 0, [[camera('Alex'), dialogue('Alex')]]));
+      await sleep(30);
+      expect(fixture.pending).toHaveLength(2);
+      fixture.pending[0].resolve(result('angle-a'));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(3));
+      const third = vi.mocked(generateVideo).mock.calls[2][0];
+      expect(third.referenceImageUrls?.at(-1)).toBe(`data:image/jpeg;base64,${Buffer.from(result('angle-a').videoUrl).toString('base64')}`);
+      expect(third.prompt).toContain('close-up of Alex');
+      fixture.pending[2].resolve(result('return-a'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(3));
+      expect(fixture.enqueue.mock.calls.map(([clip]) => clip.videoUrl)).toEqual([result('angle-a').videoUrl, result('angle-b').videoUrl, result('return-a').videoUrl]);
+      expect(fixture.completed()).toEqual(['group-1-0']);
+      fixture.play(0);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0']));
+      fixture.play(1);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1']));
+      fixture.play(2);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1', 'group-4-0']));
+      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 5, refused: 0 }));
+    } finally { await fixture.close(); }
+  });
+
+  it.each(['camera-anchors', 'last-frame-chain'] as const)('resets %s on a new scene_index without waiting for a whole scene or certified context', async continuity => {
+    const fixture = await bridge({ model: continuity === 'camera-anchors' ? 'fal-max-ref2v' : 'fal-turbo-i2v', continuity });
+    try {
+      fixture.send(fixture.chunk(1, 0, [[
+        { command: 'enable set', args: { set: 'lobby' } },
+        { command: 'add character', args: { character: 'Sam', point: { mark: 'old_doorway' } } },
+        talk('Alex'),
+      ]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      fixture.pending[0].resolve(result('old-scene'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(1));
+      fixture.send(fixture.chunk(2, 0, [[talk('Alex')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
+      const sameScene = vi.mocked(generateVideo).mock.calls[1][0];
+      if (continuity === 'camera-anchors') expect(sameScene.referenceImageUrls?.at(-1)).toMatch(/^data:image/);
+      else expect(sameScene.initialImageUrl).toMatch(/^data:image/);
+      fixture.pending[1].resolve(result('old-scene-again'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(2));
+      fixture.send(fixture.chunk(3, 1, [[{ command: 'enable set', args: { set: 'lobby' } }, talk('Alex')]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(3));
+      const newScene = vi.mocked(generateVideo).mock.calls[2][0];
+      expect(newScene.prompt).not.toContain('old doorway');
+      expect(newScene.prompt).not.toContain('Sam');
+      if (continuity === 'camera-anchors') expect(newScene.referenceImageUrls).toEqual(['https://images.example/initial.png']);
+      else expect(newScene.initialImageUrl).toBe('https://images.example/initial.png');
+      expect(fixture.completed()).toEqual([]);
+    } finally { await fixture.close(); }
+  });
+
+  it('renders sequence-zero dialogue and honors its timing instead of acknowledging it as initialization', async () => {
+    const fixture = await bridge();
+    try {
+      fixture.send(fixture.chunk(0, 0, [[talk(), { command: 'delay', args: { seconds: 0.1 } }]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      fixture.pending[0].resolve(result('sequence-zero'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(1));
+      expect(fixture.completed()).toEqual([]);
+      fixture.play(0);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-0-0']));
+      expect(fixture.run.dssCommandsRendered).toBe(2);
+    } finally { await fixture.close(); }
+  });
+
   it('generates later received payloads and prefeeds clips while the first is playing, without early ACKs', async () => {
     const fixture = await bridge();
     const compile = vi.spyOn(DssShotPlanner.prototype, 'planGroup');
@@ -171,7 +286,7 @@ describe('rolling DSS generation and ordered playout', () => {
     const fixture = await bridge();
     try {
       expect(fixture.start).toHaveBeenCalledWith({ startupBufferClips: 1 });
-      fixture.send(fixture.frame(0, [{ command: 'delay', args: { seconds: 60 } }]));
+      fixture.send(fixture.frame(0, [{ command: 'set story mode', args: {} }]));
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-0']));
       expect(fixture.pending).toHaveLength(0);
       fixture.send(fixture.frame(1));

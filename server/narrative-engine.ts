@@ -12,6 +12,17 @@ const externalPlaybackStartupConflicts = new Set([
 ]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+type StoryType = 'CREATOR' | 'WHISPERS' | 'MINIMAX';
+
+class InvalidStoryTypeError extends Error {}
+
+function parseStoryType(value: unknown): StoryType {
+  // Keep the legacy proxy default; CLI handoffs supply their explicit/defaulted type.
+  if (value === undefined) return 'WHISPERS';
+  if (value === 'CREATOR' || value === 'WHISPERS' || value === 'MINIMAX') return value;
+  throw new InvalidStoryTypeError('storyType must be CREATOR, WHISPERS, or MINIMAX.');
+}
+
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -148,7 +159,7 @@ async function proxyStartShow(request: IncomingMessage, response: ServerResponse
     sendJson(response, 400, { error: 'EVD ID must be a UUID from Narrative Engine, not a local episode label.' });
     return;
   }
-  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
+  const storyType = parseStoryType(body.storyType);
   const headers = narrativeHeaders(token);
   const created = await requireUpstreamJson(await fetch(`${baseUrl}/room/`, {
     method: 'POST',
@@ -192,7 +203,7 @@ async function proxyPrepareShow(request: IncomingMessage, response: ServerRespon
     sendJson(response, 400, { error: 'EVD ID must be a UUID from Narrative Engine, not a local episode label.' });
     return;
   }
-  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
+  const storyType = parseStoryType(body.storyType);
   const headers = narrativeHeaders(token);
   let storyPremise: string | null = null;
   if (storyType === 'CREATOR') {
@@ -314,6 +325,7 @@ async function proxyProvisionExternalStory(request: IncomingMessage, response: S
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('request body must be an object');
   const body = raw as Record<string, unknown>;
   const baseUrl = serviceBaseUrl(body.baseUrl);
+  const storyType = parseStoryType(body.storyType);
   const token = await setupToken(body, baseUrl, response);
   if (!token) return;
   const roomName = requiredString(body.roomName, 'room name');
@@ -322,7 +334,6 @@ async function proxyProvisionExternalStory(request: IncomingMessage, response: S
     sendJson(response, 400, { error: 'EVD ID must be a UUID from Narrative Engine.' });
     return;
   }
-  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
   const headers = narrativeHeaders(token);
 
   const created = await requireUpstreamJson(await fetch(`${baseUrl}/room/`, {
@@ -512,7 +523,7 @@ async function proxyAvailableEvds(request: IncomingMessage, response: ServerResp
   const body = raw as Record<string, unknown>;
   const baseUrl = serviceBaseUrl(body.baseUrl);
   const token = requiredString(body.token, 'session token');
-  const storyType = body.storyType === 'CREATOR' ? 'CREATOR' : 'WHISPERS';
+  const storyType = parseStoryType(body.storyType);
   const headers = narrativeHeaders(token);
   const cvdResponse = await fetch(`${baseUrl}/admin/cvds`, { headers });
   if (!cvdResponse.ok) {
@@ -642,7 +653,7 @@ export async function handleNarrativeEngineApi(
   } catch (error) {
     if (!response.headersSent) {
       const message = error instanceof Error ? error.message : 'Narrative Engine proxy failed';
-      sendJson(response, 502, { error: message });
+      sendJson(response, error instanceof InvalidStoryTypeError ? 400 : 502, { error: message });
     } else if (!response.destroyed) {
       response.end();
     }

@@ -12,11 +12,12 @@ const story = { storyId: 42, roomId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', roo
 const runId = '12345678-1234-4234-8234-123456789abc';
 describe('agent story lifecycle', () => {
   it.each([
-    { source: 'explicit-file', renderMode: 'auto' },
-    { source: 'registered-file', renderMode: 'fal-turbo-i2v' },
-    { source: 'env-file', renderMode: 'fal-max-ref2v' },
-    { source: 'environment', renderMode: 'canonical-max-independent' },
-  ])('starts and stops through $source configuration with $renderMode', async ({ source, renderMode }) => {
+    { source: 'explicit-file', renderMode: 'auto', storyType: undefined },
+    { source: 'registered-file', renderMode: 'fal-turbo-i2v', storyType: 'WHISPERS' },
+    { source: 'env-file', renderMode: 'fal-max-ref2v', storyType: 'MINIMAX' },
+    { source: 'environment', renderMode: 'canonical-max-independent', storyType: 'MINIMAX' },
+    { source: 'explicit-file', renderMode: 'fal-max-ref2v', storyType: 'MINIMAX', streamedRefs: true },
+  ])('starts and stops through $source configuration with $renderMode', async ({ source, renderMode, storyType, streamedRefs }) => {
     const root = await mkdtemp(join(tmpdir(), 'renderer-cli-'));
     const calls = [];
     const server = createServer(async (req, res) => {
@@ -33,7 +34,8 @@ describe('agent story lifecycle', () => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
     const expectedConfig = renderMode === 'canonical-max-independent' ? { model: 'fal-max-ref2v', continuity: 'none', concurrency: 4, maxBufferedSeconds: 35 } : { model: renderMode, continuity: renderMode === 'fal-turbo-i2v' ? 'last-frame-chain' : renderMode === 'fal-max-ref2v' ? 'camera-anchors' : 'none', concurrency: 3, maxBufferedSeconds: 25 };
-    const handoff = { ...(renderMode === 'canonical-max-independent' ? { rendererConfig: expectedConfig } : { renderMode }), initialImageUrl: 'https://images.example/scene.jpg', generationConcurrency: 3, maxBufferedSeconds: 25, shotPlanner: { styleDescription: 'Noir', characters: {} }, evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'private-setup', clientSecret: 'private-installation', services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example' } };
+    const handoff = { storyType, ...(renderMode === 'canonical-max-independent' ? { rendererConfig: expectedConfig } : { renderMode }), initialImageUrl: 'https://images.example/scene.jpg', generationConcurrency: 3, maxBufferedSeconds: 25, shotPlanner: { styleDescription: 'Noir', characters: {} }, evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'private-setup', clientSecret: 'private-installation', services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example' } };
+    if (streamedRefs) { delete handoff.initialImageUrl; delete handoff.shotPlanner; }
     const path = join(root, 'handoff.json');
     await writeFile(path, JSON.stringify(handoff));
     const options = { cwd: root, env: { ...process.env, PORT: String(port) } };
@@ -43,6 +45,7 @@ describe('agent story lifecycle', () => {
     if (source === 'environment') Object.assign(options.env, {
       STORY_EVD_ID: handoff.evdId, STORY_RENDERER_ID: handoff.rendererId,
       STORY_CREDENTIAL_ID: handoff.credentialId, STORY_CLIENT_SECRET: handoff.clientSecret,
+      ...(storyType ? { STORY_TYPE: storyType } : {}),
       STORY_SETUP_TOKEN: handoff.setupToken, NARRATIVE_ENGINE_URL: handoff.services.narrativeEngineUrl,
       RENDERER_PLATFORM_URL: handoff.services.rendererBaseUrl,
       STORY_RENDERER_CONFIG_JSON: JSON.stringify(expectedConfig),
@@ -65,11 +68,14 @@ describe('agent story lifecycle', () => {
       expect(saved + stdout).not.toContain('private-');
       expect(JSON.parse(saved)).toMatchObject({ showBaseUrl: handoff.services.narrativeEngineUrl, workerStopped: false, kernelStopped: false });
       const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
-      expect(run.storyConfig.base_structure).toBe('CREATOR');
+      expect(run.storyConfig.base_structure).toBe(storyType ?? 'CREATOR');
+      expect(calls.find(c => c.path === '/api/narrative/provision-external-story').body.storyType).toBe(storyType ?? 'CREATOR');
       expect(run.storyConfig.evd_id).toBe(handoff.evdId);
       expect(run.storyConfig.message_channel_ids).toEqual([story.storyMessageChannelId]);
       expect(run).not.toHaveProperty('setupToken');
-      expect(run).toMatchObject({ rendererConfig: expectedConfig, initialImageUrl: handoff.initialImageUrl, shotPlanner: handoff.shotPlanner });
+      expect(run.rendererConfig).toEqual(expectedConfig);
+      expect(run.initialImageUrl).toBe(handoff.initialImageUrl);
+      expect(run.shotPlanner).toEqual(handoff.shotPlanner);
       expect(run).not.toHaveProperty('renderMode');
       expect(run).not.toHaveProperty('generationConcurrency');
       await exec(process.execPath, [cli, 'stop', ...flags], options);

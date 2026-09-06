@@ -51,8 +51,8 @@ export function renderingOptions(value) {
   const initialImageUrl = value.initialImageUrl || planner?.initialImageUrl;
   if (initialImageUrl !== undefined) httpsMedia(initialImageUrl, 'initialImageUrl');
   if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('Turbo requires an initialImageUrl.');
-  const hasReferenceImage = initialImageUrl || planner?.styleImageUrl || [planner?.characters, planner?.sets].some(entries => Object.values(entries ?? {}).some(item => item.imageUrl));
-  if (renderMode === 'fal-max-ref2v' && !hasReferenceImage) throw new Error('Max ref2vid requires an initial image or shotPlanner image references.');
+  // Max can receive image references later in Kernel scene_context. The bridge
+  // validates every visual shot before submitting it to a provider.
   return { rendererConfig, initialImageUrl, shotPlanner: planner };
 }
 
@@ -63,12 +63,13 @@ export function validateHandoff(value, hosted = false) {
   for (const field of ['rendererId', 'credentialId', 'evdId']) if (typeof value[field] !== 'string' || !uuid.test(value[field])) throw new Error(`Handoff ${field} must be a UUID supplied by Story Kernel.`);
   if (typeof value.clientSecret !== 'string' || !value.clientSecret.trim()) throw new Error('Handoff clientSecret is required.');
   if (!value.story && (typeof value.setupToken !== 'string' || !value.setupToken.trim())) throw new Error('Provide setupToken or an already-provisioned story.');
-  if (value.storyType && !['CREATOR', 'WHISPERS'].includes(value.storyType)) throw new Error('storyType must be CREATOR or WHISPERS.');
+  if (value.storyType !== undefined && !['CREATOR', 'WHISPERS', 'MINIMAX'].includes(value.storyType)) throw new Error('storyType must be CREATOR, WHISPERS, or MINIMAX.');
   if (value.environment && !['local', 'test', 'dev', 'edge', 'staging', 'creator', 'prod', 'demo'].includes(value.environment)) throw new Error('Unknown Story Kernel environment.');
   if (value.rendererVersion && !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+){3}$/.test(value.rendererVersion)) throw new Error('rendererVersion must have four dot-separated components.');
   if (value.resolution && !['480P', '768P'].includes(value.resolution)) throw new Error('resolution must be 480P or 768P.');
   if (value.clipDurationSeconds !== undefined && (!Number.isInteger(value.clipDurationSeconds) || value.clipDurationSeconds < 5 || value.clipDurationSeconds > 15)) throw new Error('clipDurationSeconds must be an integer from 5 to 15.');
   if (value.storyConfig !== undefined && (!value.storyConfig || typeof value.storyConfig !== 'object' || Array.isArray(value.storyConfig))) throw new Error('storyConfig must be an object.');
+  if (value.storyConfig?.base_structure !== undefined && value.storyConfig.base_structure !== (value.storyType ?? 'CREATOR')) throw new Error('storyConfig.base_structure must match storyType (CREATOR when omitted).');
   for (const url of Object.values(value.services ?? {})) {
     let parsed;
     try { parsed = new URL(url); } catch { throw new Error('Handoff contains an invalid service URL.'); }

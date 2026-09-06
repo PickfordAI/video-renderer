@@ -29,14 +29,14 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `setupToken` | Verified user session from the kernel login; used only for room/story provisioning and stop |
 | `rendererId`, `credentialId`, `clientSecret` | The kernel's developer renderer installation creation response |
 | `environment` | Kernel environment: `local`, `test`, `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `edge` for the reference stack |
-| `storyType` | `CREATOR` (default) or `WHISPERS` |
+| `storyType` | Use `MINIMAX` for a MiniMax EVD; `CREATOR` (legacy default) and `WHISPERS` remain supported |
 | `storyConfig` | Episode configuration from kernel onboarding; EVD and story-channel IDs are pinned by the CLI |
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
 | `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–8), and `maxBufferedSeconds` (5–120); see README generation choices |
 | `initialImageUrl` | Authorized HTTPS starting frame, required for Turbo i2v |
-| `shotPlanner` | Named cast/set references, style, readable marks, and optional 2–15-second voice samples |
+| `shotPlanner` | Named cast/set references when Kernel does not supply images, style, readable marks, and optional 2–15-second voice samples |
 
 
 For Minimax `scene_context`, fail closed before paid generation unless the payload contains one
@@ -190,3 +190,19 @@ cannot prove current kernel story creation, remote model latency, appearance con
 quality. A MiniMax replay URL does not fence explicit fal modes: those use FAL_QUEUE_BASE_URL. Keep
 all provider calls local and use dummy credentials for no-cost fixtures. Report live login, first DSS,
 playable media, verdict acknowledgements and kernel Stop as separate boundaries.
+
+For a streaming MiniMax run, set `storyType: "MINIMAX"` explicitly and select the model and
+continuity in `rendererConfig`, outside `storyConfig`. Do not infer the story type from the model.
+Verify that the selected Kernel and EVD support this story type before starting. The inspected
+`d4894200` Kernel emits per-group DSS with scene indexes but no certified images; configure approved
+cast/set references for Max or an opening frame for Turbo when using that version. A newer Kernel
+may supply certified `scene_context`; Max accepts those images at compilation time, and fails
+before the first video job if neither source provides a usable image. Do not insert example URLs
+to bypass this check.
+
+Compile setup-only chunks as state updates and retain the same planner across delivered chunks.
+Reset scene state on a scene-index transition even if the environment name stays the same.
+The Kernel's delivery credit and the renderer's unplayed-video budget are separate limits: raising
+renderer concurrency cannot create DSS lookahead the Kernel has not supplied. Start with one ready
+clip and measure startup, generation, actual playback and gaps independently. Keep source-derived
+fixtures, captured wire recordings and live provider results clearly identified in evidence.

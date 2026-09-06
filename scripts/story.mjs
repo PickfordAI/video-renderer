@@ -75,9 +75,9 @@ try {
         rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.0',
         resolution: handoff.resolution || '480P', clipDurationSeconds: handoff.clipDurationSeconds || 6,
         storyConfig: {
-          base_structure: handoff.storyType || 'CREATOR', needs_plan_generation: false,
+          needs_plan_generation: false,
           use_existing_stream: true, generate_audio: true, text_only: false, audio_only: false,
-          ...handoff.storyConfig, evd_id: handoff.evdId, message_channel_ids: [story.storyMessageChannelId],
+          ...handoff.storyConfig, base_structure: handoff.storyType ?? 'CREATOR', evd_id: handoff.evdId, message_channel_ids: [story.storyMessageChannelId],
         },
       });
       writePrivate(resolve(stateDir, sessionFile), { ...recovery, runId: run.runId });

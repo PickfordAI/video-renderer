@@ -70,6 +70,7 @@ STORY_SETUP_TOKEN=<from kernel login>
 STORY_RENDERER_ID=<from renderer installation>
 STORY_CREDENTIAL_ID=<from renderer installation>
 STORY_CLIENT_SECRET=<from renderer installation>
+STORY_TYPE=MINIMAX
 ```
 
 These are agent/server variables, never browser inputs. See [.env.example](.env.example) for
@@ -146,6 +147,7 @@ concurrency, and generation lookahead remain separate:
 
 ```json
 {
+  "storyType": "MINIMAX",
   "rendererConfig": {
     "model": "fal-max-ref2v",
     "continuity": "camera-anchors",
@@ -167,7 +169,7 @@ next run; changing configuration does not start generation.
 |---|---|
 | `auto` | Uses the configured direct MiniMax/fal adapter with `none`; retains serial generation. |
 | `fal-turbo-i2v` | HTTPS `initialImageUrl`; `last-frame-chain` uses each clip's ending frame for the next. |
-| `fal-max-ref2v` | Scene or character images in `shotPlanner`, or `initialImageUrl`; choose `camera-anchors` or `none`. |
+| `fal-max-ref2v` | Kernel-supplied scene images when available, or images in `shotPlanner` / `initialImageUrl`; choose `camera-anchors` or `none`. |
 
 Explicit fal models require `FAL_KEY` and never switch providers after a failure. Unsupported
 model/strategy combinations fail before story provisioning. Turbo cannot use voice references;
@@ -179,6 +181,12 @@ an exact voice or performance.
 `markNames`, and `initialImageUrl`. Character entries may contain `name`, `aliases`, `description`,
 `imageUrl`, and `voice: { "url": "https://example.com/voice.mp3", "durationSeconds": 4 }`.
 DSS supplies dialogue and staging; it does not necessarily supply character portraits or set images.
+Use `storyType: "MINIMAX"` for a MiniMax EVD; explicit `CREATOR` and `WHISPERS` handoffs remain
+supported. The story type selects the Kernel story format, independently of the video model.
+Max validates image availability when a visual DSS shot is compiled, before submitting its video
+job. This lets Kernel supply references in the stream instead of requiring a duplicate manual list.
+If that Kernel does not supply images, the private handoff must provide them. Turbo still requires
+an approved opening frame before start; an empty-set reference alone does not compose that frame.
 The compiler carries blocking, strips spoken TTS tags into acting directions, and anchors style to
 a set/style image. Ordinary `talking` animations preserve camera anchors; movement invalidates them.
 
@@ -189,7 +197,8 @@ seconds of budget. One oversized shot may occupy an otherwise empty budget to ma
 This setting is not a startup buffer or permission to submit a batch.
 
 Explicit fal modes can generate future received DSS while earlier clips play. Camera anchors
-persist across payloads; media and completion acknowledgements remain in story order. The kernel
+persist across chunks of the same scene, including repeated setup commands. A changed scene index
+resets staging and continuity even when the set is reused. Media and completion acknowledgements remain in story order. The kernel
 must supply enough lookahead. Playback begins with one ready clip to support short and ACK-gated
 stories. Offline overlap does not prove sustained live realtime performance or visual quality.
 
@@ -210,7 +219,16 @@ New Minimax DSS payloads can additionally carry certified `scene_context`. The b
 the authored set identity, each character's stable ID and exact DSS command name, the complete
 participating cast, and an exact position for every cast member before submitting any video work.
 It binds name-based talk commands to portraits through that certified identity, downloads the
-supplied HTTPS images once per stable asset ID, passes those fixed references to every shot in the
-scene, and keeps the successful cached image when a later payload refreshes only its signed URL.
-Legacy Minimax payloads without this field and non-Minimax configured-reference flows remain
-unchanged.
+supplied HTTPS images once per stable asset ID, selects the references needed by each shot, and
+keeps the successful cached image when a later payload refreshes only its signed URL.
+The full cast remains available as scene state; close-ups select only the visible character's
+portrait. Prompt image labels follow the actual selected references, including optional style
+images. Turbo carries the staging prose without citing reference images it cannot receive.
+Certified positions describe a fixed scene layout; conflicting movement or cast removal fails
+explicitly. Ordinary DSS without certified positions retains its existing movement behavior.
+
+The inspected Kernel stream at `d4894200` does not emit `scene_context`. It normally sends one
+command group per payload, including separate setup and dialogue chunks, and limits lookahead by
+outstanding playback duration. The renderer compiles each group in order, carries state between
+chunks, and acknowledges each original group only after its content or control delay has played.
+It does not wait for a complete scene or acknowledge early to request more DSS.
