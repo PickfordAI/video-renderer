@@ -955,7 +955,7 @@ class ExternalRendererRun {
   private scheduleShot(frame: DssFrame, shot: PlannedShot): ScheduledShot<GeneratedShot> {
     const mode = this.config.renderMode;
     const continuity = this.config.continuityStrategy;
-    const key = `${shot.setupKey}:${shot.continuityKey}`;
+    const key = shot.anchorKey;
     const dependency = continuity === 'last-frame-chain' ? this.sceneTails.get(shot.sceneKey)
       : continuity === 'camera-anchors' ? this.anchorShots.get(key) : undefined;
     const handle = this.scheduler.add(shot.durationSeconds, async () => {
