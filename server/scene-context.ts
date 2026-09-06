@@ -102,12 +102,27 @@ export function sceneContextImageUrls(context: MinimaxSceneContext): string[] {
   return [...context.characterImages.map(image => image.imageUrl), context.setImage.imageUrl];
 }
 
-export function sceneContextPrompt(context: MinimaxSceneContext): string {
-  const positions = context.characterImages.map((image, index) =>
-    `Character reference Image ${index + 1} is ${image.characterName} (${image.sourceId}) and remains ${context.characterPositions[image.sourceId]} throughout the shot.`);
+export interface SceneContextReferenceLabel {
+  name: string;
+  label: string;
+  assetId?: string;
+}
+
+/** Labels must describe the submitted array, not the complete cached cast. */
+export function sceneContextPrompt(context: MinimaxSceneContext, references?: readonly SceneContextReferenceLabel[]): string {
+  const ordered = references ?? [
+    ...context.characterImages.map((image, index) => ({ name: image.characterName!, label: `Image ${index + 1}`, assetId: image.assetId })),
+    { name: 'set', label: `Image ${context.characterImages.length + 1}`, assetId: context.setImage.assetId },
+  ];
+  const labelFor = (image: MinimaxSceneImage) => ordered.find(reference => reference.assetId === image.assetId)?.label;
+  const positions = context.characterImages.map(image => {
+    const label = labelFor(image);
+    return `${image.characterName} (${image.sourceId})${label ? ` has their character design in ${label}` : ''}. Fixed scene position: ${context.characterPositions[image.sourceId]}`;
+  });
+  const setLabel = labelFor(context.setImage);
   return [
     ...positions,
-    `The final reference image is the complete environment for authored set ${context.setImage.sourceId}; preserve its design and include no additional characters.`,
+    `${setLabel ? `${setLabel} depicts the complete environment for` : 'Preserve the complete environment of'} authored set ${context.setImage.sourceId}; preserve its design and include no additional characters. Frame only the characters required by this shot while retaining the full scene layout.`,
   ].join(' ');
 }
 

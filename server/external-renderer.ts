@@ -486,8 +486,8 @@ function parseDssFrame(raw: JsonObject): DssFrame {
   const episodeId = script.episode_id ?? raw.episode_id ?? undefined;
   if (episodeId !== undefined && (!Number.isInteger(episodeId) || (episodeId as number) < 0)) throw new Error('DSS episode_id must be a non-negative integer');
   if (!Number.isInteger(sequence) || sequence < 0) throw new Error('DSS sequence must be a non-negative integer');
-  const sceneIndex = script.scene_index === undefined ? -1 : Number(script.scene_index);
-  if (!Number.isInteger(sceneIndex)) throw new Error('DSS scene_index must be an integer');
+  const sceneIndex = script.scene_index === undefined || script.scene_index === null ? undefined : Number(script.scene_index);
+  if (sceneIndex !== undefined && !Number.isInteger(sceneIndex)) throw new Error('DSS scene_index must be an integer');
   const rawGroups = script.command_groups;
   if (!Array.isArray(rawGroups)) throw new Error('DSS command_groups must be an array');
   const groups = rawGroups.map((value, index) => {
@@ -1000,7 +1000,7 @@ class ExternalRendererRun {
 
   private preparePlannedFrame(frame: DssFrame): PreparedFrame {
     this.assertCurrentAssignment(frame);
-    this.shotPlanner.applySceneContext(frame.sceneContext ?? null);
+    this.shotPlanner.applySceneContext(frame.sceneContext ?? null, frame.sceneIndex);
     // Compile the entire accepted frame before submitting any of its paid work.
     const groups = frame.groups.map(group => ({ group, plan: this.shotPlanner.planGroup(group.commands, group.id, frame.storyBlockId) }));
     if (this.config.renderMode === 'fal-max-ref2v') {
@@ -1015,7 +1015,7 @@ class ExternalRendererRun {
       }
     }
     return { frame, groups: groups.map(({ group, plan }) => ({
-      group, plan, completed: completionLatch(), shots: frame.sequence === 0 ? [] : plan.shots.map(shot => ({
+      group, plan, completed: completionLatch(), shots: plan.shots.map(shot => ({
         shot, job: this.scheduleShot(frame, shot), position: this.clipPosition++, enqueued: completionLatch(),
       })),
     })) };
@@ -1032,7 +1032,7 @@ class ExternalRendererRun {
       }
       // A timed control follows its group's video and precedes the next group.
       // Ordinary cuts can prefeed normalization without advancing any kernel ACK.
-      if (frame.sequence !== 0 && plan.delaySeconds > 0) await abortable(completed.promise, this.abortController.signal);
+      if (plan.delaySeconds > 0) await abortable(completed.promise, this.abortController.signal);
     }
   }
 
@@ -1048,7 +1048,7 @@ class ExternalRendererRun {
         job.release();
         seconds += shot.durationSeconds;
       }
-      const delay = frame.sequence === 0 ? 0 : plan.delaySeconds;
+      const delay = plan.delaySeconds;
       if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
       this.assertCurrentAssignment(frame);
       this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay), frame);
@@ -1078,7 +1078,7 @@ class ExternalRendererRun {
       return;
     }
     for (const group of frame.groups) {
-      if (group.commands.length === 0 || frame.sequence === 0) {
+      if (group.commands.length === 0) {
         this.sendRendererEvent(this.completedEvent(frame, group, 0), frame);
         continue;
       }

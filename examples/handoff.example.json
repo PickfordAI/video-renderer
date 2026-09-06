@@ -5,7 +5,7 @@
   "clientSecret": "replace-with-installation-secret",
   "setupToken": "replace-with-user-session",
   "environment": "edge",
-  "storyType": "CREATOR",
+  "storyType": "MINIMAX",
   "roomName": "My story",
   "resolution": "480P",
   "clipDurationSeconds": 6,

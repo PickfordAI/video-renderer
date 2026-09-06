@@ -30,6 +30,9 @@ export interface ShotPlannerSettings {
 
 export interface CharacterStaging {
   name: string;
+  characterId?: string;
+  /** Authoritative scene-level blocking; supersedes engine-specific spawn marks. */
+  certifiedPosition?: string;
   zone?: string;
   mark?: string;
   posture: string;
@@ -40,6 +43,7 @@ export interface CharacterStaging {
 
 export interface ShotPlannerState {
   set: string | null;
+  sceneIndex?: number;
   dressing?: string;
   timeOfDay?: string;
   backdropImageUrl?: string;
@@ -49,7 +53,7 @@ export interface ShotPlannerState {
   continuityRevision: number;
 }
 
-export interface PlannedImageReference { name: string; url: string; label: string }
+export interface PlannedImageReference { name: string; url: string; label: string; assetId?: string }
 export interface PlannedAudioReference extends PlannedImageReference {
   durationSeconds: number;
   purpose: 'dialogue' | 'voice';
@@ -204,6 +208,7 @@ export class DssShotPlanner {
   private readonly characterReferences = new Map<string, CharacterReference>();
   private readonly setReferences = new Map<string, { description?: string; imageUrl?: string }>();
   private sceneContext: MinimaxSceneContext | null = null;
+  private sceneContextIdentity: string | null = null;
   private current: MutableState = { set: null, characters: {}, camera: { shot: 'medium shot' }, sceneRevision: 0, continuityRevision: 0 };
 
   constructor(settings: ShotPlannerSettings = {}) {
@@ -243,18 +248,48 @@ export class DssShotPlanner {
 
   get state(): ShotPlannerState { return stateSnapshot(this.current); }
 
-  applySceneContext(context: MinimaxSceneContext | null): void {
-    this.sceneContext = context;
-    if (context === null) return;
-    if (this.current.set !== context.setImage.sourceId) {
-      this.current = {
-        set: context.setImage.sourceId,
-        characters: {},
-        camera: { shot: 'medium shot' },
-        sceneRevision: this.current.sceneRevision + 1,
-        continuityRevision: this.current.continuityRevision + 1,
-      };
+  applySceneContext(context: MinimaxSceneContext | null, sceneIndex?: number): void {
+    if (sceneIndex !== undefined && !Number.isInteger(sceneIndex)) throw new Error('DSS scene_index must be an integer');
+    // Synthetic initialization metadata uses -1. It must not clear an authored scene.
+    const index = sceneIndex !== undefined && sceneIndex >= 0 ? sceneIndex : this.current.sceneIndex;
+    const changedIndex = index !== undefined && this.current.sceneIndex !== undefined && index !== this.current.sceneIndex;
+    if (context === null) {
+      if (changedIndex) {
+        this.sceneContext = null;
+        this.sceneContextIdentity = null;
+        this.resetScene(index);
+      } else if (index !== undefined) {
+        this.current.sceneIndex = index;
+        if (this.sceneContext) this.sceneContextIdentity = this.contextIdentity(this.sceneContext, index);
+      }
+      // Missing context in the next streamed group means retain the scene, not
+      // drop its certified assets. A real scene-index change clears it above.
+      return;
     }
+    const identity = this.contextIdentity(context, index);
+    const changed = changedIndex || identity !== this.sceneContextIdentity;
+    this.sceneContext = freeze(clone(context));
+    this.sceneContextIdentity = identity;
+    if (changed) this.resetScene(index, this.sceneContext);
+  }
+
+  private contextIdentity(context: MinimaxSceneContext, sceneIndex?: number): string {
+    const cast = context.characterImages.map(image => [image.sourceId, image.characterName, image.assetId, context.characterPositions[image.sourceId]])
+      .sort((left, right) => String(left[0]) < String(right[0]) ? -1 : String(left[0]) > String(right[0]) ? 1 : 0);
+    return JSON.stringify([sceneIndex ?? null, context.setImage.sourceId, context.setImage.assetId, cast]);
+  }
+
+  private resetScene(sceneIndex?: number, context?: MinimaxSceneContext): void {
+    this.current = {
+      set: context?.setImage.sourceId ?? null,
+      ...(sceneIndex === undefined ? {} : { sceneIndex }),
+      characters: Object.fromEntries((context?.characterImages ?? []).map(image => [image.characterName!, {
+        name: image.characterName!, characterId: image.sourceId, certifiedPosition: context!.characterPositions[image.sourceId], posture: 'as authored',
+      }])),
+      camera: { shot: 'medium shot' },
+      sceneRevision: this.current.sceneRevision + 1,
+      continuityRevision: this.current.continuityRevision + 1,
+    };
   }
 
   private registerAlias(alias: string, name: string): void {
@@ -266,6 +301,12 @@ export class DssShotPlanner {
   }
 
   private canonical(raw: string, state: MutableState): string {
+    if (this.sceneContext) {
+      const certified = this.sceneContext.characterImages.find(image => image.characterName === raw || normalize(image.sourceId) === normalize(raw));
+      // Certified names are exact. Configured aliases must not rebind them, nor
+      // should case folding hide a mismatch in the producer's name/ID contract.
+      return certified?.characterName ?? raw.trim();
+    }
     const key = normalize(raw);
     return this.aliases.get(key) ?? Object.keys(state.characters).find((name) => normalize(name) === key) ?? raw.trim();
   }
@@ -289,6 +330,7 @@ export class DssShotPlanner {
     let delaySeconds = 0;
     const actor = (raw: unknown): CharacterStaging => {
       const name = this.canonical(required(raw, 'DSS character'), next);
+      if (this.sceneContext && !this.sceneContext.characterImages.some(image => image.characterName === name)) throw new Error(`DSS character has no certified scene image: ${name}`);
       participants.add(name);
       if (!Object.hasOwn(next.characters, name)) {
         Object.defineProperty(next.characters, name, { value: { name, posture: 'standing' }, enumerable: true, writable: true, configurable: true });
@@ -316,6 +358,7 @@ export class DssShotPlanner {
       switch (name) {
         case 'enableset': {
           const set = required(args.set, 'enable set name');
+          if (this.sceneContext) break; // Certified set identity wins over legacy display-name restores.
           const dressing = text(args.dressing);
           const timeOfDay = text(args.time_of_day);
           if (set !== next.set || dressing !== next.dressing || timeOfDay !== next.timeOfDay) {
@@ -333,6 +376,7 @@ export class DssShotPlanner {
         }
         case 'addcharacter': case 'spawncharacter': {
           const character = actor(args.name ?? args.character);
+          if (character.certifiedPosition) break; // Do not replace authored blocking with UE spawn marks.
           const point = object(args.point);
           change(character, {
             ...(text(args.zone ?? point.zone) ? { zone: text(args.zone ?? point.zone) } : {}),
@@ -344,11 +388,13 @@ export class DssShotPlanner {
         }
         case 'removecharacter': case 'despawncharacter': {
           const character = actor(args.name ?? args.character);
+          if (character.certifiedPosition) throw new Error('DSS cast removal conflicts with fixed certified scene positions; provide a new scene context');
           delete next.characters[character.name]; next.continuityRevision++;
           break;
         }
         case 'charactermoveto': {
           const character = actor(args.character);
+          if (character.certifiedPosition) throw new Error('DSS movement conflicts with fixed certified scene positions; provide a new scene context');
           const location = object(args.location);
           const mark = required(nameOf(args.location), 'character move destination');
           change(character, { mark, ...(text(location.zone) ? { zone: text(location.zone) } : {}) });
@@ -357,6 +403,7 @@ export class DssShotPlanner {
         }
         case 'sit': case 'stand': {
           const character = actor(args.character);
+          if (character.certifiedPosition) throw new Error('DSS posture change conflicts with fixed certified scene positions; provide a new scene context');
           change(character, { posture: name === 'sit' ? 'sitting' : 'standing' });
           actions.push(`${character.name} ${name === 'sit' ? 'sits down' : 'stands up'}.`); hasMovement = true;
           break;
@@ -397,6 +444,7 @@ export class DssShotPlanner {
           const duration = providedDuration ?? words(dialogue).length / 2.3;
           if (duration <= 0) throw new Error('talk audio_duration must be positive');
           const respondent = text(args.respondent) ? this.canonical(text(args.respondent)!, next) : undefined;
+          if (respondent && this.sceneContext && !this.sceneContext.characterImages.some(image => image.characterName === respondent)) throw new Error(`DSS character has no certified scene image: ${respondent}`);
           if (respondent) participants.add(respondent);
           if (text(args.camera_shot)) next.camera = { shot: text(args.camera_shot)!, character: character.name };
           lines.push({ speaker: character.name, dialogue, deliveryDirections, duration, audio: text(args.audio), tone: text(args.tone), respondent, camera: clone(next.camera) });
@@ -427,7 +475,7 @@ export class DssShotPlanner {
       const sourceDuration = segment?.duration;
       const durationSeconds = Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
       if (durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
-      const sceneKey = JSON.stringify([next.set, next.dressing, next.timeOfDay, next.sceneRevision]);
+      const sceneKey = JSON.stringify([next.sceneIndex ?? null, this.sceneContextIdentity, next.set, next.dressing, next.timeOfDay, next.sceneRevision]);
       const setupKey = JSON.stringify([next.set, camera.shot, camera.character ?? line?.speaker ?? null]);
       const continuityKey = JSON.stringify([sceneKey, next.continuityRevision]);
       const id = `${storyBlockId}:${groupId}:${index}`;
@@ -458,11 +506,12 @@ export class DssShotPlanner {
     const images: PlannedImageReference[] = [];
     const audios: PlannedAudioReference[] = [];
     if (this.settings.referenceMode === 'initial-frame') return { images, audios };
-    const image = (name: string, url?: string, certified = false): void => {
+    const image = (name: string, url?: string, assetId?: string): void => {
       if (url) images.push({
         name,
-        url: certified ? resolvedSceneImage(url, `${name} image`) : httpsUrl(url, `${name} image`),
+        url: assetId ? resolvedSceneImage(url, `${name} image`) : httpsUrl(url, `${name} image`),
         label: `Image ${images.length + 1}`,
+        ...(assetId ? { assetId } : {}),
       });
     };
     image('style', this.settings.styleImageUrl);
@@ -471,8 +520,11 @@ export class DssShotPlanner {
       const certifiedNames = new Set(this.sceneContext.characterImages.map(character => character.characterName!));
       const missingName = names.find(name => !certifiedNames.has(name));
       if (missingName) throw new Error(`DSS character has no certified scene image: ${missingName}`);
-      for (const character of this.sceneContext.characterImages) image(character.characterName!, character.imageUrl, true);
-      image('set', this.sceneContext.setImage.imageUrl, true);
+      for (const name of names) {
+        const character = this.sceneContext.characterImages.find(item => item.characterName === name)!;
+        image(name, character.imageUrl, character.assetId);
+      }
+      image('set', this.sceneContext.setImage.imageUrl, this.sceneContext.setImage.assetId);
     } else {
       for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);
       image('set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
@@ -508,6 +560,7 @@ export class DssShotPlanner {
     const staging = (state: ShotPlannerState): string => names.map((name) => {
       const character = state.characters[name];
       if (!character) return '';
+      if (character.certifiedPosition) return character.certifiedPosition;
       const place = character.mark ? this.markName(character.mark) : character.zone;
       return `${name} is ${character.posture}${place ? ` at ${place}` : ''}`;
     }).filter(Boolean).join('; ');
@@ -540,7 +593,7 @@ export class DssShotPlanner {
     return [
       `subject_definitions: ${subjects.join(' ')}`,
       `summary: ${scene ? `Setting: ${scene}. ` : ''}${style}${styleImage ? ` Use ${styleImage} for the overall rendering style.` : ''}`,
-      ...(this.sceneContext ? [`certified_scene_context: ${sceneContextPrompt(this.sceneContext)}`] : []),
+      ...(this.sceneContext ? [`certified_scene_context: ${sceneContextPrompt(this.sceneContext, refs.images)}`] : []),
       `set: ${scene || 'Preserve the established setting'}${imageFor('set') ? `; match the set design and lighting in ${imageFor('set')}` : ''}.`,
       `starting_state: ${staging(start) || 'Use the established staging.'}${initialFrameOnly ? ' The supplied initial frame provides the visual context; preserve its character designs, set and lighting.' : initialImage ? ` ${initialImage} is the supplied initial visual context.` : ''}`,
       `shot: ${CAMERA_NAMES[camera.shot] ?? humanize(camera.shot)}${camera.character ? ` of ${camera.character}` : ''}. ${cut} ${blocking} ${actions.join(' ')} ${expressions.join(' ')} ${eyeline} ${delivery}${line ? ` ${line.speaker}${line.tone ? `, speaking in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; any other characters listen silently.` : ''}`,

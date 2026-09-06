@@ -18,7 +18,7 @@ function playout() {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
 describe('external renderer lifecycle', () => {
-  it('renders a bridge assignment, acknowledges playback, and sends no synthetic audience messages', async () => {
+  it.each([0, 1])('renders a bridge assignment at sequence %s, acknowledges playback, and sends no synthetic audience messages', async sequence => {
     vi.stubEnv('FAL_KEY', 'test-fal');
     const http = createServer();
     const ws = new WebSocketServer({ server: http });
@@ -42,7 +42,7 @@ describe('external renderer lifecycle', () => {
         room_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
         idempotency_key: `video-renderer:${rendererId}:42`,
       });
-      for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 1, story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', script: { sequence: 1, command_groups: [{ id: 'group', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'Hello Sam.' } }] }] } }));
+      for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence, story_block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', script: { sequence, command_groups: [{ id: 'group', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'Hello Sam.' } }] }] } }));
       return Response.json({ renderer_id: rendererId, audience_grant: { grant: { story_id: 42, message_channel_id: storyChannel } } }, { status: 202 });
     });
     vi.stubGlobal('fetch', fetchMock);

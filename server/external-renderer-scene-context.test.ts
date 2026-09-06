@@ -185,6 +185,23 @@ afterEach(() => {
 });
 
 describe('certified MiniMax DSS scene context', () => {
+  it.each([false, true])('rejects a visual payload with missing references before any provider submission (earlier valid group=%s)', async earlierValidGroup => {
+    const fixture = await bridge({ shotPlanner: earlierValidGroup ? { characters: { Maya: { imageUrl: 'https://images.example/maya.png' } } } : {} });
+    try {
+      const payload = fixture.frame(1);
+      if (earlierValidGroup) (payload.script as Json).command_groups = [
+        { id: 'valid-group', commands: [{ command: 'talk', args: { character: 'Maya', dialogue: 'First line.', camera_shot: 'Character_CloseUp' } }] },
+        { id: 'missing-reference-group', commands: [{ command: 'talk', args: { character: 'Theo', dialogue: 'Second line.', camera_shot: 'Character_CloseUp' } }] },
+      ];
+      fixture.send(payload);
+      await vi.waitFor(() => expect(fixture.run.state).toBe('failed'));
+      expect(fixture.run.failures.join(' ')).toContain('requires configured image references for every shot');
+      expect(generateVideo).not.toHaveBeenCalled();
+      expect(generateMiniMaxVideo).not.toHaveBeenCalled();
+      expect(fixture.enqueue).not.toHaveBeenCalled();
+    } finally { await fixture.close(); }
+  });
+
   it('renders a chunk independently with its set, complete cast, and fixed positions', async () => {
     const fixture = await bridge();
     try {

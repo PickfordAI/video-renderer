@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DssShotPlanner, type ShotPlannerSettings } from './shot-planner.js';
+import { sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 
 const command = (name: string, args: Record<string, unknown> = {}) => ({ command: name, args });
 const talk = (character = 'Maya', dialogue = 'We should go.', audio_duration = 3) => command('talk', { character, dialogue, audio_duration, camera_shot: 'Character_CloseUp' });
@@ -20,7 +21,120 @@ function setup(planner: DssShotPlanner) {
   ], 'setup', 'block');
 }
 
+function certifiedScene(): MinimaxSceneContext {
+  return {
+    setImage: { assetId: 'set-asset', sourceId: 'authored-station', imageUrl: 'data:image/png;base64,c2V0' },
+    characterImages: [
+      { assetId: 'theo-asset', sourceId: '22222222-2222-4222-8222-222222222222', characterName: 'Theo', imageUrl: 'data:image/png;base64,dGhlbw==' },
+      { assetId: 'inez-asset', sourceId: '33333333-3333-4333-8333-333333333333', characterName: 'Inéz', imageUrl: 'data:image/png;base64,aW5leg==' },
+      { assetId: 'maya-asset', sourceId: '11111111-1111-4111-8111-111111111111', characterName: 'Maya', imageUrl: 'data:image/png;base64,bWF5YQ==' },
+    ],
+    characterPositions: {
+      '11111111-1111-4111-8111-111111111111': 'Maya sits camera-left beside the window.',
+      '22222222-2222-4222-8222-222222222222': 'Theo stands camera-right at the blue bench.',
+      '33333333-3333-4333-8333-333333333333': 'Inéz waits silently by the doorway.',
+    },
+  };
+}
+
 describe('DSS shot planning', () => {
+  it('carries certified layout across streamed A/B/A shots while selecting and labeling only visible portraits', () => {
+    const planner = new DssShotPlanner({ ...configured, initialImageUrl: 'https://assets.example/opening.png' });
+    const context = certifiedScene();
+    planner.applySceneContext(context, 1);
+    const restored = planner.planGroup([
+      command('enable set', { set: 'Station' }),
+      command('add character', { name: 'Maya', point: { mark: 'old-ue-mark', zone: 'old-zone' }, posture: 'standing' }),
+    ], 'restore', 'block');
+    expect(restored.shots).toEqual([]);
+    const first = planner.planGroup([talk('Maya'), command('look', { character: 'Maya', target: { name: 'Theo' } })], 'a1', 'block').shots[0];
+    planner.applySceneContext(null, 1); // Subsequent streamed chunk omits already-established context.
+    const reverse = planner.planGroup([talk('Theo')], 'b', 'block').shots[0];
+    planner.applySceneContext({ ...context, characterImages: [...context.characterImages].reverse() }, 1);
+    const returning = planner.planGroup([talk('Maya')], 'a2', 'block').shots[0];
+    expect(first.imageReferences.map(reference => reference.name)).toEqual(['style', 'initial frame', 'Maya', 'set']);
+    expect(reverse.imageReferences.map(reference => reference.name)).toEqual(['style', 'initial frame', 'Theo', 'set']);
+    expect(returning.referenceImageUrls).toEqual(first.referenceImageUrls);
+    expect(returning.continuityKey).toBe(first.continuityKey);
+    expect(reverse.continuityKey).toBe(first.continuityKey);
+    expect(returning.setupKey).toBe(first.setupKey);
+    expect(returning.prompt).toContain('Maya looks toward Theo');
+    expect(first.prompt).toContain('Maya has the character design in Image 3');
+    expect(first.prompt).toContain('Maya (11111111-1111-4111-8111-111111111111) has their character design in Image 3');
+    expect(first.prompt).toContain('Image 4 depicts the complete environment');
+    expect(first.prompt).not.toContain('old-ue-mark');
+    expect(first.prompt).not.toContain('Maya is standing');
+    expect(first.startingState.characters.Maya).toMatchObject({ characterId: context.characterImages[2].sourceId, certifiedPosition: context.characterPositions[context.characterImages[2].sourceId] });
+    expect(first.prompt).toContain('Maya sits camera-left beside the window.');
+    expect(returning.resultingState.characters.Inéz.certifiedPosition).toBe('Inéz waits silently by the doorway.');
+    const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full' })], 'wide', 'block').shots[0];
+    expect(wide.imageReferences.map(reference => reference.name)).toEqual(['style', 'initial frame', 'Inéz', 'Maya', 'Theo', 'set']);
+    expect(wide.prompt).toContain('Inéz has the character design in Image 3');
+    // Appending a derived anchor must not rebind the set to "the final image".
+    const finalReferences = [...first.imageReferences, { name: 'camera anchor', label: 'Image 5' }];
+    const rebound = sceneContextPrompt(context, finalReferences);
+    expect(rebound).toContain('Image 4 depicts the complete environment');
+    expect(rebound).not.toContain('Image 5');
+  });
+
+  it('changes scene identity for a new scene or certified assets/layout but ignores access-URL refreshes', () => {
+    const planner = new DssShotPlanner();
+    const context = certifiedScene();
+    planner.applySceneContext(context, 1);
+    const first = planner.planGroup([talk()], 'first', 'block').shots[0];
+    const before = planner.state;
+    planner.applySceneContext({ ...context, setImage: { ...context.setImage, imageUrl: 'https://assets.example/set.png?signature=refreshed' } }, 1);
+    expect(planner.state).toEqual(before);
+    planner.applySceneContext(context, 1); // Cache resolves refreshed access to the same accepted bytes.
+    expect(planner.planGroup([talk()], 'refresh', 'block').shots[0].sceneKey).toBe(first.sceneKey);
+    planner.applySceneContext(context, 2);
+    const second = planner.planGroup([talk()], 'new-scene', 'block').shots[0];
+    expect(second.sceneKey).not.toBe(first.sceneKey);
+    planner.applySceneContext({ ...context, setImage: { ...context.setImage, assetId: 'replacement-set-asset' } }, 2);
+    const newAsset = planner.planGroup([talk()], 'new-asset', 'block').shots[0];
+    expect(newAsset.sceneKey).not.toBe(second.sceneKey);
+    planner.applySceneContext({ ...context, characterPositions: { ...context.characterPositions, '11111111-1111-4111-8111-111111111111': 'Maya sits beside the doorway.' } }, 2);
+    expect(planner.planGroup([talk()], 'new-layout', 'block').shots[0].sceneKey).not.toBe(newAsset.sceneKey);
+  });
+
+  it('resets legacy state on real scene-index transitions without certified context and preserves setup-only chunks', () => {
+    const planner = new DssShotPlanner(configured);
+    planner.applySceneContext(null, -1);
+    planner.applySceneContext(null, 1);
+    setup(planner);
+    const first = planner.planGroup([talk()], 'first', 'block').shots[0];
+    planner.applySceneContext(null, -1);
+    planner.applySceneContext(null, 1);
+    expect(planner.planGroup([talk()], 'same-scene', 'block').shots[0].sceneKey).toBe(first.sceneKey);
+    planner.applySceneContext(null, 2);
+    expect(planner.state.characters).toEqual({});
+    planner.planGroup([command('enable set', { set: 'Station' }), command('add character', { name: 'Theo' })], 'new-setup', 'block');
+    const next = planner.planGroup([talk('Theo')], 'next', 'block').shots[0];
+    expect(next.sceneKey).not.toBe(first.sceneKey);
+    expect(next.referenceImageUrls).toContain('https://assets.example/theo.png');
+    expect(next.resultingState.characters.Maya).toBeUndefined();
+  });
+
+  it('carries certified text into Turbo without phantom image/audio labels and validates exact identities', () => {
+    const planner = new DssShotPlanner({ ...configured, referenceMode: 'initial-frame' });
+    const context = certifiedScene();
+    planner.applySceneContext(context, 1);
+    const shot = planner.planGroup([talk(context.characterImages[2].sourceId)], 'turbo', 'block').shots[0];
+    expect(shot.speaker).toBe('Maya');
+    expect(shot.referenceImageUrls).toEqual([]);
+    expect(shot.referenceAudioUrls).toEqual([]);
+    expect(shot.prompt).not.toMatch(/\b(?:Image|Audio) \d+\b|final reference image/);
+    expect(shot.prompt).toContain('Inéz waits silently by the doorway.');
+    expect(shot.prompt).toContain('Maya sits camera-left beside the window.');
+    expect(() => planner.planGroup([talk('maya')], 'bad-name', 'block')).toThrow('no certified scene image');
+    expect(() => planner.planGroup([command('sit', { character: 'Maya' })], 'bad-posture', 'block')).toThrow('fixed certified scene positions');
+    const legacy = new DssShotPlanner(configured);
+    legacy.applySceneContext(context, 1);
+    legacy.applySceneContext(null, 2);
+    const fallback = legacy.planGroup([talk('Maya')], 'legacy', 'block').shots[0];
+    expect(fallback.prompt).not.toContain('certified_scene_context');
+    expect(fallback.referenceImageUrls).toContain('https://assets.example/maya.png');
+  });
   it('treats setup, fades, titles and transport controls as state/timing without video jobs', () => {
     const planner = new DssShotPlanner(configured);
     expect(setup(planner).shots).toEqual([]);
