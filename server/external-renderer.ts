@@ -197,6 +197,7 @@ const MAX_PREPARED_DSS_FRAMES = 32;
 const MAX_PENDING_DSS_FRAMES = 256;
 const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
+const DSS_IDLE_TIMEOUT_MS = 300_000;
 
 function asObject(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -1311,7 +1312,7 @@ class ExternalRendererRun {
             // generation and playback. Their idle timeout starts after real ACKs.
             const idleTimeout = (async () => {
               await prepared.waitForIdle(waitSignal);
-              await waitWithAbort(this.status.firstAssignmentAt ? 300_000 : 60_000, waitSignal);
+              await waitWithAbort(DSS_IDLE_TIMEOUT_MS, waitSignal);
               throw new Error('timed out waiting for DSS after playback became idle');
             })();
             let message: JsonObject;
@@ -1342,7 +1343,7 @@ class ExternalRendererRun {
         return;
       }
       while (!this.stopped && this.socket.readyState === WebSocket.OPEN) {
-        const message = await dssMessages.next(this.status.firstAssignmentAt ? 300_000 : 60_000, this.abortController.signal);
+        const message = await dssMessages.next(DSS_IDLE_TIMEOUT_MS, this.abortController.signal);
         if (message.type === 'websocket.closed') break;
         if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
         const frame = parseDssFrame(message);
