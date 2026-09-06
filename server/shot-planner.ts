@@ -79,6 +79,8 @@ export interface PlannedShot {
   setupKey: string;
   continuityKey: string;
   sceneKey: string;
+  /** Camera-anchor identity: scene, framing, speaker/eyeline pair, and the blocking of on-screen cast only. */
+  anchorKey: string;
   requiresPreviousFrame: boolean;
   hasMovement: boolean;
   startingState: ShotPlannerState;
@@ -104,6 +106,12 @@ interface DeliveryDirection { text: string; wordOffset: number }
 interface Line { speaker: string; dialogue: string; deliveryDirections: readonly DeliveryDirection[]; duration: number; audio?: string; tone?: string; respondent?: string; camera: MutableState['camera'] }
 interface DialogueSegment { dialogue: string; duration: number; deliveryDirections: readonly string[] }
 
+// In-place performance animations observed in StoryKernel output; they never displace the actor.
+const STATIONARY_ANIMATIONS = new Set([
+  'talking', 'finger point', 'exasperated', 'hands on hips', 'smug', 'dismissive', 'one hand gesture', 'thinking',
+  'sarcastic', 'paranoid', 'sad', 'embarassed talking', 'embarrassed talking', 'angry', 'look around', 'annoyed',
+  'scared', 'hand on hip yes', 'surprised', 'look away',
+]);
 const CONTROL_COMMANDS = new Set([
   'cutscene', 'showtitle', 'showcredits', 'credits', 'delay', 'fade', 'showdebug',
   'setfps', 'setstorymode', 'setchannelvolume', 'depthoffield', 'stopaudio', 'playaudio',
@@ -423,9 +431,8 @@ export class DssShotPlanner {
           const character = actor(args.character);
           const animation = required(args.animation, 'animation');
           actions.push(`${character.name} performs ${humanize(animation)}.`);
-          // StoryKernel emits `talking` alongside dialogue without changing marks
-          // or posture. Other animations may move the actor, so invalidate safely.
-          if (normalize(animation) !== 'talking') { next.continuityRevision++; hasMovement = true; }
+          // Unknown animations may move the actor, so invalidate conservatively.
+          if (!STATIONARY_ANIMATIONS.has(normalize(animation).replace(/[\s_-]+/g, ' '))) { next.continuityRevision++; hasMovement = true; }
           break;
         }
         case 'charactershot': case 'charactercamera': {
@@ -478,6 +485,13 @@ export class DssShotPlanner {
       const sceneKey = JSON.stringify([next.sceneIndex ?? null, this.sceneContextIdentity, next.set, next.dressing, next.timeOfDay, next.sceneRevision]);
       const setupKey = JSON.stringify([next.set, camera.shot, camera.character ?? line?.speaker ?? null]);
       const continuityKey = JSON.stringify([sceneKey, next.continuityRevision]);
+      // Off-screen cast changing marks must not discard this setup's established frame.
+      const involved = [...new Set([...visibleNames, ...(line?.respondent ? [line.respondent] : [])])].sort();
+      const blocking = involved.map(name => {
+        const { zone, mark, posture, appearance, certifiedPosition } = next.characters[name] ?? { posture: 'standing' };
+        return [name, zone ?? null, mark ?? null, posture, appearance ?? null, certifiedPosition ?? null];
+      });
+      const anchorKey = JSON.stringify([sceneKey, next.backdropImageUrl ?? null, camera.shot, cameraSubject ?? null, line?.speaker ?? null, line?.respondent ?? null, blocking]);
       const id = `${storyBlockId}:${groupId}:${index}`;
       shots.push(freeze({
         id, groupId, storyBlockId,
@@ -486,7 +500,7 @@ export class DssShotPlanner {
         ...(!split && line?.audio ? { dialogueAudioUrl: httpsUrl(line.audio, 'dialogue audio') } : {}),
         referenceImageUrls: refs.images.map((entry) => entry.url), referenceAudioUrls: refs.audios.map((entry) => entry.url),
         imageReferences: refs.images, audioReferences: refs.audios,
-        setupKey, continuityKey, sceneKey, requiresPreviousFrame: index > 0 || hasMovement,
+        setupKey, continuityKey, sceneKey, anchorKey, requiresPreviousFrame: index > 0 || hasMovement,
         hasMovement: index === 0 && hasMovement, startingState: shotStart, resultingState: shotEnd, actions: [...shotActions],
       }));
     };
