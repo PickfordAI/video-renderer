@@ -261,6 +261,20 @@ describe('StoryKernel setup and transition commands', () => {
     expect(controlGroupDurationSeconds(group)).toBe(2);
   });
 
+  it('renders StoryKernel still-shot framing instead of rejecting the DSS group', () => {
+    const clips = planGroupClips(frame, { id: 'still-shot', commands: [
+      { command: 'still shot', args: { 'shot name': 'Establishing wide', target: { name: 'June Vale' } } },
+    ] }, 5);
+    expect(clips).toHaveLength(1);
+    expect(clips[0]?.prompt).toContain('Camera uses Establishing wide framing on June Vale.');
+  });
+
+  it('rejects a still-shot command without a framing name', () => {
+    expect(() => planGroupClips(frame, { id: 'still-shot', commands: [
+      { command: 'still shot', args: {} },
+    ] }, 5)).toThrow('still shot name is required');
+  });
+
   it('does not silently accept unknown commands alongside valid dialogue', () => {
     expect(() => planGroupClips(frame, { id: 'unknown', commands: [
       { command: 'talk', args: { dialogue: 'Hello.' } },

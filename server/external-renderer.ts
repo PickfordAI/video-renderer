@@ -511,7 +511,7 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
   for (const command of group.commands) {
     const name = commandName(command);
     const compact = name.replace(/\s/g, '');
-    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation', 'look'].includes(compact)) {
+    if (!NO_VIDEO_CONTROL_COMMANDS.has(compact) && !['talk', 'charactertalk', 'setemotion', 'playanimation', 'look', 'stillshot'].includes(compact)) {
       throw new Error(`Unsupported DSS command: ${name || '(missing command)'}`);
     }
     const character = textArg(command, 'character') ?? textArg(command, 'name');
@@ -557,6 +557,15 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
     } else if (compact === 'playanimation') {
       const animation = textArg(command, 'animation');
       if (character && animation) { visual.push(`${character} performs ${animation}.`); hasVisualAction = true; }
+    } else if (compact === 'stillshot') {
+      const args = commandArgs(command);
+      const shot = textArg(command, 'shot name') ?? textArg(command, 'preset');
+      if (!shot) throw new Error('still shot name is required');
+      const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
+        ? textArg({ args: args.target as JsonObject }, 'name')
+        : null;
+      visual.push(target ? `Camera uses ${shot} framing on ${target}.` : `Camera uses ${shot} framing.`);
+      hasVisualAction = true;
     } else if (compact === 'cutscene') {
       continue;
     }
