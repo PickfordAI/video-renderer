@@ -5,6 +5,8 @@ import {
   createCommandProgressEvent,
   createGroupFinishedEvent,
   classifyStoryLifecycle,
+  createRendererAudienceMessage,
+  parseRendererAudienceResult,
   planGroupClips,
   parseExternalRendererRunConfig,
 } from './external-renderer.js';
@@ -27,7 +29,11 @@ function config() {
     roomShortlink,
     storyMessageChannelId: storyChannelId,
     roomMainMessageChannelId: roomChannelId,
-    storyConfig: { message_channel_ids: [storyChannelId] },
+    storyConfig: {
+      base_structure: 'MINIMAX',
+      evd_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      message_channel_ids: [storyChannelId],
+    },
     enableAudience: true,
   };
 }
@@ -73,6 +79,18 @@ describe('external renderer run configuration', () => {
 
     expect(() => parseExternalRendererRunConfig(value)).toThrow('story and room-main channels must be distinct');
   });
+
+  it('rejects a start configuration that could fall through to the wrong story type', () => {
+    const value = config();
+    expect(() => parseExternalRendererRunConfig({
+      ...value,
+      storyConfig: { message_channel_ids: [storyChannelId] },
+    })).toThrow('storyConfig.evd_id is required');
+    expect(() => parseExternalRendererRunConfig({
+      ...value,
+      storyConfig: { ...value.storyConfig, base_structure: 'FIRST_DATE' },
+    })).toThrow('storyConfig.base_structure must be MINIMAX, CREATOR, or WHISPERS');
+  });
 });
 
 describe('story lifecycle observation', () => {
@@ -92,6 +110,43 @@ describe('story lifecycle observation', () => {
       running_key: null,
       errors: { story_error_type: 'renderer_unavailable' },
     }, true, false)).toMatchObject({ state: 'failed', failure: 'renderer_unavailable' });
+  });
+});
+
+describe('renderer audience relay protocol', () => {
+  it('binds the browser message to the active story without browser-supplied auth or channel data', () => {
+    const message = createRendererAudienceMessage(42, {
+      externalSubject: 'viewer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      idempotencyKey: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      displayName: 'Ada',
+      content: 'Turn left',
+    });
+    expect(message).toEqual({
+      type: 'audience.message',
+      protocol_version: 1,
+      story_id: 42,
+      external_subject: 'viewer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      message_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      display_name: 'Ada',
+      content: 'Turn left',
+    });
+    expect(message).not.toHaveProperty('message_channel_id');
+    expect(message).not.toHaveProperty('token');
+  });
+
+  it('correlates accepted, duplicate, and rejected acknowledgements without exposing principals', () => {
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.accepted', source_message_id: 'source-1', message_id: storyChannelId,
+    })).toEqual({ key: 'source-1', result: { accepted: true, duplicate: false, messageId: storyChannelId } });
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.duplicate', source_message_id: 'source-2', message_id: roomChannelId,
+    })?.result).toMatchObject({ accepted: true, duplicate: true });
+    expect(parseRendererAudienceResult({
+      type: 'audience.message.rejected', source_message_id: 'source-3', code: 'rate_limited', detail: 'Try later', retry_after_seconds: 2,
+    })).toEqual({
+      key: 'source-3',
+      result: { accepted: false, code: 'rate_limited', detail: 'Try later', retryAfterSeconds: 2 },
+    });
   });
 });
 
@@ -204,6 +259,20 @@ describe('StoryKernel setup and transition commands', () => {
     const group = { id: 'fade', commands: [{ command: 'fade', delay: 0, blocking: true, args: { wait: true, duration: 2, 'fade in': true } }] };
     expect(planGroupClips(frame, group, 5)).toEqual([]);
     expect(controlGroupDurationSeconds(group)).toBe(2);
+  });
+
+  it('renders StoryKernel still-shot framing instead of rejecting the DSS group', () => {
+    const clips = planGroupClips(frame, { id: 'still-shot', commands: [
+      { command: 'still shot', args: { 'shot name': 'Establishing wide', target: { name: 'June Vale' } } },
+    ] }, 5);
+    expect(clips).toHaveLength(1);
+    expect(clips[0]?.prompt).toContain('Camera uses Establishing wide framing on June Vale.');
+  });
+
+  it('rejects a still-shot command without a framing name', () => {
+    expect(() => planGroupClips(frame, { id: 'still-shot', commands: [
+      { command: 'still shot', args: {} },
+    ] }, 5)).toThrow('still shot name is required');
   });
 
   it('does not silently accept unknown commands alongside valid dialogue', () => {

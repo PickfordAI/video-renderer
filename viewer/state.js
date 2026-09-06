@@ -11,3 +11,13 @@ export function setupMessage({ setup, story }) {
   if (story?.state === 'connecting') return 'Your agent is starting the story…';
   return setup.ready ? 'Everything is connected. Ask your agent to start your story.' : 'Your player is ready. Your agent has a little setup left to finish.';
 }
+
+export function audienceMessageInput(displayName, content) {
+  const name = typeof displayName === 'string' ? displayName.trim() : '';
+  const message = typeof content === 'string' ? content.trim() : '';
+  if (!name) throw new Error('Add your name before sending.');
+  if (name.length > 80) throw new Error('Your name must be 80 characters or fewer.');
+  if (!message) throw new Error('Write a message before sending.');
+  if (message.length > 2000) throw new Error('Your message must be 2000 characters or fewer.');
+  return { displayName: name, content: message };
+}

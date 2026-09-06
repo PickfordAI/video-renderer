@@ -166,7 +166,8 @@ application use the user's authenticated cloud tools; these are not performed by
 - The CLI returns sanitized IDs and a capability watch link. Treat the link as shareable access
   to the story, and disclose that anyone receiving it can watch.
 - Never publish/proxy operator port 4173, relay ingest 8554, or relay admin ports to the internet.
-  The public listener on 4174 serves only the viewer and read-only HLS.
+  The public listener on 4174 serves the viewer, read-only HLS, and the active story's audience
+  message endpoint. Anyone with the watch link can participate while that story runs.
 - There is no automatic audience-message generator, notification, or background chat sender.
 - Credentials cannot be fabricated. Missing account access is a real onboarding dependency;
   ask only for that missing connection, not for IP addresses or manually assembled URLs.

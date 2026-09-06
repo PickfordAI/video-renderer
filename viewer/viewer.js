@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { setupMessage, validStreamUrl } from './state.js';
+import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
@@ -11,6 +11,65 @@ let poll;
 let disposed = false;
 let currentStream;
 let generation = 0;
+let chatCsrfToken;
+let chatPoll;
+
+const chat = document.querySelector('#audience-chat');
+const chatForm = document.querySelector('#chat-form');
+const chatName = document.querySelector('#chat-name');
+const chatMessage = document.querySelector('#chat-message');
+const chatSend = document.querySelector('#chat-send');
+const chatStatus = document.querySelector('#chat-status');
+
+function viewerId() {
+  try {
+    const saved = localStorage.getItem('pickford-audience-viewer-id');
+    if (saved && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved)) return saved;
+    const created = crypto.randomUUID();
+    localStorage.setItem('pickford-audience-viewer-id', created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+async function updateAudienceChat() {
+  try {
+    const response = await fetch('/api/audience-chat/session', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error('Audience chat is unavailable.');
+    const value = await response.json();
+    chatCsrfToken = value.ready && typeof value.csrfToken === 'string' ? value.csrfToken : undefined;
+    chat.hidden = !chatCsrfToken;
+  } catch {
+    chatCsrfToken = undefined;
+    chat.hidden = true;
+  }
+  if (!disposed) chatPoll = setTimeout(updateAudienceChat, 3000);
+}
+
+chatForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    if (!chatCsrfToken) throw new Error('Audience chat is reconnecting.');
+    const input = audienceMessageInput(chatName.value, chatMessage.value);
+    chatSend.disabled = true;
+    chatStatus.textContent = 'Sending…';
+    const response = await fetch('/api/audience-chat/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': chatCsrfToken },
+      body: JSON.stringify({ ...input, viewerId: viewerId(), idempotencyKey: crypto.randomUUID() }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const value = await response.json();
+    if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    chatMessage.value = '';
+    chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
+  } catch (error) {
+    chatStatus.textContent = error instanceof Error ? error.message : 'The message could not be sent.';
+  } finally {
+    chatSend.disabled = false;
+  }
+});
 
 function clearStream() {
   generation++;
@@ -116,10 +175,11 @@ play.addEventListener('click', () => {
   void video.play().catch(() => { status.textContent = 'The next scene is still loading. Try play again in a moment.'; });
 });
 video.addEventListener('playing', () => { status.textContent = 'Now playing'; });
-window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearStream(); });
+window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearTimeout(chatPoll); clearStream(); });
 
 const raw = location.hash.slice(1) || import.meta.env.VITE_STREAM_URL;
 if (raw) {
   try { showStream(location.hash ? decodeURIComponent(raw) : raw); }
   catch { status.textContent = 'This watch link is invalid. Ask your agent for a new link.'; }
 } else void followLocalStory();
+void updateAudienceChat();

@@ -5,7 +5,7 @@ Kernel onboarding -> private handoff -> agent CLI -> operator API (4173)
                                             |
 Kernel Renderer Platform <-> renderer bridge + fal -> FFmpeg -> MediaMTX
                                                                  |
-                                          viewer + read-only HLS (4174)
+                              viewer + HLS + audience input (4174)
                                                                  |
                                                    browser (same origin)
 ```
@@ -31,9 +31,18 @@ helpers are available for diagnostics; they are not a second user setup flow.
 
 `scripts/onboarding.mjs` resolves a registered handoff path, STORY_HANDOFF_PATH, or the STORY_*
 environment bundle for the CLI. `setup` persists only the file path and discovered service URLs.
-The browser receives a fixed allowlist of readiness flags, story state and HLS URL. It never
+The browser receives a fixed allowlist of readiness flags, story state, HLS URL, and an ephemeral
+same-origin CSRF token. It never
 receives the handoff, provider keys, setup token, renderer credentials, or backend diagnostics.
 Start/stop stays with the agent; opening the player never starts paid generation.
+
+Audience input travels from the viewer to a bounded same-origin endpoint on the renderer. The
+server derives the story from its active run and sends the existing `audience.message` envelope
+over the authenticated, fenced Renderer Platform WebSocket. The browser cannot choose a story,
+channel, renderer, backend URL, or bearer token. Renderer Platform resolves the active audience
+grant and persists accepted input through Chat. A random browser-local UUID provides a stable
+external subject; it is a pseudonym, not authentication. Possession of the watch link permits
+participation for the active story.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
 hold frames while generation catches up. MediaMTX exposes fMP4 HLS internally. FFmpeg progress
@@ -42,7 +51,7 @@ that every individual viewer has watched the clip.
 
 `server/media.ts` only proxies HLS files belonging to a live in-memory playout session. The UUID
 in a stream URL is a capability, not a user login. On stop/restart the gateway no longer serves
-that session. This is live viewing, without archives, durable sessions, chat, or guaranteed replay.
+that session. This is live viewing, without archives, durable sessions, or guaranteed replay.
 
 ## Interfaces
 
@@ -59,8 +68,11 @@ Operator API (local only, or bearer-authenticated private Fly/SSH proxy):
 | `POST /api/narrative/stop-show` | Cancel kernel story and leave room using a valid user session |
 | `/api/generate`, `/api/playout/*`, other `/api/narrative/*` | Private generation/protocol diagnostics |
 
-Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healthz`, and `GET`/`HEAD /hls/h3-:session/:file`. Other routes/methods
-return 404. Static files are served only from dist/viewer; neither agent configuration nor server
+Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healthz`,
+`GET`/`HEAD /hls/h3-:session/:file`, `GET /api/audience-chat/session`, and
+`POST /api/audience-chat/messages`. Audience writes require the exact configured viewer origin,
+an ephemeral CSRF token, bounded JSON, and an active story/HLS run. Other routes/methods return
+404 or 405. Static files are served only from dist/viewer; neither agent configuration nor server
 source is accessible. Fly/Render derive the public origin from platform metadata; VMs use
 PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen host.
 
