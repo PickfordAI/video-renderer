@@ -90,6 +90,64 @@ describe('agent story lifecycle', () => {
   });
 });
 
+describe('opaque agent story lifecycle', () => {
+  it.each([{ setupToken: 'private-setup' }, { setupToken: undefined }])('starts without provisioning and stops through the resolved story when setupToken is $setupToken', async ({ setupToken }) => {
+    const root = await mkdtemp(join(tmpdir(), 'renderer-cli-opaque-'));
+    const calls = [];
+    const opaqueRun = { runId, state: 'running', startMode: 'opaque', storyRunId: '11111111-1111-4111-8111-111111111111', audienceJoinUrl: 'https://app.example/audience/opaque-handle-1234567890', storyId: 77, hlsUrl: `http://127.0.0.1:4174/hls/h3-${runId}/index.m3u8` };
+    const server = createServer(async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null;
+      calls.push({ path: req.url, method: req.method, body });
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/api/health') res.end(JSON.stringify({ falKeyConfigured: true }));
+      else if (req.url === '/api/external-renderer/runs') { opaqueRun.state = 'running'; res.end(JSON.stringify({ runId, state: 'connecting', startMode: 'opaque', storyId: null, hlsUrl: null })); }
+      else if (req.url === '/api/narrative/stop-show') res.end(JSON.stringify({ stopped: true }));
+      else if (req.method === 'DELETE') { opaqueRun.state = 'stopped'; res.end(JSON.stringify(opaqueRun)); }
+      else res.end(JSON.stringify(opaqueRun));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const handoff = { startMode: 'opaque', storyType: 'MINIMAX', evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'private-installation', ...(setupToken ? { setupToken } : {}), services: { narrativeEngineUrl: 'https://show.example', rendererBaseUrl: 'https://renderer.example', chatBackendUrl: 'https://chat.example' } };
+    const path = join(root, 'handoff.json');
+    await writeFile(path, JSON.stringify(handoff));
+    const options = { cwd: root, env: { ...process.env, PORT: String(server.address().port) } };
+    for (const key of Object.keys(options.env)) if (key.startsWith('STORY_')) delete options.env[key];
+    try {
+      const { stdout } = await exec(process.execPath, [cli, 'start', '--handoff', path], options);
+      const result = JSON.parse(stdout);
+      expect(result).toMatchObject({ startMode: 'opaque', storyRunId: opaqueRun.storyRunId, audienceJoinUrl: opaqueRun.audienceJoinUrl, storyId: 77 });
+      expect(calls.some(c => c.path.includes('provision'))).toBe(false);
+      const run = calls.find(c => c.path === '/api/external-renderer/runs').body;
+      expect(run).toMatchObject({ startMode: 'opaque', evdId: handoff.evdId, audienceExchangeUrl: 'https://chat.example/api/v1/external-audience/exchange', rendererId: handoff.rendererId });
+      for (const key of ['storyId', 'storyConfig', 'roomId', 'setupToken']) expect(run).not.toHaveProperty(key);
+      const saved = await readFile(join(root, '.renderer/session.json'), 'utf8');
+      expect(saved + stdout).not.toContain('private-');
+      expect(JSON.parse(saved)).toMatchObject({ startMode: 'opaque', storyId: 77, storyRunId: opaqueRun.storyRunId, workerStopped: false, kernelStopped: false });
+      const status = JSON.parse((await exec(process.execPath, [cli, 'status'], options)).stdout);
+      expect(status).toMatchObject({ startMode: 'opaque', storyRunId: opaqueRun.storyRunId, audienceJoinUrl: opaqueRun.audienceJoinUrl, storyId: 77 });
+      const stopped = JSON.parse((await exec(process.execPath, [cli, 'stop', '--handoff', path], options)).stdout);
+      expect(calls.some(c => c.method === 'DELETE' && c.path.endsWith(runId))).toBe(true);
+      const kernelStop = calls.find(c => c.path === '/api/narrative/stop-show');
+      if (setupToken) {
+        expect(stopped).toEqual({ stopped: true });
+        expect(kernelStop.body).toEqual({ baseUrl: handoff.services.narrativeEngineUrl, storyId: 77, token: setupToken });
+        expect(JSON.parse(await readFile(join(root, '.renderer/session.json'), 'utf8'))).toMatchObject({ workerStopped: true, kernelStopped: true });
+      } else {
+        expect(kernelStop).toBeUndefined();
+        expect(stopped).toMatchObject({ stopped: true, kernelStopped: false, kernelCancel: expect.stringContaining('not possible') });
+        expect(JSON.parse(await readFile(join(root, '.renderer/session.json'), 'utf8'))).toMatchObject({ workerStopped: true, kernelStopped: false, kernelCancelUnavailable: expect.stringContaining('setupToken') });
+        // A kernel-owned run whose cancel was impossible must not block the next start forever.
+        await exec(process.execPath, [cli, 'start', '--handoff', path], options);
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('explicit fal preflight', () => {
   it('does not provision a story using only a direct MiniMax key', async () => {
     const root = await mkdtemp(join(tmpdir(), 'renderer-cli-preflight-'));

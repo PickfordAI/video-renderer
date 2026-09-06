@@ -79,6 +79,13 @@ With this approach, run `npm run setup`, then use the same start/status/stop com
 the worker after changing `.env`; changes to a registered handoff are read on the next command.
 The agent obtains or refreshes account access through the supported onboarding flow.
 
+## Opaque story starts
+
+Set `"startMode": "opaque"` in the handoff to skip room and story provisioning. The CLI sends only
+the EVD to Story Kernel's renderer-initiated start, which allocates the story and returns an
+opaque `storyRunId` plus a shareable `audienceJoinUrl`; `npm run story -- status` shows both along
+with the resolved `storyId`. The default `legacy` mode is unchanged.
+
 ## Host for friends
 
 [The deployment guide](docs/deployment.md) includes Fly CLI deployment, a single-service Render
