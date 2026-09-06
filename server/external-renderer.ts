@@ -223,6 +223,9 @@ function requiredString(value: unknown, label: string): string {
   return value.trim();
 }
 
+// A local unified stack runs renderer-platform as ENV=dev behind plain loopback ports.
+const LOOPBACK_PLAINTEXT_ENVIRONMENTS = new Set(['local', 'test', 'dev']);
+
 function requiredUrl(value: unknown, label: string, environment = 'edge'): string {
   const raw = requiredString(value, label).replace(/\/$/, '');
   const parsed = new URL(raw);
@@ -230,7 +233,7 @@ function requiredUrl(value: unknown, label: string, environment = 'edge'): strin
     throw new Error(`${label} must not contain credentials, query, or fragment`);
   }
   const localHost = ['localhost', '127.0.0.1', 'host.docker.internal'].includes(parsed.hostname);
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && localHost && ['local', 'test'].includes(environment))) {
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && localHost && LOOPBACK_PLAINTEXT_ENVIRONMENTS.has(environment))) {
     throw new Error(`${label} must use HTTPS`);
   }
   return raw;
@@ -243,7 +246,7 @@ function requiredWebSocketUrl(value: unknown, label: string, environment: string
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error(`${label} must not contain credentials, query, or fragment`);
   }
-  if (parsed.protocol !== 'wss:' && !(parsed.protocol === 'ws:' && localHost && ['local', 'test'].includes(environment))) {
+  if (parsed.protocol !== 'wss:' && !(parsed.protocol === 'ws:' && localHost && LOOPBACK_PLAINTEXT_ENVIRONMENTS.has(environment))) {
     throw new Error(`${label} must use WSS`);
   }
   return raw;
