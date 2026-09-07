@@ -44,4 +44,22 @@ describe('combined public viewer and stream listener', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+  it('can expose the allowlisted playback status on an explicitly local-only listener', async () => {
+    const manager = { get: () => null } as unknown as PlayoutManager;
+    const status = { setup: { ready: true, missing: [] }, story: { state: 'running', hlsUrl: 'http://127.0.0.1:4174/hls/example/index.m3u8' } };
+    const server = createServer((req, res) => void serveMedia(req, res, manager, undefined, undefined, () => status));
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const response = await fetch(`${base}/api/viewer-status`, { headers: { Origin: base, 'Sec-Fetch-Site': 'same-origin' } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(status);
+      expect((await fetch(`${base}/api/viewer-status`, { headers: { 'Sec-Fetch-Site': 'same-origin' } })).status).toBe(200);
+      expect((await fetch(`${base}/api/viewer-status`, { headers: { Origin: 'https://attacker.example', 'Sec-Fetch-Site': 'cross-site' } })).status).toBe(404);
+      expect((await fetch(`${base}/api/viewer-status`, { method: 'POST' })).status).toBe(404);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 });

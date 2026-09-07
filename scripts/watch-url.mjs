@@ -8,6 +8,8 @@ export function watchUrlForStream(hlsUrl, viewerUrl) {
     const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
     if (url.username || url.password || !(url.protocol === 'https:' || (url.protocol === 'http:' && local))) throw new Error('Watch links require HTTPS (loopback HTTP is allowed locally).');
   }
+  const localStream = ['127.0.0.1', 'localhost', '[::1]'].includes(stream.hostname);
+  if (!viewerUrl && localStream && viewer.origin === stream.origin) return viewer.toString();
   viewer.hash = encodeURIComponent(stream.toString());
   return viewer.toString();
 }

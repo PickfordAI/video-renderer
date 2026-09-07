@@ -62,8 +62,8 @@ describe('agent story lifecycle', () => {
       }
       const { stdout } = await exec(process.execPath, [cli, 'start', ...flags], options);
       const result = JSON.parse(stdout);
-      expect(result.watchUrl).toContain('http://127.0.0.1:4174/#http');
-      expect(decodeURIComponent(new URL(result.watchUrl).hash.slice(1))).toContain('/hls/h3-');
+      expect(result.watchUrl).toBe('http://127.0.0.1:4174/');
+      expect(result.hlsUrl).toContain('/hls/h3-');
       const saved = await readFile(join(root, '.renderer/session.json'), 'utf8');
       expect(saved + stdout).not.toContain('private-');
       expect(JSON.parse(saved)).toMatchObject({ showBaseUrl: handoff.services.narrativeEngineUrl, workerStopped: false, kernelStopped: false });
