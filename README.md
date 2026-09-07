@@ -205,8 +205,8 @@ an approved opening frame before start; an empty-set reference alone does not co
 The compiler carries blocking, strips spoken TTS tags into acting directions, and anchors style to
 a set/style image. Ordinary `talking` animations preserve camera anchors; movement invalidates them.
 
-The concurrency ceiling defaults to 2 (range 1–8). Last-frame dependencies serialize Turbo
-regardless of that ceiling. `maxBufferedSeconds` defaults to 30 (range 5–120) and counts all reserved,
+The concurrency ceiling defaults to 2 (range 1–32). Last-frame dependencies serialize Turbo
+regardless of that ceiling. `maxBufferedSeconds` defaults to 30 (range 5–150) and counts all reserved,
 unplayed work, including pending and generating clips. Eight eight-second jobs need at least 64
 seconds of budget. One oversized shot may occupy an otherwise empty budget to make progress.
 This setting is not a startup buffer or permission to submit a batch.

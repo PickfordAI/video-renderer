@@ -20,8 +20,8 @@ export function handoffRendererConfig(value) {
   if (!supported[model].includes(continuity)) throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
   const concurrency = config.concurrency ?? value.generationConcurrency ?? 2;
   const maxBufferedSeconds = config.maxBufferedSeconds ?? value.maxBufferedSeconds ?? 30;
-  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('rendererConfig.concurrency must be an integer from 1 to 8.');
-  if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 120) throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 120.');
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) throw new Error('rendererConfig.concurrency must be an integer from 1 to 32.');
+  if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 150) throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 150.');
   return { model, continuity, concurrency, maxBufferedSeconds };
 }
 

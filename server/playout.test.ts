@@ -311,6 +311,61 @@ describe('H3 continuous playout', () => {
     await session.stop();
   });
 
+  it('reports each clip\'s output-timeline placement and the hold seconds that preceded it', async () => {
+    let publisherWrites = 0;
+    const spawnImpl = vi.fn((_executable: string, args: string[]) => {
+      const isPublisher = args.at(-1)?.startsWith('rtsp://');
+      if (!isPublisher) {
+        writeFileSync(args.at(-1)!, new Uint8Array([1, 2, 3]));
+        return successfulSpawn();
+      }
+      const child = new EventEmitter() as EventEmitter & {
+        stdin: PassThrough;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      child.stdin.on('data', () => {
+        publisherWrites += 1;
+        // The encoder reports having consumed at least everything fed so far, so runway stays
+        // exhausted and every idle poll appends one more second of hold frame.
+        child.stderr.write(`out_time_us=${publisherWrites * 5_000_000}\n`);
+      });
+      return child;
+    });
+    const session = new PlayoutSession({
+      spawnImpl: spawnImpl as never,
+      fetchImpl: successfulFetch as never,
+      startupBufferClips: 1,
+      audienceDelaySeconds: 0,
+      holdRunwaySeconds: 0,
+      holdPollMs: 1,
+    }, '00000000-0000-4000-8000-000000000007');
+    await session.initialize();
+    expect(session.clipBoundary(0)).toBeNull();
+    session.enqueue(clip);
+
+    // First real clip: fed at the head of the timeline, nothing before it.
+    await vi.waitFor(() => expect(session.clipBoundary(0)).not.toBeNull());
+    expect(session.clipBoundary(0)).toEqual({ position: 0, storyBlockId: 'beat-0', startSeconds: 0, endSeconds: 5, holdSecondsBefore: 0 });
+
+    // Let hold frames accumulate (each is paced over one real second), then feed the next clip:
+    // its gap is exactly the hold seconds inserted.
+    await vi.waitFor(() => expect(session.status().holdSeconds).toBeGreaterThanOrEqual(2), { timeout: 8_000 });
+    session.enqueue({ ...clip, position: 1, storyBlockId: 'beat-1', videoUrl: 'https://video.example/beat-1.mp4' });
+    await vi.waitFor(() => expect(session.clipBoundary(1)).not.toBeNull(), { timeout: 8_000 });
+    const second = session.clipBoundary(1)!;
+    expect(second.holdSecondsBefore).toBeGreaterThanOrEqual(2);
+    expect(second.startSeconds).toBe(5 + second.holdSecondsBefore);
+    expect(second.endSeconds).toBe(second.startSeconds + 5);
+    expect(session.status().holdSeconds).toBeGreaterThanOrEqual(second.holdSecondsBefore);
+    await session.stop();
+  });
+
   it('keeps cumulative playback progress after reopening at a later clip', async () => {
     let publisherCount = 0;
     let firstPublisher: EventEmitter | null = null;

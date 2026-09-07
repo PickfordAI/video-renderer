@@ -16,7 +16,7 @@ describe('renderer configuration', () => {
     expect(() => parseRendererConfig({ model: 'fal-turbo-i2v', continuity: 'camera-anchors' })).toThrow('does not yet support');
     expect(() => parseRendererConfig({ model: 'fal-max-ref2v', continuity: 'last-frame-chain' })).toThrow('does not yet support');
     expect(() => parseRendererConfig({ continuity: 'invented' })).toThrow('continuity');
-    expect(() => parseRendererConfig({ concurrency: 9 })).toThrow('concurrency');
+    expect(() => parseRendererConfig({ concurrency: 33 })).toThrow('concurrency');
     expect(() => parseRendererConfig({ maxBufferedSeconds: 0 })).toThrow('maxBufferedSeconds');
     expect(() => parseRendererConfig([])).toThrow('must be an object');
   });

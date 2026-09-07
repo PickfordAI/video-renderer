@@ -133,8 +133,8 @@ kernel onboarding flow before retrying. No automatic synthetic audience traffic 
 `rendererConfig.model=auto` preserves the configured direct MiniMax/fal adapter. Explicit
 `fal-turbo-i2v` and `fal-max-ref2v` require a fal credential even when a direct MiniMax key is
 present; failures never switch providers. Run settings accept an HTTPS `initialImageUrl`,
-`shotPlanner` reference/style settings, `rendererConfig.concurrency` (default 2, at most 8), and
-`rendererConfig.maxBufferedSeconds` (default 30, at most 120).
+`shotPlanner` reference/style settings, `rendererConfig.concurrency` (default 2, at most 32), and
+`rendererConfig.maxBufferedSeconds` (default 30, at most 150).
 
 New modes compile each accepted DSS frame in order into immutable shot/group plans before
 submitting its video jobs. Turbo image-to-video requires an initial image and chains each scene's

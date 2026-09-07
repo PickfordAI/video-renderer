@@ -2,6 +2,14 @@
 export const RENDER_MODES = ['auto', 'fal-turbo-i2v', 'fal-max-ref2v'] as const;
 export type RenderMode = typeof RENDER_MODES[number];
 
+/**
+ * Upper bounds on paid-work scheduling. Provider queues, not this renderer, are the practical limit,
+ * so these caps exist to catch typos rather than to size a run: the sweep harness measures the
+ * real ceiling per provider and the README records the defaults that came out of it.
+ */
+export const MAX_CONCURRENCY = 32;
+export const MAX_BUFFERED_SECONDS = 150;
+
 export type ContinuityStrategy = 'none' | 'last-frame-chain' | 'camera-anchors';
 export interface RendererConfig {
   model: RenderMode;
@@ -39,11 +47,11 @@ export function parseRendererConfig(value: unknown, legacy: {
   }
   const concurrency = config.concurrency ?? legacy.generationConcurrency ?? 2;
   const maxBufferedSeconds = config.maxBufferedSeconds ?? legacy.maxBufferedSeconds ?? 30;
-  if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > 8) {
-    throw new Error('rendererConfig.concurrency must be an integer from 1 to 8');
+  if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > MAX_CONCURRENCY) {
+    throw new Error('rendererConfig.concurrency must be an integer from 1 to ' + MAX_CONCURRENCY);
   }
-  if (!Number.isInteger(maxBufferedSeconds) || (maxBufferedSeconds as number) < 5 || (maxBufferedSeconds as number) > 120) {
-    throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 120');
+  if (!Number.isInteger(maxBufferedSeconds) || (maxBufferedSeconds as number) < 5 || (maxBufferedSeconds as number) > MAX_BUFFERED_SECONDS) {
+    throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to ' + MAX_BUFFERED_SECONDS);
   }
   return { model, continuity: continuity as ContinuityStrategy, concurrency: concurrency as number, maxBufferedSeconds: maxBufferedSeconds as number };
 }

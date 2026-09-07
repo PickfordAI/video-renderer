@@ -13,7 +13,7 @@ import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
-import type { PlayoutManager, PlayoutSession } from './playout.js';
+import type { PlayoutClipBoundary, PlayoutManager, PlayoutSession } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -79,6 +79,33 @@ export interface RendererClipRecord {
   continuity: ContinuityStrategy;
   anchor: ClipAnchorRole;
   anchorKey: string | null;
+  /** Output-timeline placement once the playout has fed this clip; null before that. */
+  streamStartSeconds: number | null;
+  streamEndSeconds: number | null;
+  /** Hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
+  gapBeforeSeconds: number | null;
+  /** `line`: previous clip belonged to the same story block; `block`: a block boundary; `start`: first clip. */
+  gapKind: PlaybackGapKind | null;
+}
+
+export type PlaybackGapKind = 'line' | 'block' | 'start';
+
+/** Dead air the playout had to fill with hold frames, split by where it fell in the story. */
+export interface PlaybackGapSummary {
+  /** Gaps between two clips of the same story block: inside a scene, between lines. */
+  lineGapCount: number;
+  lineGapSeconds: number;
+  maxLineGapSeconds: number;
+  /** Gaps between the last clip of one story block and the first of the next. */
+  blockGapCount: number;
+  blockGapSeconds: number;
+  maxBlockGapSeconds: number;
+  /** Clips whose placement is known, i.e. the denominator for the counts above. */
+  clipsPlaced: number;
+}
+
+export function emptyPlaybackGapSummary(): PlaybackGapSummary {
+  return { lineGapCount: 0, lineGapSeconds: 0, maxLineGapSeconds: 0, blockGapCount: 0, blockGapSeconds: 0, maxBlockGapSeconds: 0, clipsPlaced: 0 };
 }
 
 export interface GenerationMsPercentiles {
@@ -115,6 +142,7 @@ export interface ExternalRendererRunStatus {
   anchorsEstablished: number;
   anchorsReused: number;
   generationMsPercentiles: GenerationMsPercentiles | null;
+  playbackGaps: PlaybackGapSummary;
   mediaDir: string | null;
   finalMp4: string | null;
   hlsUrl: string | null;
@@ -840,6 +868,8 @@ class ExternalRendererRun {
   readonly status: ExternalRendererRunStatus;
   private socket: WebSocket | null = null;
   private playout: PlayoutSession | null = null;
+  /** The most recent clip whose output-timeline placement is known; decides whether a gap is line- or block-level. */
+  private lastPlacedClip: { storyBlockId: string; position: number } | null = null;
   private stopped = false;
   private ending = false;
   private closing: Promise<void> | null = null;
@@ -903,6 +933,7 @@ class ExternalRendererRun {
       anchorsEstablished: 0,
       anchorsReused: 0,
       generationMsPercentiles: null,
+      playbackGaps: emptyPlaybackGapSummary(),
       mediaDir: null,
       finalMp4: null,
       hlsUrl: null,
@@ -1065,12 +1096,47 @@ class ExternalRendererRun {
       continuity: this.config.continuityStrategy,
       anchor,
       anchorKey: anchor === 'none' ? null : shot.anchorKey,
+      streamStartSeconds: null,
+      streamEndSeconds: null,
+      gapBeforeSeconds: null,
+      gapKind: null,
     };
     if (anchor === 'establish') this.status.anchorsEstablished += 1;
     else if (anchor === 'reuse') this.status.anchorsReused += 1;
     this.status.clips.push(record);
     this.status.clips.splice(0, Math.max(0, this.status.clips.length - MAX_CLIP_RECORDS));
     return record;
+  }
+
+  /**
+   * Stamp a clip as played and, when the playout can say where it landed, record the dead air
+   * before it. The playout only knows hold seconds once the clip has been fed, which is always
+   * before `waitForPlayback` returns, so a null boundary means a playout that does not report them.
+   */
+  private markPlayed(record: RendererClipRecord): void {
+    record.playedAt ??= new Date().toISOString();
+    if (record.streamStartSeconds !== null) return;
+    const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
+    const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(record.position) : null;
+    if (!boundary) return;
+    record.streamStartSeconds = boundary.startSeconds;
+    record.streamEndSeconds = boundary.endSeconds;
+    record.gapBeforeSeconds = boundary.holdSecondsBefore;
+    const previous = this.lastPlacedClip;
+    record.gapKind = previous === null ? 'start' : previous.storyBlockId === record.storyBlockId ? 'line' : 'block';
+    this.lastPlacedClip = { storyBlockId: record.storyBlockId, position: record.position };
+    const gaps = this.status.playbackGaps;
+    gaps.clipsPlaced += 1;
+    if (boundary.holdSecondsBefore <= 0) return;
+    if (record.gapKind === 'line') {
+      gaps.lineGapCount += 1;
+      gaps.lineGapSeconds += boundary.holdSecondsBefore;
+      gaps.maxLineGapSeconds = Math.max(gaps.maxLineGapSeconds, boundary.holdSecondsBefore);
+    } else if (record.gapKind === 'block') {
+      gaps.blockGapCount += 1;
+      gaps.blockGapSeconds += boundary.holdSecondsBefore;
+      gaps.maxBlockGapSeconds = Math.max(gaps.maxBlockGapSeconds, boundary.holdSecondsBefore);
+    }
   }
 
   private completeClip(record: RendererClipRecord, requestId: unknown): void {
@@ -1139,7 +1205,7 @@ class ExternalRendererRun {
       for (const { shot, job, position, enqueued, record } of shots) {
         await abortable(enqueued.promise, this.abortController.signal);
         await this.waitForPlayback(position);
-        record.playedAt ??= new Date().toISOString();
+        this.markPlayed(record);
         this.assertCurrentAssignment(frame);
         job.release();
         seconds += shot.durationSeconds;
@@ -1243,7 +1309,7 @@ class ExternalRendererRun {
         this.clipPosition += 1;
         this.status.clipsRendered += 1;
         await this.waitForPlayback(position);
-        record.playedAt = new Date().toISOString();
+        this.markPlayed(record);
         playedSeconds += clip.durationSeconds;
       }
       this.sendRendererEvent(this.completedEvent(frame, group, playedSeconds), frame);

@@ -22,10 +22,23 @@ export interface PlayoutStatus {
   currentPosition: number | null;
   playedThroughPosition: number;
   outputSeconds: number;
+  /** Total hold-frame seconds fed so far: dead air the audience saw between real clips. */
+  holdSeconds: number;
   error: string | null;
   /** Absolute media directory, reported only while opt-in retention keeps it after the run. */
   mediaDir: string | null;
   finalMp4: string | null;
+}
+
+/** Where one real clip landed on the output timeline, and how much hold filler preceded it. */
+export interface PlayoutClipBoundary {
+  position: number;
+  storyBlockId: string;
+  /** Output-timeline second at which this clip's first frame was fed to the publisher. */
+  startSeconds: number;
+  endSeconds: number;
+  /** Hold-frame seconds fed between the previous real clip's end and this clip's start. */
+  holdSecondsBefore: number;
 }
 
 interface NormalizedClip extends PlayoutClipInput {
@@ -34,7 +47,9 @@ interface NormalizedClip extends PlayoutClipInput {
 }
 
 interface PublishedBoundary extends PlayoutClipInput {
+  startSeconds: number;
   endSeconds: number;
+  holdSecondsBefore: number;
 }
 
 interface PlayoutOptions {
@@ -312,6 +327,8 @@ export class PlayoutSession {
   private nextNormalizePosition = 0;
   private nextPublishPosition = 0;
   private fedSeconds = 0;
+  private holdSeconds = 0;
+  private holdSecondsSinceClip = 0;
   private outputSeconds = 0;
   private state: PlayoutStatus['state'] = 'buffering';
   private error: string | null = null;
@@ -398,9 +415,23 @@ export class PlayoutSession {
       currentPosition: current?.position ?? null,
       playedThroughPosition,
       outputSeconds: Math.round(this.outputSeconds * 100) / 100,
+      holdSeconds: this.holdSeconds,
       error: this.error,
       mediaDir: this.keepMedia ? this.tempRoot : null,
       finalMp4: this.finalMp4,
+    };
+  }
+
+  /** Output-timeline placement of a published clip, or null until it has been fed. */
+  clipBoundary(position: number): PlayoutClipBoundary | null {
+    const boundary = this.boundaries.find((clip) => clip.position === position);
+    if (!boundary) return null;
+    return {
+      position: boundary.position,
+      storyBlockId: boundary.storyBlockId,
+      startSeconds: boundary.startSeconds,
+      endSeconds: boundary.endSeconds,
+      holdSecondsBefore: boundary.holdSecondsBefore,
     };
   }
 
@@ -514,15 +545,19 @@ export class PlayoutSession {
               HOLD_CLIP_SECONDS,
             );
             this.fedSeconds += HOLD_CLIP_SECONDS;
+            this.holdSeconds += HOLD_CLIP_SECONDS;
+            this.holdSecondsSinceClip += HOLD_CLIP_SECONDS;
             continue;
           }
           await this.waitForFeed();
           continue;
         }
         const feedFilePath = join(this.tempRoot, `${String(clip.position).padStart(6, '0')}.feed.ts`);
+        const startSeconds = this.fedSeconds;
         await this.appendAtTimelineOffset(clip.filePath, feedFilePath, this.fedSeconds, publisher.stdin);
         this.fedSeconds += clip.durationSeconds;
-        this.boundaries.push({ ...clip, endSeconds: this.fedSeconds });
+        this.boundaries.push({ ...clip, startSeconds, endSeconds: this.fedSeconds, holdSecondsBefore: this.holdSecondsSinceClip });
+        this.holdSecondsSinceClip = 0;
         const previousHoldFilePath = this.activeHoldFilePath;
         this.activeHoldFilePath = clip.holdFilePath;
         this.normalized.delete(clip.position);
