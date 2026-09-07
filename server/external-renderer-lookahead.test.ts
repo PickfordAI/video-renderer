@@ -17,7 +17,7 @@ const talk = (character = 'Alex'): Json => ({ command: 'talk', args: { character
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const result = (name: string) => ({ videoUrl: `https://video.example/${name}.mp4` } as Generated);
 
-async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; continuity?: 'none' | 'camera-anchors' | 'last-frame-chain'; concurrency?: number; budget?: number; shotPlanner?: Json; verdicts?: boolean } = {}) {
+async function bridge(options: { model?: 'auto' | 'fal-max-ref2v' | 'fal-turbo-i2v'; continuity?: 'none' | 'camera-anchors' | 'last-frame-chain'; concurrency?: number; budget?: number; shotPlanner?: Json; verdicts?: boolean } = {}) {
   vi.stubEnv('FAL_KEY', 'fixture-key');
   vi.mocked(generateVideo).mockReset();
   vi.mocked(extractVideoFrame).mockReset().mockResolvedValue('data:image/jpeg;base64,YW5jaG9y');
@@ -46,9 +46,10 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
     ? Response.json({ access_token: 'fixture-token', websocket_url: `ws://127.0.0.1:${port}` })
     : Response.json({ renderer_id: rendererId }, { status: 202 })));
   let playedThroughPosition = -1;
+  let currentPosition: number | null = null;
   const enqueue = vi.fn();
   const stop = vi.fn(async () => undefined);
-  const start = vi.fn(async () => ({ sessionId: 'fixture-media', hlsUrl: '/hls/fixture.m3u8', enqueue, status: () => ({ state: 'streaming', playedThroughPosition }) }));
+  const start = vi.fn(async () => ({ sessionId: 'fixture-media', hlsUrl: '/hls/fixture.m3u8', enqueue, status: () => ({ state: 'streaming', playedThroughPosition, currentPosition }) }));
   const manager = new ExternalRendererRunManager({ start, stop } as unknown as PlayoutManager);
   const run = manager.start({
     baseUrl: `http://127.0.0.1:${port}`, environment: 'local', rendererId,
@@ -75,6 +76,8 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
   return {
     run, pending, enqueue, start, stop, send, frame, chunk, manager,
     completed: () => events.filter(event => event.event === 'completed').map(event => event.dss_id),
+    started: () => events.filter(event => event.event === 'script_started'),
+    begin: (position: number) => { currentPosition = position; },
     play: (position: number) => { playedThroughPosition = position; },
     disconnect: () => { for (const socket of ws.clients) socket.close(); },
     close: async () => { await manager.stopAll(); await new Promise<void>(resolve => ws.close(() => resolve())); await new Promise<void>(resolve => http.close(() => resolve())); },
@@ -84,6 +87,31 @@ async function bridge(options: { model?: 'fal-max-ref2v' | 'fal-turbo-i2v'; cont
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('rolling DSS generation and ordered playout', () => {
+  it.each(['auto', 'fal-max-ref2v'] as const)('sends Script_Started only at actual playback once per block in %s', async model => {
+    const fixture = await bridge({ model, verdicts: true });
+    try {
+      fixture.send(fixture.frame(1));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      expect(fixture.started()).toEqual([]);
+      fixture.pending[0].resolve(result('first'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(1));
+      expect(fixture.started()).toEqual([]);
+      fixture.begin(0);
+      await vi.waitFor(() => expect(fixture.started()).toHaveLength(1));
+      expect(fixture.started()[0]).toMatchObject({ id: 6, status: 5, sequence: 1, dss_id: 'group-1', assignment_id: 'fixture-assignment', assignment_generation: 1 });
+      expect(fixture.completed()).toEqual([]);
+      fixture.play(0);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1']));
+      fixture.send(fixture.frame(2));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
+      fixture.pending[1].resolve(result('second'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(2));
+      fixture.play(1);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1', 'group-2']));
+      expect(fixture.started()).toHaveLength(1);
+    } finally { await fixture.close(); }
+  });
+
   it('compiles streamed setup and camera A/B/A chunks with configured references before dialogue playback ACKs', async () => {
     const fixture = await bridge({ continuity: 'camera-anchors', verdicts: true, shotPlanner: {
       characters: { Alex: { imageUrl: 'https://images.example/alex.png' }, Sam: { imageUrl: 'https://images.example/sam.png' } },
@@ -135,7 +163,7 @@ describe('rolling DSS generation and ordered playout', () => {
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1']));
       fixture.play(2);
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1', 'group-4-0']));
-      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 5, refused: 0 }));
+      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 6, refused: 0 }));
     } finally { await fixture.close(); }
   });
 

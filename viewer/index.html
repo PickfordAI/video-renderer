@@ -25,6 +25,11 @@
     #audience-chat form { display: grid; grid-template-columns: minmax(120px, .35fr) minmax(220px, 1fr) auto; align-items: end; gap: 10px; }
     #audience-chat label { display: grid; gap: 6px; }
     #chat-status { min-height: 1.4em; margin: 10px 0 0; font-size: 14px; }
+    #chat-history { margin-top: 20px; border-top: 1px solid #30313c; padding-top: 16px; }
+    #chat-history h3 { margin: 0 0 10px; font-size: 16px; }
+    #chat-messages { margin: 0; padding-left: 24px; display: grid; gap: 10px; }
+    #chat-messages li { color: #f4f1eb; line-height: 1.5; }
+    #chat-messages strong { color: #ffba9f; }
     @media (max-width: 680px) { #audience-chat form { grid-template-columns: 1fr; } }
     #setup { margin: 32px 0; padding: 24px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
     #setup h2 { margin-top: 0; font-size: 18px; }
@@ -48,8 +53,6 @@
       <p>No connection details to fill in here. Your agent connects your accounts and starts the story.</p>
     </section>
     <video id="video" controls playsinline preload="none" hidden></video>
-    <p><button id="play" hidden>Watch with sound</button></p>
-    <p id="share" hidden><a id="watch-link" target="_blank" rel="noreferrer">Open watch link</a></p>
     <section id="audience-chat" hidden aria-labelledby="audience-chat-title">
       <h2 id="audience-chat-title">Join the story</h2>
       <p>Send an audience suggestion to the story in progress.</p>
@@ -59,6 +62,10 @@
         <button id="chat-send" type="submit">Send</button>
       </form>
       <p id="chat-status" role="status" aria-live="polite"></p>
+      <div id="chat-history" hidden>
+        <h3>Your messages</h3>
+        <ol id="chat-messages"></ol>
+      </div>
     </section>
     <footer>Made with Pickford. Playback appears here when your story is ready.</footer>
   </main>
