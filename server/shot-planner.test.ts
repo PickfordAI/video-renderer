@@ -508,4 +508,28 @@ describe('DSS shot planning', () => {
     expect(() => new DssShotPlanner().planGroup([talk('Maya', 'No.', 31)], 'long', 'block')).toThrow('word-level audio timing');
     expect(() => new DssShotPlanner().planGroup([command('talk', { character: 'Maya', dialogue: 'Hello.', audio_duration: 'bad' })], 'bad-duration', 'block')).toThrow('must be numeric');
   });
+
+  it('falls back to the sole configured set before the first enable set, and only when unambiguous', () => {
+    const opening = new DssShotPlanner(configured).planGroup([talk('Maya')], 'opening', 'block').shots[0];
+    expect(opening.startingState.set).toBeNull();
+    expect(opening.prompt).toContain('set: Station, A tiled station with blue benches.');
+    expect(opening.prompt).toContain('summary: Setting: Station, A tiled station with blue benches.');
+    expect(opening.imageReferences.find(reference => reference.name === 'set')?.url).toBe('https://assets.example/station.png');
+
+    const ambiguous = new DssShotPlanner({
+      ...configured,
+      sets: { ...configured.sets, Cafe: { imageUrl: 'https://assets.example/cafe.png', description: 'A narrow cafe.' } },
+    }).planGroup([talk('Maya')], 'opening', 'block').shots[0];
+    expect(ambiguous.prompt).toContain('set: Preserve the established setting.');
+    expect(ambiguous.imageReferences.some(reference => reference.name === 'set')).toBe(false);
+
+    const planner = new DssShotPlanner({
+      ...configured,
+      sets: { ...configured.sets, Cafe: { imageUrl: 'https://assets.example/cafe.png', description: 'A narrow cafe.' } },
+    });
+    planner.planGroup([command('enable set', { set: 'Cafe', time_of_day: 'day' })], 'establish', 'block');
+    const established = planner.planGroup([talk('Maya')], 'after', 'block').shots[0];
+    expect(established.prompt).toContain('set: Cafe, day, A narrow cafe.');
+    expect(established.imageReferences.find(reference => reference.name === 'set')?.url).toBe('https://assets.example/cafe.png');
+  });
 });
