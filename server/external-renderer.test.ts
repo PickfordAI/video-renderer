@@ -4,6 +4,7 @@ import {
   controlGroupDurationSeconds,
   createCommandProgressEvent,
   createGroupFinishedEvent,
+  createScriptStartedEvent,
   classifyStoryLifecycle,
   createRendererAudienceMessage,
   parseRendererAudienceResult,
@@ -178,6 +179,18 @@ describe('createCommandProgressEvent', () => {
       total: 3,
       story_block_id: roomId,
     });
+  });
+
+  it('uses a distinct, assignment-scoped Script_Started identity for a block', () => {
+    const input = { streamId: rendererId, assignmentId: 'assignment-1', assignmentGeneration: 4,
+      sequence: 7, groupId: 'group-9', storyBlockId: roomId };
+    const event = createScriptStartedEvent(input);
+    expect(event).toMatchObject({ type: 'renderer.event', event: 'script_started', id: 6, status: 5,
+      stream_id: rendererId, assignment_id: input.assignmentId, assignment_generation: 4,
+      sequence: 7, dss_id: 'group-9', story_block_id: roomId, duration: 0 });
+    expect(createScriptStartedEvent({ ...input, sequence: 8, groupId: 'another' }).client_event_id).toBe(event.client_event_id);
+    expect(createScriptStartedEvent({ ...input, assignmentGeneration: 5 }).client_event_id).not.toBe(event.client_event_id);
+    expect(createGroupFinishedEvent({ ...input, durationSeconds: 5 }).client_event_id).not.toBe(event.client_event_id);
   });
 
   it('uses the documented terminal ScriptStatus envelope after playback', () => {
