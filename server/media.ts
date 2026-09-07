@@ -11,9 +11,11 @@ function isSameOriginLocalViewer(request: IncomingMessage): boolean {
     const source = request.headers.origin ?? request.headers.referer;
     const origin = source ? new URL(source) : null;
     return ['localhost', '127.0.0.1', '[::1]'].includes(host)
-      && origin !== null
-      && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
-      && request.headers['sec-fetch-site'] === 'same-origin';
+      && request.headers['sec-fetch-site'] === 'same-origin'
+      // The viewer itself sends Referrer-Policy: no-referrer, and browsers do not
+      // normally add Origin to same-origin GETs. The listener binding and Host
+      // check provide the local boundary; validate source only when one exists.
+      && (origin === null || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname));
   } catch {
     return false;
   }

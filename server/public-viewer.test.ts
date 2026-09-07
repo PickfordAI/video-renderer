@@ -54,6 +54,7 @@ describe('combined public viewer and stream listener', () => {
       const response = await fetch(`${base}/api/viewer-status`, { headers: { Origin: base, 'Sec-Fetch-Site': 'same-origin' } });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual(status);
+      expect((await fetch(`${base}/api/viewer-status`, { headers: { 'Sec-Fetch-Site': 'same-origin' } })).status).toBe(200);
       expect((await fetch(`${base}/api/viewer-status`, { headers: { Origin: 'https://attacker.example', 'Sec-Fetch-Site': 'cross-site' } })).status).toBe(404);
       expect((await fetch(`${base}/api/viewer-status`, { method: 'POST' })).status).toBe(404);
     } finally {
