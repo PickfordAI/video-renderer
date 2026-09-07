@@ -79,8 +79,11 @@ async function readFalJsonWithRetry<T>(options: {
   retryDelayMs: number;
   deadlineAt: number;
   timeoutError: () => FalVideoError;
+  maxRetries?: number | null;
 }): Promise<T> {
   let retries = 0;
+  const retriesExhausted = () =>
+    options.maxRetries !== null && retries >= (options.maxRetries ?? MAX_READ_RETRIES);
   for (;;) {
     if (performance.now() >= options.deadlineAt) throw options.timeoutError();
     try {
@@ -88,15 +91,15 @@ async function readFalJsonWithRetry<T>(options: {
         headers: options.headers,
         signal: options.signal,
       });
-      if (response.ok || !RETRYABLE_READ_STATUSES.has(response.status) || retries >= MAX_READ_RETRIES) {
+      if (response.ok || !RETRYABLE_READ_STATUSES.has(response.status) || retriesExhausted()) {
         return await readFalJson<T>(response, options.label);
       }
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason;
       if (!(error instanceof TypeError)) throw error;
-      if (retries >= MAX_READ_RETRIES) {
+      if (retriesExhausted()) {
         throw new FalVideoError(
-          `${options.label} failed after ${MAX_READ_RETRIES + 1} transport attempts: ${error.message}`,
+          `${options.label} failed after ${retries + 1} transport attempts: ${error.message}`,
         );
       }
     }
@@ -254,6 +257,9 @@ export async function generateVideo(
       ...readOptions,
       url: responseUrl,
       label: 'fal result fetch',
+      // COMPLETED identifies an already-paid job whose result is safe to reread.
+      // Keep recovering transient result-service failures until the generation deadline.
+      maxRetries: null,
     });
     const videoUrl = requiredString(result.video?.url, 'video.url');
     return {

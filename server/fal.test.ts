@@ -120,6 +120,27 @@ describe('generateVideo', () => {
     ]);
   });
 
+  it('keeps recovering completed results beyond the status-read retry budget without replaying submission', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-result-recovery' }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }));
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      fetchImpl.mockResolvedValueOnce(json({ detail: 'result service unavailable' }, 504));
+    }
+    fetchImpl.mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/recovered-late.mp4' } }));
+
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    )).resolves.toMatchObject({
+      requestId: 'request-result-recovery',
+      videoUrl: 'https://cdn.example/recovered-late.mp4',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
   it('does not retry terminal fal read responses', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -153,14 +174,13 @@ describe('generateVideo', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json({ request_id: 'request-exhausted' }))
-      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
       .mockResolvedValue(json({ detail: 'downstream unavailable' }, 504));
 
     await expect(generateVideo(
       { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
       { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
-    )).rejects.toThrow('fal result fetch failed (504)');
-    expect(fetchImpl).toHaveBeenCalledTimes(8);
+    )).rejects.toThrow('fal status poll failed (504)');
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
   });
 
   it('aborts a transient-read retry delay and cancels an incomplete request', async () => {

@@ -42,6 +42,9 @@ ordered groups into immutable shot plans, carrying staging across payloads. Thei
 can generate later received DSS while earlier clips play. Group acknowledgements follow actual
 playback; generation completion does not advance the kernel cursor. Supported nonvisual controls
 use timing approximations. The adapter does not reproduce a 3D renderer's exact animation or overlays.
+Transient fal status reads use a bounded retry budget. Once fal reports an already-paid request
+`COMPLETED`, transient result reads continue within the original generation deadline; the renderer
+never replays the paid submission.
 
 Both video adapters send assignment-fenced `Script_Started` once per story block when the playout
 timeline first reaches its video, including when polling observes that a short clip already finished.
