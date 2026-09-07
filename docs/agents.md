@@ -212,7 +212,7 @@ Group_Finished timing, generation-budget release, cancellation, and assignment f
 early acknowledgements to obtain more lookahead. Eight eight-second jobs need at least 64 seconds of
 work budget; that calculation does not authorize generation. Start with conservative limits.
 
-A captured-DSS replay with a fake provider can verify compilation, scheduling and local media. It
+`npm run replay -- --dss <recording>` plans a captured DSS stream through the live compiler for free; add `--render` for a paid offline run. A captured-DSS replay with a fake provider can verify compilation, scheduling and local media. It
 cannot prove current kernel story creation, remote model latency, appearance consistency, or voice
 quality. A MiniMax replay URL does not fence explicit fal modes: those use FAL_QUEUE_BASE_URL. Keep
 all provider calls local and use dummy credentials for no-cost fixtures. Report live login, first DSS,

@@ -230,9 +230,12 @@ can run simultaneously.
 ### Reuse in another renderer
 
 `DssShotPlanner` is the stateful DSS-to-prompt boundary: feed groups in order and retain its
-immutable plans, reference bindings, and group IDs. `ShotScheduler` bounds asynchronous generation
-and resolves strategy dependencies without knowing the transport or media player. Provider
-adapters select model endpoints independently of that scheduling policy.
+immutable plans, reference bindings, and group IDs. `ShotGenerator` owns the continuity policy on
+top of `ShotScheduler`: it decides whether a shot establishes or reuses a camera anchor or chains from
+a scene tail, submits the provider call, and extracts the continuity frame. The live bridge and the
+offline `npm run replay` harness share that one implementation. `ShotScheduler` bounds asynchronous
+generation without knowing the transport or media player. Provider adapters select model endpoints
+independently of that scheduling policy.
 
 `external-renderer.ts` is the integration layer: it supplies assignment fencing, bounded payload
 queues, camera/chain dependencies, ordered media enqueue, and playback acknowledgements. A host
