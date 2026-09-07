@@ -4,9 +4,12 @@ An open-source player for **DSS**, the story format emitted by the Pickford Stor
 The worker turns story commands into MiniMax H3 video through direct MiniMax or [fal](https://fal.ai), then uses
 FFmpeg and MediaMTX to play a continuous HLS stream.
 
-There is **one interface** for local and hosted viewing. Your agent connects the accounts,
-configures the worker, and starts the story. The page shows setup status and playback;
-there are no credential, IP address, service URL, or episode ID forms.
+There is **one interface** for local and hosted viewing. Sign in to Pickford on the local page,
+enter your own fal key there, pick a **StoryBundle**, and press Play. The page never asks for an
+IP address, a service URL, or an episode ID, and your fal key never leaves your machine.
+
+A **StoryBundle** is a published episode of one of your Pickford stories. (The API still calls it
+an EVD; the field names have not changed.)
 
 Choose how to watch:
 
@@ -14,33 +17,41 @@ Choose how to watch:
 2. **With friends:** worker and viewer deploy together to Fly.io, Render, or a Docker VM on
    AWS, GCP, or another provider. Your agent returns a watch link.
 
-The Story Kernel runs separately and supplies the story and renderer installation credentials.
-A MiniMax or fal account and compatible kernel onboarding are required for live generation. You can
-build and test without keys.
+The Story Kernel runs separately and holds your stories. A fal (or MiniMax) account is required for
+live generation; you can build and test without keys.
 
-## Let an agent set it up
+## Quick start
 
-Give the agent [the runbook](docs/agents.md). You choose local or hosted viewing and connect your
-accounts. The agent obtains the onboarding handoff, supplies the environment, discovers local
-Docker services or resolves hosted URLs, and returns the player. Secrets stay server-side.
-
-## Local setup — agent or developer
-
-Requires **Node.js 22+**, FFmpeg, and Docker, with a compatible Story Kernel stack running.
+Requires **Node.js 22+**, FFmpeg, and Docker.
 
 ```sh
 npm ci
-# The agent supplies MINIMAX_API_KEY or FAL_KEY through the environment or a private .env.
-# Register the private handoff from earlier kernel onboarding once:
-npm run setup -- --handoff /absolute/path/to/handoff.json
 npm run build
 docker compose up -d media-relay
 npm start
 ```
 
-Open [the local player](http://localhost:4174). The bare local root follows the active story once
-its first generated clip enters playout; before then it shows setup/preparation status. The private
-operator listener remains at `http://localhost:4173`. In another managed terminal:
+Open [the local player](http://localhost:4174) and:
+
+1. press **Sign in with Pickford** — the renderer opens Pickford's own sign-in page and comes back
+   to a loopback address it serves itself;
+2. paste your **fal API key** and save it. It is written to `.renderer/fal.json` with mode `0600`,
+   sent only to fal, and never shown again — the page only says whether a key is present;
+3. pick a **StoryBundle** and press **Play**. Bundles whose images are still generating appear as
+   *Preparing images…* and become playable on their own.
+
+The first scene can take a few minutes; the page shows an estimate. Playing a StoryBundle submits
+paid video jobs to fal. `STORY_ENVIRONMENT` selects the Pickford environment (`dev` by default,
+`prod` for the gated creator group). `npm run auth -- status` prints the same status from a
+terminal, and `npm run auth -- logout` signs out and clears the stored tokens.
+
+The private operator listener remains at `http://localhost:4173`.
+
+## Advanced: agent-managed setup
+
+An agent can instead configure the renderer from an onboarding handoff and drive the story from the
+CLI. Give it [the runbook](docs/agents.md). Register the handoff once with
+`npm run setup -- --handoff /absolute/path/to/handoff.json`, then:
 
 ```sh
 npm run doctor

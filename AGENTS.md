@@ -11,9 +11,12 @@ the Story Kernel is an external service, not a local package dependency.
 - Keep the operator port private. The public port serves the built viewer, read-only HLS, and
   same-origin audience messages bound to its active renderer run.
   Deploy worker and viewer together by default. Vercel is an optional standalone viewer only.
-- There is one frontend in viewer/. Never add a credential or service-URL setup form.
-  Agents configure STORY_* environment variables or register a private onboarding handoff.
-- Runtime credentials come from the kernel onboarding handoff. Do not scrape container secrets or
-  call internal privileged credential APIs. See docs/agents.md for the supported creation flow.
+- There is one frontend in viewer/. It carries exactly two inputs the creator owns: Sign in with
+  Pickford, and their own fal key. Never add a service-URL, renderer-id, or client-secret form.
+- Runtime credentials are either self-minted by the worker after the creator's OAuth sign-in, or
+  supplied by the legacy kernel onboarding handoff. Do not scrape container secrets or call
+  internal privileged credential APIs. See docs/agents.md for both supported flows.
+- Never ask a user for their fal key, and never handle one on their behalf. They enter it on the
+  local page; it stays in .renderer/, goes only to fal, and is never echoed back to the page.
 - Keep docs/architecture.md honest about adapter differences and deployment/recovery limitations.
 - Run relevant regressions for protocol, lifecycle, configuration, and access-boundary changes.

@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PlayoutManager } from './playout.js';
 import type { AudienceChatGateway } from './audience-chat.js';
+import type { CreatorApi } from './creator-api.js';
 
 function isSameOriginLocalViewer(request: IncomingMessage): boolean {
   try {
@@ -33,8 +34,12 @@ export async function serveMedia(
   viewerRoot?: string,
   audienceChat?: AudienceChatGateway,
   localViewerStatus?: () => unknown,
+  creatorApi?: CreatorApi,
 ): Promise<void> {
   if (audienceChat && await audienceChat.handle(request, response)) return;
+  // The creator surface is handled before the permissive media CORS header is applied; it enforces
+  // its own same-origin local boundary and must never be readable cross-origin.
+  if (creatorApi && await creatorApi.handle(request, response)) return;
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');

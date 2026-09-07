@@ -40,6 +40,31 @@
     #checks .ready { color: #90d5bd; }
     a { color: #ffc2ac; }
     footer { margin-top: 32px; color: #8d9099; font-size: 14px; }
+    #creator { margin: 32px 0; padding: 24px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
+    #creator h2 { margin-top: 0; font-size: 18px; }
+    #creator-rows { list-style: none; padding: 0; margin: 0 0 18px; display: grid; gap: 12px; }
+    #creator-rows li { display: flex; justify-content: space-between; gap: 24px; }
+    #creator-rows span { color: #ffba9f; text-align: right; }
+    #creator-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    #creator-sign-out { background: transparent; color: #ffc2ac; border: 1px solid #3c3d47; }
+    #creator-notice { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: #d6d4d0; }
+    #creator-identity { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; color: #8d9099; font-size: 13px; word-break: break-all; }
+    #fal { margin-top: 20px; border-top: 1px solid #30313c; padding-top: 16px; }
+    #fal-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 10px; }
+    #fal label { display: grid; gap: 6px; }
+    #fal p { margin: 10px 0 0; font-size: 13px; }
+    #bundles { margin: 24px 0; padding: 24px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
+    #bundles h2 { margin-top: 0; font-size: 18px; }
+    #bundle-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+    .bundle { border: 1px solid #30313c; border-radius: 12px; padding: 16px; display: grid; gap: 8px; }
+    .bundle h3 { margin: 0; font-size: 16px; }
+    .bundle p { margin: 0; font-size: 14px; }
+    .bundle button { justify-self: start; }
+    .bundle button:disabled { cursor: not-allowed; }
+    .bundle-preparing { border-style: dashed; }
+    .bundle-blocked p { color: #ffba9f; }
+    #bundle-status { min-height: 1.4em; margin: 14px 0 0; font-size: 14px; }
+    @media (max-width: 680px) { #fal-form { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -51,6 +76,33 @@
       <h2 id="setup-title">Your agent handles setup.</h2>
       <ul id="checks"></ul>
       <p>No connection details to fill in here. Your agent connects your accounts and starts the story.</p>
+    </section>
+    <section id="creator" hidden aria-labelledby="creator-title">
+      <h2 id="creator-title">Your Pickford account</h2>
+      <ul id="creator-rows">
+        <li>Environment<span id="creator-environment">Pickford</span></li>
+        <li>Account<span id="creator-account">Not signed in</span></li>
+        <li>Renderer<span id="creator-renderer">Not connected yet</span></li>
+        <li>Playback<span id="creator-playback">No StoryBundle playing</span></li>
+      </ul>
+      <div id="creator-actions">
+        <button id="creator-sign-in" type="button">Sign in with Pickford</button>
+        <button id="creator-sign-out" type="button" hidden>Sign out</button>
+      </div>
+      <p id="creator-notice" role="status" aria-live="polite"></p>
+      <ul id="creator-identity"></ul>
+      <div id="fal">
+        <form id="fal-form">
+          <label>Your fal API key<input id="fal-key" name="falKey" type="password" autocomplete="off" spellcheck="false" /></label>
+          <button type="submit">Save key</button>
+        </form>
+        <p>Status: <span id="fal-state">Key missing</span>. Your fal key stays on this machine, is sent only to fal, and is never shown again here.</p>
+      </div>
+    </section>
+    <section id="bundles" hidden aria-labelledby="bundles-title">
+      <h2 id="bundles-title">Your StoryBundles</h2>
+      <ul id="bundle-list"></ul>
+      <p id="bundle-status" role="status" aria-live="polite"></p>
     </section>
     <video id="video" controls playsinline preload="none" hidden></video>
     <section id="audience-chat" hidden aria-labelledby="audience-chat-title">

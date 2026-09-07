@@ -107,6 +107,40 @@ default), it additionally serves the allowlisted `GET /api/viewer-status` payloa
 the active local story after real clip playout begins. Hosted listeners bind externally and retain
 the capability-link-only root. Worker and viewer ship together on the chosen host.
 
+### Creator surface (loopback local page only)
+
+When the viewer listener is bound to loopback, it also serves the creator surface that lets the
+signed-in creator drive the renderer without an agent. Every route requires a same-origin local
+page (`Host`, `Sec-Fetch-Site: same-origin`, no forwarding headers); mutations additionally require
+this process's ephemeral CSRF token. It is handled before the permissive media CORS header is
+applied, so nothing here is readable cross-origin.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/creator/status` | Sign-in, renderer-credential, fal-key and playback status, plus the CSRF token. Never a token, secret, or key |
+| `POST /api/creator/sign-in` | Discover Pickford's OAuth metadata, register dynamically if needed, return an authorization URL |
+| `GET /auth/pickford/callback` | The loopback redirect. Authenticated by the PKCE `state`, since it is a cross-site top-level navigation by design |
+| `POST /api/creator/sign-out` | Revoke the refresh token and clear `.renderer/auth.json` |
+| `GET /api/creator/story-bundles` | The creator's StoryBundles with `ready`/`preparing`/`blocked` state |
+| `POST /api/creator/play` | Mint or rotate the renderer credential if needed, then start an opaque run from one StoryBundle |
+| `POST /api/creator/stop` | Stop the active run |
+| `POST`/`DELETE /api/creator/fal-key` | Store or clear the creator's fal key in `.renderer/fal.json` (0600). Presence only is ever reported |
+
+The worker is a public OAuth 2.1 client: RFC 9728 resource-metadata discovery, RFC 8414
+authorization-server discovery, RFC 7591 dynamic registration with `token_endpoint_auth_method:
+none`, authorization code + PKCE S256, RFC 8707 resource indicators, and refresh-token rotation.
+Tokens live in `.renderer/auth.json` (0600) and are refreshed on demand; a rejected refresh clears
+the file rather than refusing forever.
+
+Two backend adapters exist because the Pickford side is landing in parallel (PIC-1739). Credential
+minting prefers `POST /bff/v1/developer/renderers` with the OAuth bearer and falls back to
+`POST /bff/v1/session` (bearer to cookie + CSRF) followed by the same mutation. Bundle listing
+prefers `GET /bff/v1/story-bundles` and falls back to `GET /show/published-evds?story_type=MINIMAX`
+on the API origin, which carries no premise line and, until that ticket lands, no owner field — the
+page says so when it cannot scope the list. Note that `/bff/v1/*` and `/api/v1/renderers/*` are
+served from the frontend origin on deployed environments, while Identity and the hosted MCP are on
+the API origin; `pickford-environment.ts` keeps those separate.
+
 ## Compatibility and recovery
 
 The streaming DSS and playback-credit contracts were inspected at StoryKernel commit
