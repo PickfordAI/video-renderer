@@ -1163,7 +1163,11 @@ class ExternalRendererRun {
       generated => this.completeClip(record, generated.requestId),
       // A future shot can fail while an earlier clip is playing. Fence the whole run
       // immediately, before another scheduler slot submits additional paid work.
-      error => { if (!this.stopped) this.fail(error); },
+      error => {
+        if (this.stopped) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.fail(new Error(`shot ${shot.id} (seq ${frame.sequence}, clip ${position}) failed: ${message}`, { cause: error }));
+      },
     );
     return { job, record };
   }
@@ -1425,8 +1429,10 @@ class ExternalRendererRun {
       }
       this.status.sessionId = requiredString(welcome.session_id, 'session_id');
       this.status.sessionEpoch = Number(welcome.session_epoch);
-      this.socket.on('close', (code) => {
-        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code})`));
+      this.socket.on('close', (code, reason) => {
+        // The platform puts its protocol-error text in the close reason; without it a 4400 is undiagnosable.
+        const detail = reason?.length ? `: ${reason.toString()}` : '';
+        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code}${detail})`));
       });
       const leaseSeconds = Number(welcome.lease_seconds ?? 30);
       this.heartbeat = setInterval(() => {

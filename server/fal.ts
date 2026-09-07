@@ -89,6 +89,51 @@ function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<voi
   });
 }
 
+// Provider statuses worth one more try. 4xx other than these are the caller's fault and
+// would fail identically on retry; success and non-listed statuses return to the caller.
+const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const FETCH_ATTEMPTS = 4;
+const FETCH_RETRY_BASE_MS = 500;
+
+function describeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause as { code?: unknown; message?: unknown } | undefined;
+  const code = typeof cause?.code === 'string' ? cause.code : typeof cause?.message === 'string' ? cause.message : null;
+  return code ? `${error.message} (${code})` : error.message;
+}
+
+/**
+ * fetch with bounded retries for the failures a busy queue produces: connection resets and
+ * DNS blips (Node reports both as "fetch failed") and 5xx/429 responses. Eight or more clips
+ * poll fal concurrently, so one transient error must not fence a whole run.
+ */
+async function fetchWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let delay = FETCH_RETRY_BASE_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, init);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (attempt >= FETCH_ATTEMPTS) {
+        throw new FalVideoError(`${label} failed after ${attempt} attempts: ${describeFetchError(error)}`);
+      }
+      await abortableDelay(delay, signal);
+      delay = Math.min(delay * 2, 4_000);
+      continue;
+    }
+    if (!TRANSIENT_HTTP_STATUSES.has(response.status) || attempt >= FETCH_ATTEMPTS) return response;
+    await abortableDelay(delay, signal);
+    delay = Math.min(delay * 2, 4_000);
+  }
+}
+
 export async function generateVideo(
   input: GenerateVideoInput,
   options: {
@@ -141,7 +186,7 @@ export async function generateVideo(
   let requestId: string | null = null;
   let completed = false;
   try {
-    const submit = await fetchImpl(`${queueBaseUrl}/${modelId}`, {
+    const submit = await fetchWithRetry(fetchImpl, `${queueBaseUrl}/${modelId}`, {
       method: 'POST',
       headers,
       signal: options.signal,
@@ -159,7 +204,7 @@ export async function generateVideo(
               ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
             }),
       }),
-    });
+    }, 'fal submit', options.signal);
     const handle = await readFalJson<FalQueueHandle>(submit, 'fal submit');
     const submitSeconds = elapsedSeconds(submitStartedAt);
     requestId = requiredString(handle.request_id, 'request_id');
@@ -179,7 +224,7 @@ export async function generateVideo(
       if (performance.now() - overallStartedAt > timeoutMs) {
         throw new FalVideoError(`fal request ${requestId} timed out`);
       }
-      const statusResponse = await fetchImpl(statusUrl, { headers, signal: options.signal });
+      const statusResponse = await fetchWithRetry(fetchImpl, statusUrl, { headers, signal: options.signal }, 'fal status poll', options.signal);
       const statusBody = await readFalJson<FalStatus>(statusResponse, 'fal status poll');
       polls += 1;
       const status = typeof statusBody.status === 'string' ? statusBody.status : '';
@@ -193,7 +238,7 @@ export async function generateVideo(
       await abortableDelay(options.pollIntervalMs ?? 500, options.signal);
     }
 
-    const resultResponse = await fetchImpl(responseUrl, { headers, signal: options.signal });
+    const resultResponse = await fetchWithRetry(fetchImpl, responseUrl, { headers, signal: options.signal }, 'fal result fetch', options.signal);
     const result = await readFalJson<FalResult>(resultResponse, 'fal result fetch');
     const videoUrl = requiredString(result.video?.url, 'video.url');
     return {
