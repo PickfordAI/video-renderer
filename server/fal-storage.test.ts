@@ -102,3 +102,13 @@ describe('MinimaxSceneAssetCache with an uploader', () => {
     await expect(upload(new Uint8Array([1]), 'image/png', 'a.png')).resolves.toBe(handle.file_url);
   });
 });
+
+describe('isResolvedSceneImage', () => {
+  it('accepts pinned bytes as a data URL or a fal storage URL and nothing else', async () => {
+    const { isResolvedSceneImage } = await import('./shot-planner.js');
+    expect(isResolvedSceneImage(`data:image/png;base64,${btoa('png')}`)).toBe(true);
+    expect(isResolvedSceneImage('https://v3b.fal.media/files/b/x/asset.png')).toBe(true);
+    expect(isResolvedSceneImage('https://storage.googleapis.com/bucket/asset.png?X-Goog-Signature=x')).toBe(false);
+    expect(isResolvedSceneImage('http://fal.media/insecure.png')).toBe(false);
+  });
+});
