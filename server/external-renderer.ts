@@ -85,8 +85,12 @@ export interface RendererClipRecord {
   streamEndSeconds: number | null;
   /** Hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
   gapBeforeSeconds: number | null;
-  /** fal-side wait: seconds from submit to completion and the deepest queue position reported. */
+  /** fal-side timing: how long the submit call took to return a request id, seconds from that
+   *  acknowledgement to completion, and the deepest queue position reported while waiting. */
+  falSubmitSeconds: number | null;
   falQueueSeconds: number | null;
+  /** Whole provider call: submit + queue + result fetch. generationMs minus this is renderer-side work such as frame extraction. */
+  falTotalSeconds: number | null;
   falMaxQueuePosition: number | null;
   /** `line`: previous clip belonged to the same story block; `block`: a block boundary; `start`: first clip. */
   gapKind: PlaybackGapKind | null;
@@ -1104,7 +1108,9 @@ class ExternalRendererRun {
       streamEndSeconds: null,
       gapBeforeSeconds: null,
       gapKind: null,
+      falSubmitSeconds: null,
       falQueueSeconds: null,
+      falTotalSeconds: null,
       falMaxQueuePosition: null,
     };
     if (anchor === 'establish') this.status.anchorsEstablished += 1;
@@ -1148,14 +1154,16 @@ class ExternalRendererRun {
   private completeClip(
     record: RendererClipRecord,
     requestId: unknown,
-    timings?: { queueSeconds?: number; maxQueuePosition?: number | null } | null,
+    timings?: { submitSeconds?: number; queueSeconds?: number; totalSeconds?: number; maxQueuePosition?: number | null } | null,
   ): void {
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
     if (typeof requestId === 'string' && requestId) record.providerRequestId = requestId;
     if (timings) {
+      record.falSubmitSeconds = typeof timings.submitSeconds === 'number' ? Math.round(timings.submitSeconds * 10) / 10 : null;
       record.falQueueSeconds = typeof timings.queueSeconds === 'number' ? Math.round(timings.queueSeconds * 10) / 10 : null;
+      record.falTotalSeconds = typeof timings.totalSeconds === 'number' ? Math.round(timings.totalSeconds * 10) / 10 : null;
       record.falMaxQueuePosition = typeof timings.maxQueuePosition === 'number' ? timings.maxQueuePosition : null;
     }
     this.status.generationMsPercentiles = generationMsPercentiles(this.status.clips);
