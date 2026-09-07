@@ -215,7 +215,6 @@ export class DssShotPlanner {
   private readonly aliases = new Map<string, string>();
   private readonly characterReferences = new Map<string, CharacterReference>();
   private readonly setReferences = new Map<string, { description?: string; imageUrl?: string }>();
-  private readonly soleSetName: string | undefined;
   private sceneContext: MinimaxSceneContext | null = null;
   private sceneContextIdentity: string | null = null;
   private current: MutableState = { set: null, characters: {}, camera: { shot: 'medium shot' }, sceneRevision: 0, continuityRevision: 0 };
@@ -250,9 +249,6 @@ export class DssShotPlanner {
       if (reference.imageUrl) httpsUrl(reference.imageUrl, `${key} set image`);
       this.setReferences.set(normalize(key), reference);
     }
-    // An opaque start compiles shots before the first `enable set` arrives; one configured set is unambiguous.
-    const setNames = Object.keys(this.settings.sets ?? {});
-    this.soleSetName = setNames.length === 1 ? setNames[0] : undefined;
     for (const [name, url] of [['style image', settings.styleImageUrl], ['initial image', settings.initialImageUrl]]) {
       if (url) httpsUrl(url, name!);
     }
@@ -545,8 +541,7 @@ export class DssShotPlanner {
       image('set', this.sceneContext.setImage.imageUrl, this.sceneContext.setImage.assetId);
     } else {
       for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);
-      const setName = state.set ?? this.soleSetName;
-      image('set', state.backdropImageUrl ?? (setName ? this.setReferences.get(normalize(setName))?.imageUrl : undefined));
+      image('set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
     }
     // Each shot contains one speaker. Other cast members need appearance grounding,
     // but their voice samples consume budget and can confuse speaker attribution.
@@ -599,9 +594,8 @@ export class DssShotPlanner {
         : `${line.speaker} directs their eyeline toward ${listener}; keep the stated camera composition.`
       : '';
     const delivery = segment?.deliveryDirections.length ? `Delivery directions, not spoken text, in order: ${segment.deliveryDirections.join('; ')}.` : '';
-    const setName = end.set ?? this.soleSetName;
-    const setRef = setName ? this.setReferences.get(normalize(setName)) : undefined;
-    const scene = [setName, end.dressing, end.timeOfDay, setRef?.description].filter(Boolean).join(', ');
+    const setRef = end.set ? this.setReferences.get(normalize(end.set)) : undefined;
+    const scene = [end.set, end.dressing, end.timeOfDay, setRef?.description].filter(Boolean).join(', ');
     const initialFrameOnly = this.settings.referenceMode === 'initial-frame';
     // A neutral style/set image may govern the world; a portrait governs only its
     // named character. Promoting a portrait to global style can blend identities.
