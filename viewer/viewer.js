@@ -74,7 +74,13 @@ chatForm.addEventListener('submit', async (event) => {
       signal: AbortSignal.timeout(15_000),
     });
     const value = await response.json();
-    if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    if (!response.ok) {
+      if (response.status === 410) {
+        chatCsrfToken = undefined;
+        chat.hidden = true;
+      }
+      throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    }
     showSentMessage(input, value.messageId);
     chatMessage.value = '';
     chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
@@ -168,6 +174,10 @@ async function followLocalStory() {
     if (disposed) return;
     if (value.story?.hlsUrl) {
       showStream(value.story.hlsUrl);
+    } else if (value.story && ['connecting', 'running'].includes(value.story.state)) {
+      if (currentStream) clearStream();
+      setup.hidden = true;
+      status.textContent = 'Preparing your first scene. This can take a few minutes.';
     } else {
       if (currentStream) clearStream();
       showSetup(value);

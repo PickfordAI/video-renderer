@@ -63,6 +63,7 @@ function boundedText(value: unknown, label: string, maximum: number): string {
 
 export class AudienceChatGateway {
   private readonly csrfToken = randomBytes(32).toString('base64url');
+  private fencedRunId: string | null = null;
 
   constructor(
     private readonly runs: ExternalRendererRunManager,
@@ -73,7 +74,10 @@ export class AudienceChatGateway {
     const pathname = new URL(request.url ?? '/', 'http://local').pathname;
     if (pathname === '/api/audience-chat/session' && request.method === 'GET') {
       const run = this.runs.latest();
-      const ready = run?.state === 'running' && run.storyStartStatus === 202 && typeof run.hlsUrl === 'string';
+      const ready = run?.state === 'running'
+        && run.storyStartStatus === 202
+        && typeof run.hlsUrl === 'string'
+        && run.runId !== this.fencedRunId;
       sendJson(response, 200, {
         ready,
         csrfToken: ready ? this.csrfToken : null,
@@ -118,8 +122,18 @@ export class AudienceChatGateway {
       return true;
     }
     try {
+      const runId = this.runs.latest()?.runId;
+      if (runId && runId === this.fencedRunId) {
+        sendJson(response, 410, { error: 'This story is no longer accepting audience messages.' });
+        return true;
+      }
       const result = await this.runs.submitAudienceMessage(input);
       if (!result.accepted) {
+        if (result.code === 'renderer_fenced') {
+          this.fencedRunId = runId ?? null;
+          sendJson(response, 410, { error: 'This story is no longer accepting audience messages.' });
+          return true;
+        }
         sendJson(response, result.code === 'rate_limited' || result.code === 'backpressure' ? 429 : 503, {
           error: result.detail ?? 'The story did not accept the message.',
           retryAfterSeconds: result.retryAfterSeconds,

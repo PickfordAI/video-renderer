@@ -84,7 +84,7 @@ Operator API (local only, or bearer-authenticated private Fly/SSH proxy):
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Provider model names and whether a fal key is configured; never the key |
-| `GET /api/viewer-status` | Sanitized setup readiness and current playback; private listener only |
+| `GET /api/viewer-status` | Sanitized setup readiness and current playback; private listener and explicitly loopback-bound local viewer only |
 | `GET /api/audience-chat/session`, `POST /api/audience-chat/messages` | Same-origin audience chat for the active story, shared with the public listener |
 | `POST /api/narrative/provision-external-story` | Create private room, inactive story, and resolve distinct channels |
 | `POST /api/external-renderer/runs` | Start one bridge worker run; returns 202 while connecting. `startMode: opaque` starts from `evdId` alone |
@@ -99,7 +99,10 @@ Public listener: `GET`/`HEAD /` and allowlisted built viewer assets, `GET /healt
 an ephemeral CSRF token, bounded JSON, and an active story/HLS run. Other routes/methods return
 404 or 405. Static files are served only from dist/viewer; neither agent configuration nor server
 source is accessible. Fly/Render derive the public origin from platform metadata; VMs use
-PUBLIC_APP_URL set by the agent. Worker and viewer ship together on the chosen host.
+PUBLIC_APP_URL set by the agent. When this listener is explicitly bound to loopback (the local
+default), it additionally serves the allowlisted `GET /api/viewer-status` payload so `/` can follow
+the active local story after real clip playout begins. Hosted listeners bind externally and retain
+the capability-link-only root. Worker and viewer ship together on the chosen host.
 
 ## Compatibility and recovery
 
