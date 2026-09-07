@@ -43,6 +43,11 @@ can generate later received DSS while earlier clips play. Group acknowledgements
 playback; generation completion does not advance the kernel cursor. Supported nonvisual controls
 use timing approximations. The adapter does not reproduce a 3D renderer's exact animation or overlays.
 
+Both video adapters send assignment-fenced `Script_Started` once per story block when the playout
+timeline first reaches its video, including when polling observes that a short clip already finished.
+Generation/enqueue alone never sends it. This drives Kernel's `PLAYING` state independently of
+fast-acknowledged command progress; only `Group_Finished` advances completion.
+
 The sole frontend is `viewer/`, served on both the local operator listener and public media
 listener. The old React room/SSE studio and manual credential form are removed. Renderer runtime
 uses the installation-credential bridge only. The remaining private generation/provisioning API
