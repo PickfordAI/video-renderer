@@ -1,3 +1,5 @@
+import type { ReferenceUploader } from './fal-storage.js';
+
 type JsonObject = Record<string, unknown>;
 
 export interface MinimaxSceneImage {
@@ -14,6 +16,7 @@ export interface MinimaxSceneContext {
 }
 
 interface CachedSceneImage {
+  /** Either a fal storage URL or an inline data URL, depending on the configured transport. */
   sourceId: string;
   characterName?: string;
   dataUrl: string;
@@ -133,6 +136,15 @@ export function sceneContextPrompt(context: MinimaxSceneContext, references?: re
  */
 export class MinimaxSceneAssetCache {
   private readonly assets = new Map<string, Promise<CachedSceneImage>>();
+  private readonly uploader: ReferenceUploader | null;
+
+  /**
+   * With an uploader, each asset is uploaded once and referenced by URL; without one the bytes
+   * are inlined as a data URL, which costs every generation request the whole upload again.
+   */
+  constructor(options: { uploader?: ReferenceUploader | null } = {}) {
+    this.uploader = options.uploader ?? null;
+  }
 
   private async download(image: MinimaxSceneImage, signal?: AbortSignal): Promise<CachedSceneImage> {
     const response = await fetch(image.imageUrl, { signal });
@@ -146,10 +158,14 @@ export class MinimaxSceneAssetCache {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength === 0) throw new Error('Certified scene image response is empty');
     if (bytes.byteLength > MAX_SCENE_IMAGE_BYTES) throw new Error('Certified scene image exceeds the renderer size limit');
+    const extension = contentType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'img';
+    const resolvedUrl = this.uploader
+      ? await this.uploader(bytes, contentType, `${image.assetId}.${extension}`, signal)
+      : `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`;
     return {
       sourceId: image.sourceId,
       ...(image.characterName === undefined ? {} : { characterName: image.characterName }),
-      dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`,
+      dataUrl: resolvedUrl,
     };
   }
 

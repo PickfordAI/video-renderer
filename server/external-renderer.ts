@@ -4,6 +4,7 @@ import type { ServerResponse } from 'node:http';
 import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
+import { falReferenceUploader, sceneAssetTransport } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
@@ -894,7 +895,9 @@ class ExternalRendererRun {
   private readonly generator: ShotGenerator;
   private readonly scenePositions = new Map<number, string>();
   private readonly assetIdentities = new Map<string, string>();
-  private readonly sceneAssets = new MinimaxSceneAssetCache();
+  private readonly sceneAssets = new MinimaxSceneAssetCache({
+    uploader: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? falReferenceUploader(process.env.FAL_KEY) : null,
+  });
   private assignmentKey: string | null = null;
   private readonly pendingAudienceMessages = new Map<
     string,
@@ -912,6 +915,7 @@ class ExternalRendererRun {
       renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
       initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
       signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
+      frameUploader: provider.kind === 'fal' && sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
     });
     this.status = {
       runId: this.runId,

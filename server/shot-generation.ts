@@ -1,4 +1,5 @@
 import { generateVideo } from './fal.js';
+import { type ReferenceUploader, uploadDataUrl } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import type { ContinuityStrategy, RenderMode } from './render-mode.js';
 import type { PlannedShot } from './shot-planner.js';
@@ -34,6 +35,8 @@ export interface ShotGeneratorOptions {
   apiKey: string;
   scheduler: ShotScheduler<GeneratedShot>;
   signal: AbortSignal;
+  /** Uploads an extracted continuity frame once so later shots reference a URL, not inline bytes. */
+  frameUploader?: ReferenceUploader;
   /** Runs before and after each provider call; throw to fence the shot (assignment change, verdict health). */
   guard?: () => void;
   queueBaseUrl?: string;
@@ -115,12 +118,16 @@ export class ShotGenerator {
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
       });
       guard();
-      const nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
+      let nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
         ? await extractVideoFrame(generated.videoUrl, {
           position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal,
         })
         : continuityFrame;
       guard();
+      if (nextFrame !== undefined && nextFrame !== continuityFrame && this.options.frameUploader && nextFrame.startsWith('data:')) {
+        nextFrame = await uploadDataUrl(nextFrame, `frame-${shot.id.replace(/[^A-Za-z0-9_-]/g, '_')}.jpg`, this.options.frameUploader, signal);
+        guard();
+      }
       return {
         videoUrl: generated.videoUrl, continuityFrame: nextFrame, requestId: generated.requestId,
         submittedPrompt: prompt, referenceImageCount: mode === 'fal-max-ref2v' ? images.length : undefined, timings: generated.timings,
