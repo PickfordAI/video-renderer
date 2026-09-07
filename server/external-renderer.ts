@@ -5,6 +5,7 @@ import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
 import { falReferenceUploader, sceneAssetTransport } from './fal-storage.js';
+import { ffmpegReferenceDownscaler } from './image-downscale.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
@@ -897,6 +898,7 @@ class ExternalRendererRun {
   private readonly assetIdentities = new Map<string, string>();
   private readonly sceneAssets = new MinimaxSceneAssetCache({
     uploader: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? falReferenceUploader(process.env.FAL_KEY) : null,
+    downscale: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? ffmpegReferenceDownscaler() : null,
   });
   private assignmentKey: string | null = null;
   private readonly pendingAudienceMessages = new Map<
@@ -1042,6 +1044,22 @@ class ExternalRendererRun {
     signal.throwIfAborted();
     this.verdicts.acknowledge(ack.message);
     if (ack.failure) throw new Error(ack.failure);
+  }
+
+  /** Resolves once the audience has started seeing `position`, or once it has fully played. */
+  private async waitForPlaybackStart(position: number): Promise<void> {
+    for (;;) {
+      if (this.stopped) throw new Error('renderer run stopped');
+      const current = this.playout?.status();
+      if (current?.state === 'error') throw new Error(current.error ?? 'playout failed');
+      if (current) {
+        const started = typeof current.currentPosition === 'number'
+          ? current.currentPosition >= position
+          : current.playedThroughPosition >= position - 1;
+        if (started || current.playedThroughPosition >= position) return;
+      }
+      await waitWithAbort(250, this.abortController.signal);
+    }
   }
 
   private async waitForPlayback(position: number): Promise<void> {
@@ -1232,8 +1250,17 @@ class ExternalRendererRun {
       this.assertCurrentAssignment(frame);
       let seconds = 0;
       // Only actual playback advances the kernel high-water mark and frees paid-work budget.
+      let announced = false;
       for (const { shot, job, position, enqueued, record } of shots) {
         await abortable(enqueued.promise, this.abortController.signal);
+        if (!announced) {
+          // The kernel derives "playing" (and the admin dashboard its inter-line gap marker) from
+          // this progress report; group_finished alone only says when a line ended.
+          await this.waitForPlaybackStart(position);
+          this.assertCurrentAssignment(frame);
+          this.sendRendererEvent(this.progressEvent(frame, group, 0, group.commands.length), frame);
+          announced = true;
+        }
         await this.waitForPlayback(position);
         this.markPlayed(record);
         this.assertCurrentAssignment(frame);

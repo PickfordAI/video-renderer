@@ -135,7 +135,7 @@ describe('rolling DSS generation and ordered playout', () => {
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1']));
       fixture.play(2);
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1', 'group-4-0']));
-      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 5, refused: 0 }));
+      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 8, refused: 0 }));
     } finally { await fixture.close(); }
   });
 

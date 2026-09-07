@@ -1,4 +1,5 @@
 import type { ReferenceUploader } from './fal-storage.js';
+import type { ReferenceDownscaler } from './image-downscale.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -137,13 +138,17 @@ export function sceneContextPrompt(context: MinimaxSceneContext, references?: re
 export class MinimaxSceneAssetCache {
   private readonly assets = new Map<string, Promise<CachedSceneImage>>();
   private readonly uploader: ReferenceUploader | null;
+  private readonly downscale: ReferenceDownscaler | null;
 
   /**
    * With an uploader, each asset is uploaded once and referenced by URL; without one the bytes
    * are inlined as a data URL, which costs every generation request the whole upload again.
+   * An optional downscaler runs before the upload so multi-megabyte certified PNGs do not sit
+   * on the critical path at every scene boundary.
    */
-  constructor(options: { uploader?: ReferenceUploader | null } = {}) {
+  constructor(options: { uploader?: ReferenceUploader | null; downscale?: ReferenceDownscaler | null } = {}) {
     this.uploader = options.uploader ?? null;
+    this.downscale = options.downscale ?? null;
   }
 
   private async download(image: MinimaxSceneImage, signal?: AbortSignal): Promise<CachedSceneImage> {
@@ -158,9 +163,10 @@ export class MinimaxSceneAssetCache {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength === 0) throw new Error('Certified scene image response is empty');
     if (bytes.byteLength > MAX_SCENE_IMAGE_BYTES) throw new Error('Certified scene image exceeds the renderer size limit');
-    const extension = contentType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'img';
+    const prepared = this.uploader && this.downscale ? await this.downscale(bytes, contentType, signal) : { bytes, contentType };
+    const extension = prepared.contentType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'img';
     const resolvedUrl = this.uploader
-      ? await this.uploader(bytes, contentType, `${image.assetId}.${extension}`, signal)
+      ? await this.uploader(prepared.bytes, prepared.contentType, `${image.assetId}.${extension}`, signal)
       : `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`;
     return {
       sourceId: image.sourceId,

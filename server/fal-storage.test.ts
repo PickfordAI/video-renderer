@@ -112,3 +112,36 @@ describe('isResolvedSceneImage', () => {
     expect(isResolvedSceneImage('http://fal.media/insecure.png')).toBe(false);
   });
 });
+
+describe('MinimaxSceneAssetCache downscaling before upload', () => {
+  it('runs the downscaler on the fetched bytes and uploads its output type', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(new TextEncoder().encode('big-png-bytes'), { status: 200, headers: { 'Content-Type': 'image/png' } })) as typeof fetch;
+    try {
+      const uploaded: Array<[number, string, string]> = [];
+      const uploader = vi.fn(async (bytes: Uint8Array, contentType: string, fileName: string) => {
+        uploaded.push([bytes.byteLength, contentType, fileName]);
+        return `https://v3b.fal.media/files/${fileName}`;
+      });
+      const downscale = vi.fn(async (bytes: Uint8Array) => ({ bytes: bytes.subarray(0, 3), contentType: 'image/jpeg' }));
+      const cache = new MinimaxSceneAssetCache({ uploader, downscale });
+      const resolved = await cache.resolve({
+        setImage: { assetId: '11111111-1111-4111-8111-111111111111', sourceId: 'lobby', imageUrl: 'https://assets.example/lobby.png' },
+        characterImages: [], characterPositions: {},
+      } as never);
+      expect(downscale).toHaveBeenCalledTimes(1);
+      expect(uploaded).toEqual([[3, 'image/jpeg', '11111111-1111-4111-8111-111111111111.jpeg']]);
+      expect(resolved.setImage.imageUrl).toBe('https://v3b.fal.media/files/11111111-1111-4111-8111-111111111111.jpeg');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reads the reference edge from the environment and lets 0 disable downscaling', async () => {
+    const { referenceMaxEdge } = await import('./image-downscale.js');
+    expect(referenceMaxEdge({})).toBe(1024);
+    expect(referenceMaxEdge({ FAL_REFERENCE_MAX_EDGE: '768' })).toBe(768);
+    expect(referenceMaxEdge({ FAL_REFERENCE_MAX_EDGE: '0' })).toBe(0);
+    expect(referenceMaxEdge({ FAL_REFERENCE_MAX_EDGE: 'nope' })).toBe(1024);
+  });
+});
