@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requestStoryStart, STORY_START_TIMEOUT_MS } from './story-start.js';
+import { requestStoryStart, requestTransientDependency, STORY_START_TIMEOUT_MS } from './story-start.js';
 
 const body = { evd_id: 'fixture-evd', idempotency_key: 'fixture-same-run' };
 const options = (controller = new AbortController()) => ({
@@ -10,6 +10,115 @@ const options = (controller = new AbortController()) => ({
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('opaque start recovery', () => {
+  it('recovers a transient dependency 503 without replaying the accepted start', async () => {
+    vi.useFakeTimers();
+    const startFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }));
+    const dependencyFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', startFetch);
+    const retries = vi.fn();
+    const result = requestStoryStart({
+      ...options(),
+      afterAccepted: async (_response, signal) => {
+        await requestTransientDependency({
+          signal,
+          request: dependencyFetch,
+          readResponse: async response => response.status,
+          onRetry: retries,
+        });
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await result).status).toBe(202);
+    expect(startFetch).toHaveBeenCalledTimes(1);
+    expect(dependencyFetch).toHaveBeenCalledTimes(2);
+    expect(retries).toHaveBeenCalledWith({ kind: 'http', status: 503 });
+  });
+
+  it('recovers a transient dependency transport failure', async () => {
+    vi.useFakeTimers();
+    const dependencyFetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fixture connection reset'))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const retries = vi.fn();
+    const result = requestTransientDependency({
+      signal: new AbortController().signal,
+      request: dependencyFetch,
+      readResponse: async response => response.status,
+      onRetry: retries,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await result).toBe(200);
+    expect(dependencyFetch).toHaveBeenCalledTimes(2);
+    expect(retries).toHaveBeenCalledWith({ kind: 'transport', errorName: 'TypeError' });
+    expect(JSON.stringify(retries.mock.calls)).not.toContain('fixture connection reset');
+  });
+
+  it('keeps persistent dependency failures inside the original start deadline', async () => {
+    vi.useFakeTimers();
+    const startFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }));
+    const dependencyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', startFetch);
+    const result = requestStoryStart({
+      ...options(),
+      afterAccepted: async (_response, signal) => {
+        await requestTransientDependency({
+          signal,
+          request: dependencyFetch,
+          readResponse: async response => response.status,
+          onRetry: vi.fn(),
+        });
+      },
+    });
+    const assertion = expect(result).rejects.toThrow('Story start recovery timed out');
+    await vi.advanceTimersByTimeAsync(STORY_START_TIMEOUT_MS);
+    await assertion;
+    expect(startFetch).toHaveBeenCalledTimes(1);
+    expect(dependencyFetch).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels dependency recovery promptly on stop', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const startFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }));
+    const dependencyFetch = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', startFetch);
+    const result = requestStoryStart({
+      ...options(controller),
+      afterAccepted: async (_response, signal) => {
+        await requestTransientDependency({
+          signal,
+          request: dependencyFetch,
+          readResponse: async response => response.status,
+          onRetry: vi.fn(),
+        });
+      },
+    });
+    const assertion = expect(result).rejects.toThrow('user stop');
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort(new Error('user stop'));
+    await assertion;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(startFetch).toHaveBeenCalledTimes(1);
+    expect(dependencyFetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([400, 401, 403, 404, 409, 422])('does not retry terminal dependency HTTP %s', async status => {
+    const dependencyFetch = vi.fn().mockResolvedValue(new Response(null, { status }));
+    const retries = vi.fn();
+    await expect(requestTransientDependency({
+      signal: new AbortController().signal,
+      request: dependencyFetch,
+      readResponse: async response => { throw new Error(`terminal ${response.status}`); },
+      onRetry: retries,
+    })).rejects.toThrow(`terminal ${status}`);
+    expect(dependencyFetch).toHaveBeenCalledTimes(1);
+    expect(retries).not.toHaveBeenCalled();
+  });
+
   it.each([408, 502, 503, 504])('replays HTTP %s using the identical body and bearer', async status => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status }))
