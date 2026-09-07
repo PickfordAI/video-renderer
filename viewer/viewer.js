@@ -19,6 +19,20 @@ const chatName = document.querySelector('#chat-name');
 const chatMessage = document.querySelector('#chat-message');
 const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
+const chatHistory = document.querySelector('#chat-history');
+const chatMessages = document.querySelector('#chat-messages');
+const sentMessageIds = new Set();
+
+function showSentMessage(input, messageId) {
+  if (typeof messageId === 'string' && sentMessageIds.has(messageId)) return;
+  if (typeof messageId === 'string') sentMessageIds.add(messageId);
+  const item = document.createElement('li');
+  const author = document.createElement('strong');
+  author.textContent = `${input.displayName}: `;
+  item.append(author, document.createTextNode(input.content));
+  chatMessages.append(item);
+  chatHistory.hidden = false;
+}
 
 function viewerId() {
   try {
@@ -61,6 +75,7 @@ chatForm.addEventListener('submit', async (event) => {
     });
     const value = await response.json();
     if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    showSentMessage(input, value.messageId);
     chatMessage.value = '';
     chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
   } catch (error) {
