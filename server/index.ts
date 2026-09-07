@@ -268,6 +268,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (await handleNarrativeEngineApi(request, response)) return;
+  if (await audienceChat.handle(request, response)) return;
   if (await handleApi(request, response)) return;
   if (await servePublicViewer(request, response)) return;
   response.writeHead(404);

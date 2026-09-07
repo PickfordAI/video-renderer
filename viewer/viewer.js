@@ -3,7 +3,6 @@ import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
-const play = document.querySelector('#play');
 const setup = document.querySelector('#setup');
 let hls;
 let retry;
@@ -80,8 +79,7 @@ function clearStream() {
   video.pause();
   video.removeAttribute('src');
   video.load();
-  video.hidden = play.hidden = true;
-  document.querySelector('#share').hidden = true;
+  video.hidden = true;
 }
 
 function showStream(raw) {
@@ -90,7 +88,7 @@ function showStream(raw) {
   clearStream();
   currentStream = streamUrl;
   const version = generation;
-  video.hidden = play.hidden = false;
+  video.hidden = false;
   setup.hidden = true;
   status.textContent = 'Preparing your first scene. This can take a few minutes.';
   const connect = async () => {
@@ -155,11 +153,6 @@ async function followLocalStory() {
     if (disposed) return;
     if (value.story?.hlsUrl) {
       showStream(value.story.hlsUrl);
-      const stream = new URL(value.story.hlsUrl);
-      const watch = new URL('/', stream);
-      watch.hash = encodeURIComponent(stream.toString());
-      document.querySelector('#watch-link').href = watch.toString();
-      document.querySelector('#share').hidden = false;
     } else {
       if (currentStream) clearStream();
       showSetup(value);
@@ -170,10 +163,6 @@ async function followLocalStory() {
   if (!disposed) poll = setTimeout(followLocalStory, 2000);
 }
 
-play.addEventListener('click', () => {
-  video.muted = false;
-  void video.play().catch(() => { status.textContent = 'The next scene is still loading. Try play again in a moment.'; });
-});
 video.addEventListener('playing', () => { status.textContent = 'Now playing'; });
 window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearTimeout(chatPoll); clearStream(); });
 
