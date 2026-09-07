@@ -1,4 +1,5 @@
 import { generateVideo } from './fal.js';
+import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import type { ContinuityStrategy, RenderMode } from './render-mode.js';
 import type { PlannedShot } from './shot-planner.js';
 import type { ScheduledShot, ShotScheduler } from './shot-scheduler.js';
@@ -15,7 +16,7 @@ export interface GeneratedShot {
   requestId?: string;
   submittedPrompt?: string;
   referenceImageCount?: number;
-  timings?: { submitSeconds: number; queueSeconds: number; totalSeconds: number; polls: number };
+  timings?: { submitSeconds: number; queueSeconds: number; totalSeconds: number; polls: number; maxQueuePosition?: number | null };
 }
 
 export type ShotDependency =
@@ -111,7 +112,7 @@ export class ShotGenerator {
         referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
       }, {
         apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
-        timeoutMs: this.options.timeoutMs ?? 300_000, signal,
+        timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
       });
       guard();
       const nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source

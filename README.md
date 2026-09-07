@@ -217,6 +217,11 @@ resets staging and continuity even when the set is reused. Media and completion 
 must supply enough lookahead. Playback begins with one ready clip to support short and ACK-gated
 stories. Offline overlap does not prove sustained live realtime performance or visual quality.
 
+`FAL_REQUEST_TIMEOUT_MS` (default 300000) caps one fal job from submit to completion. Under
+account-level queueing a clip can wait several minutes, and a timeout fences the whole run, so
+raise it when measuring rather than letting one slow job end a story. Each clip's run-status
+record carries `falQueueSeconds` and `falMaxQueuePosition` so queueing on fal's side is visible.
+
 Environment onboarding supports `STORY_RENDERER_CONFIG_JSON`, `STORY_SHOT_PLANNER_JSON`, and
 `STORY_INITIAL_IMAGE_URL` for the same options. Existing handoffs with top-level `renderMode`,
 `generationConcurrency`, and `maxBufferedSeconds` remain accepted; explicit `rendererConfig`

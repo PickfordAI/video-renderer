@@ -1,3 +1,4 @@
+import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { parseRenderMode, type RenderMode } from './render-mode.js';
 
 const TERMINAL_ERROR_STATUSES = new Set(['ERROR', 'FAILED', 'CANCELLED']);
@@ -24,8 +25,11 @@ export interface GenerateVideoResult {
     queueSeconds: number;
     totalSeconds: number;
     polls: number;
+    /** Deepest fal queue position observed while polling; null when the job never reported one. */
+    maxQueuePosition?: number | null;
   };
 }
+
 
 interface FalQueueHandle {
   request_id?: unknown;
@@ -218,16 +222,25 @@ export async function generateVideo(
         : `${queueBaseUrl}/${modelId}/requests/${requestId}`;
 
     const queueStartedAt = performance.now();
-    const timeoutMs = options.timeoutMs ?? 180_000;
+    const timeoutMs = options.timeoutMs ?? defaultRequestTimeoutMs();
     let polls = 0;
+    let maxQueuePosition: number | null = null;
+    let lastStatus = '';
     for (;;) {
       if (performance.now() - overallStartedAt > timeoutMs) {
-        throw new FalVideoError(`fal request ${requestId} timed out`);
+        throw new FalVideoError(
+          `fal request ${requestId} timed out after ${Math.round(elapsedSeconds(overallStartedAt))}s`
+            + ` (last status ${lastStatus || 'unknown'}, max queue position ${maxQueuePosition ?? 'n/a'})`,
+        );
       }
       const statusResponse = await fetchWithRetry(fetchImpl, statusUrl, { headers, signal: options.signal }, 'fal status poll', options.signal);
       const statusBody = await readFalJson<FalStatus>(statusResponse, 'fal status poll');
       polls += 1;
       const status = typeof statusBody.status === 'string' ? statusBody.status : '';
+      lastStatus = status;
+      if (typeof statusBody.queue_position === 'number') {
+        maxQueuePosition = Math.max(maxQueuePosition ?? 0, statusBody.queue_position);
+      }
       if (status === 'COMPLETED') {
         completed = true;
         break;
@@ -251,6 +264,7 @@ export async function generateVideo(
         queueSeconds: elapsedSeconds(queueStartedAt),
         totalSeconds: elapsedSeconds(overallStartedAt),
         polls,
+        maxQueuePosition,
       },
     };
   } catch (error) {

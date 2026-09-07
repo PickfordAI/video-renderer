@@ -4,6 +4,7 @@ import type { ServerResponse } from 'node:http';
 import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
+import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
@@ -84,6 +85,9 @@ export interface RendererClipRecord {
   streamEndSeconds: number | null;
   /** Hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
   gapBeforeSeconds: number | null;
+  /** fal-side wait: seconds from submit to completion and the deepest queue position reported. */
+  falQueueSeconds: number | null;
+  falMaxQueuePosition: number | null;
   /** `line`: previous clip belonged to the same story block; `block`: a block boundary; `start`: first clip. */
   gapKind: PlaybackGapKind | null;
 }
@@ -1100,6 +1104,8 @@ class ExternalRendererRun {
       streamEndSeconds: null,
       gapBeforeSeconds: null,
       gapKind: null,
+      falQueueSeconds: null,
+      falMaxQueuePosition: null,
     };
     if (anchor === 'establish') this.status.anchorsEstablished += 1;
     else if (anchor === 'reuse') this.status.anchorsReused += 1;
@@ -1139,11 +1145,19 @@ class ExternalRendererRun {
     }
   }
 
-  private completeClip(record: RendererClipRecord, requestId: unknown): void {
+  private completeClip(
+    record: RendererClipRecord,
+    requestId: unknown,
+    timings?: { queueSeconds?: number; maxQueuePosition?: number | null } | null,
+  ): void {
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
     if (typeof requestId === 'string' && requestId) record.providerRequestId = requestId;
+    if (timings) {
+      record.falQueueSeconds = typeof timings.queueSeconds === 'number' ? Math.round(timings.queueSeconds * 10) / 10 : null;
+      record.falMaxQueuePosition = typeof timings.maxQueuePosition === 'number' ? timings.maxQueuePosition : null;
+    }
     this.status.generationMsPercentiles = generationMsPercentiles(this.status.clips);
   }
 
@@ -1160,7 +1174,7 @@ class ExternalRendererRun {
     });
     // Registered at schedule time so it settles before any consumer's own await of the same result.
     void job.result.then(
-      generated => this.completeClip(record, generated.requestId),
+      generated => this.completeClip(record, generated.requestId, generated.timings ?? null),
       // A future shot can fail while an earlier clip is playing. Fence the whole run
       // immediately, before another scheduler slot submits additional paid work.
       error => {
@@ -1291,18 +1305,18 @@ class ExternalRendererRun {
               baseUrl: process.env.MINIMAX_API_BASE_URL,
               textModel: process.env.MINIMAX_VIDEO_MODEL_ID,
               referenceModel: process.env.MINIMAX_REFERENCE_VIDEO_MODEL_ID,
-              timeoutMs: 300_000,
+              timeoutMs: defaultRequestTimeoutMs(),
               signal: this.abortController.signal,
             })
           : await generateVideo(input, {
               apiKey: this.provider.apiKey,
               modelId: process.env.FAL_VIDEO_MODEL_ID,
               queueBaseUrl: process.env.FAL_QUEUE_BASE_URL,
-              timeoutMs: 300_000,
+              timeoutMs: defaultRequestTimeoutMs(),
               signal: this.abortController.signal,
             });
         if (this.stopped) throw this.abortController.signal.reason;
-        this.completeClip(record, generated.requestId);
+        this.completeClip(record, generated.requestId, generated.timings ?? null);
         const position = this.clipPosition;
         this.playout!.enqueue({
           position,
