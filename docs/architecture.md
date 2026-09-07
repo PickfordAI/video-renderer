@@ -27,11 +27,12 @@ and `message_channel_id` from the returned session; that ID is used for the audi
 cross-checked against the DSS `episode_id`. Assignment fencing is unchanged: it keys on the
 assignment ID and generation carried by every DSS frame, not on a pre-known story.
 
-Opaque startup keeps its bridge and lease heartbeats alive while recovering HTTP
-408/502/503/504 responses or fetch transport failures. Retries are sequential, one
-second apart, reuse the identical body and idempotency key, and share a 180-second
-deadline (including in-flight requests). Authentication/validation/conflict errors
-remain terminal; legacy starts are not automatically retried. Stop or bridge
+Opaque startup keeps its bridge and lease heartbeats alive while recovering start HTTP
+408/502/503/504 responses or fetch transport failures. After an accepted start, audience-exchange
+transport and 5xx failures retry with the same opaque handle. Retries are sequential, one second
+apart, and both phases share one 180-second deadline (including in-flight requests). Start retries
+reuse the identical body and idempotency key. Authentication/validation/conflict errors and all
+audience-exchange 4xx responses remain terminal; legacy starts are not automatically retried. Stop or bridge
 disconnection aborts pending startup and backoff. Once the deadline expires, status
 reports that Kernel may still own the run; no new start identity is minted. This
 recovers an ambiguous response within the existing process, not a process restart.

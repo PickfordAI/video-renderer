@@ -34,11 +34,13 @@ describe('opaque run configuration', () => {
 
 describe('opaque renderer-initiated story start', () => {
   it.each([
-    { exchange: 'kernel origin', explicitExchange: false, recover: false },
-    { exchange: 'configured chat service', explicitExchange: true, recover: false },
-    { exchange: 'kernel origin after gateway timeout', explicitExchange: false, recover: true },
-  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange, recover }) => {
+    { exchange: 'kernel origin', explicitExchange: false, recoverStart: false, recoverExchange: false },
+    { exchange: 'configured chat service', explicitExchange: true, recoverStart: false, recoverExchange: false },
+    { exchange: 'kernel origin after gateway timeout', explicitExchange: false, recoverStart: true, recoverExchange: false },
+    { exchange: 'kernel origin after transient exchange failure', explicitExchange: false, recoverStart: false, recoverExchange: true },
+  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange, recoverStart, recoverExchange }) => {
     vi.stubEnv('FAL_KEY', 'test-fal');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const http = createServer();
     const ws = new WebSocketServer({ server: http });
     await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
@@ -48,7 +50,7 @@ describe('opaque renderer-initiated story start', () => {
     ws.on('connection', socket => socket.on('message', raw => {
       const frame = JSON.parse(raw.toString());
       frames.push(frame);
-      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: recover ? 4 : 30 }));
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: recoverStart || recoverExchange ? 4 : 30 }));
       if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
       if (frame.type === 'audience.message') socket.send(JSON.stringify({ type: 'audience.message.accepted', source_message_id: frame.message_id, message_id: 'kernel-message-1' }));
     }));
@@ -60,11 +62,14 @@ describe('opaque renderer-initiated story start', () => {
       if (target.endsWith('/api/v1/renderers/start-story')) {
         startBodies.push(JSON.parse(String(options?.body)));
         expect(new Headers(options?.headers).get('authorization')).toBe('Bearer test-token');
-        if (recover && startBodies.length === 1) return Response.json({ detail: 'upstream timed out' }, { status: 502 });
+        if (recoverStart && startBodies.length === 1) return Response.json({ detail: 'upstream timed out' }, { status: 502 });
         return Response.json({ story_run_id: storyRunId, audience_join_url: 'http://audience.example:3000/audience/opaque-handle-1234567890', status: 'audience_ready' }, { status: 202 });
       }
       if (target === exchangeUrl) {
         exchangeRequests.push({ url: target, origin: new Headers(options?.headers).get('origin') ?? undefined, body: JSON.parse(String(options?.body)) });
+        if (recoverExchange && exchangeRequests.length === 1) {
+          return Response.json({ detail: 'dependency_unavailable' }, { status: 503 });
+        }
         for (const socket of ws.clients) socket.send(JSON.stringify({ stream_id: rendererId, assignment_id: 'assignment', assignment_generation: 1, sequence: 1, story_block_id: evdId, script: { sequence: 1, episode_id: 77, command_groups: [{ id: 'group', commands: [{ command: 'Talk', args: { character: 'Alex', dialogue: 'Hello Sam.' } }] }] } }));
         return Response.json({ session: { audience: 'external-audience', story_id: 77, message_channel_id: storyChannel, principal_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', scopes: ['chat.read', 'chat.write'] }, websocket_url: 'ws://127.0.0.1:8080/api/v1/external-audience/ws' }, { headers: { 'set-cookie': 'pickford_audience=opaque; HttpOnly; Path=/api/v1/external-audience' } });
       }
@@ -78,21 +83,26 @@ describe('opaque renderer-initiated story start', () => {
     try {
       await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(1), { timeout: 3_000 });
       const expectedStart = { evd_id: evdId, idempotency_key: `video-renderer:${rendererId}:${evdId}:${run.runId}` };
-      expect(startBodies).toEqual(recover ? [expectedStart, expectedStart] : [expectedStart]);
-      if (recover) {
+      expect(startBodies).toEqual(recoverStart ? [expectedStart, expectedStart] : [expectedStart]);
+      if (recoverStart || recoverExchange) {
         expect(frames.filter(f => f.type === 'renderer.hello')).toHaveLength(1);
         expect(frames.some(f => f.type === 'renderer.heartbeat')).toBe(true);
         expect(run.failures).toEqual([]);
       }
       expect(run.storyStartStatus).toBe(202);
       expect(run).toMatchObject({ storyRunId, audienceJoinUrl: 'http://audience.example:3000/audience/opaque-handle-1234567890', storyId: 77, storyMessageChannelId: storyChannel });
-      expect(exchangeRequests).toEqual([{ url: exchangeUrl, origin: 'http://audience.example:3000', body: { opaque_handle: 'opaque-handle-1234567890' } }]);
+      const expectedExchange = { url: exchangeUrl, origin: 'http://audience.example:3000', body: { opaque_handle: 'opaque-handle-1234567890' } };
+      expect(exchangeRequests).toEqual(recoverExchange ? [expectedExchange, expectedExchange] : [expectedExchange]);
+      if (recoverExchange) expect(warning).toHaveBeenCalledWith('Audience exchange HTTP 503; retrying within the story start recovery window.');
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('opaque-handle-1234567890');
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('test-installation');
       const result = await manager.submitAudienceMessage({ externalSubject: 'viewer:1', displayName: 'Ada', content: 'Turn left', idempotencyKey: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' });
       expect(result).toEqual({ accepted: true, duplicate: false, messageId: 'kernel-message-1' });
       expect(frames.find(f => f.type === 'audience.message')).toMatchObject({ story_id: 77 });
       expect(generateVideo).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(run)).not.toContain('test-installation');
     } finally {
+      warning.mockRestore();
       await manager.stopAll();
       await new Promise<void>(resolve => ws.close(() => resolve()));
       await new Promise<void>(resolve => http.close(() => resolve()));

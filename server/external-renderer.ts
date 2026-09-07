@@ -9,7 +9,7 @@ import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type Render
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
-import { requestStoryStart } from './story-start.js';
+import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import { extractVideoFrame } from './video-frame.js';
@@ -1437,13 +1437,15 @@ class ExternalRendererRun {
           retryAmbiguous: this.config.startMode === 'opaque',
           onResponse: (status) => { this.status.storyStartStatus = status; },
           readResponse: (response) => jsonResponse(response, 'renderer story start', 202),
+          afterAccepted: this.config.startMode === 'opaque'
+            ? async (payload, recoverySignal) => {
+              this.acceptOpaqueStart(payload);
+              await this.resolveOpaqueStoryIdentity(recoverySignal);
+            }
+            : undefined,
         });
         if (this.stopped) return;
-        if (this.config.startMode === 'opaque') {
-          this.acceptOpaqueStart(startPayload);
-          await this.resolveOpaqueStoryIdentity();
-          if (this.stopped) return;
-        } else if (startPayload.renderer_id !== undefined && startPayload.renderer_id !== this.config.rendererId) {
+        if (this.config.startMode !== 'opaque' && startPayload.renderer_id !== undefined && startPayload.renderer_id !== this.config.rendererId) {
           throw new Error('renderer story start returned a mismatched renderer ID');
         }
       }
@@ -1587,24 +1589,45 @@ class ExternalRendererRun {
   }
 
   // The opaque start hides the platform story; the audience exchange is the public route that names it.
-  private async resolveOpaqueStoryIdentity(): Promise<void> {
+  private async resolveOpaqueStoryIdentity(recoverySignal: AbortSignal): Promise<void> {
     const joinUrl = new URL(requiredString(this.status.audienceJoinUrl, 'audience_join_url'));
     const segments = joinUrl.pathname.split('/').filter(Boolean);
     if (!['http:', 'https:'].includes(joinUrl.protocol) || segments.length !== 2 || segments[0] !== 'audience') {
       throw new Error('renderer story start returned an invalid audience join URL');
     }
     const exchangeUrl = this.config.audienceExchangeUrl ?? `${this.config.baseUrl}${AUDIENCE_EXCHANGE_PATH}`;
-    const response = await fetch(exchangeUrl, {
-      method: 'POST',
-      headers: { Origin: joinUrl.origin, 'Content-Type': 'application/json' },
-      signal: this.abortController.signal,
-      body: JSON.stringify({ opaque_handle: segments[1] }),
+    const body = JSON.stringify({ opaque_handle: segments[1] });
+    const result = await requestTransientDependency({
+      signal: recoverySignal,
+      request: () => fetch(exchangeUrl, {
+        method: 'POST',
+        headers: { Origin: joinUrl.origin, 'Content-Type': 'application/json' },
+        signal: recoverySignal,
+        body,
+      }),
+      readResponse: async (response) => {
+        if (response.status !== 200) {
+          await response.body?.cancel();
+          // Do not include a downstream response body: it could echo the opaque handle.
+          throw new Error(`audience exchange failed with HTTP ${response.status}`);
+        }
+        return asObject(await response.json(), 'audience exchange');
+      },
+      onRetry: (reason) => this.logAudienceExchangeRetry(reason),
     });
-    const session = asObject((await jsonResponse(response, 'audience exchange', 200)).session, 'audience exchange session');
+    const session = asObject(result.session, 'audience exchange session');
     this.status.storyId = positiveInteger(session.story_id, Number.NaN, 'audience exchange story_id');
     if (session.message_channel_id !== undefined) {
       this.status.storyMessageChannelId = uuid(session.message_channel_id, 'audience exchange message_channel_id');
     }
+  }
+
+  private logAudienceExchangeRetry(reason: TransientDependencyRetry): void {
+    const cause = reason.kind === 'http'
+      ? `HTTP ${reason.status}`
+      : `transport ${reason.errorName}`;
+    // Keep diagnostics status/class-only: audience handles and credentials are never safe to log.
+    console.warn(`Audience exchange ${cause}; retrying within the story start recovery window.`);
   }
 
   private adoptAssignedStory(frame: DssFrame): void {
