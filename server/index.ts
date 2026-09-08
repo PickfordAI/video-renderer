@@ -17,12 +17,18 @@ import { extractVideoFrame, validateFrameVideoUrl } from './video-frame.js';
 import { parseGenerationInput } from './generation-input.js';
 import { handleNarrativeEngineApi } from './narrative-engine.js';
 import { PlayoutManager } from './playout.js';
+import { FakeClipPlayoutManager, fakeClipFailureAfter, fakeClipsEnabled } from './fake-clips.js';
 import { prepareReferenceAudioUrls } from './reference-audio.js';
 
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
-const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
+const fakeClips = fakeClipsEnabled();
+const fakeFailureAfterClips = fakeClips ? fakeClipFailureAfter() : null;
+const externalRendererRuns = new ExternalRendererRunManager(
+  fakeClips ? new FakeClipPlayoutManager() : playoutManager,
+  { fakeClips, fakeFailureAfterClips },
+);
 const audienceChat = new AudienceChatGateway(externalRendererRuns);
 // A fal key the creator entered on the local page lives in .renderer/, not in the environment.
 loadFalKey();
@@ -73,7 +79,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
   if (pathname === '/api/health' && request.method === 'GET') {
     sendJson(response, 200, {
       ok: true,
-      provider: process.env.MINIMAX_API_KEY ? 'minimax-direct' : 'fal',
+      provider: fakeClips ? 'fake-clips' : process.env.MINIMAX_API_KEY ? 'minimax-direct' : 'fal',
+      fakeClipsEnabled: fakeClips,
+      fakeClipFailureAfterClips: fakeFailureAfterClips,
       textModel: process.env.MINIMAX_API_KEY
         ? process.env.MINIMAX_VIDEO_MODEL_ID ?? 'MiniMax-H3-Max'
         : process.env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',

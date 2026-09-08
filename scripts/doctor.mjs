@@ -6,9 +6,10 @@ const checks = [];
 let model = 'auto';
 try { model = handoffRendererConfig(loadHandoff()).model; } catch { /* Story access reports an invalid handoff separately. */ }
 const hasRequiredCredential = (fal, minimax) => model === 'auto' ? Boolean(fal || minimax) : Boolean(fal);
+const fakeClips = process.env.PICKFORD_FAKE_CLIPS === '1';
 const credentialCheck = {
-  name: model === 'auto' ? 'MiniMax or fal credential (environment or running worker)' : 'fal credential for selected model (environment or running worker)',
-  ok: hasRequiredCredential(process.env.FAL_KEY || process.env.FAL_API_KEY, process.env.MINIMAX_API_KEY),
+  name: fakeClips ? 'local fake clips (no provider credential)' : model === 'auto' ? 'MiniMax or fal credential (environment or running worker)' : 'fal credential for selected model (environment or running worker)',
+  ok: fakeClips || hasRequiredCredential(process.env.FAL_KEY || process.env.FAL_API_KEY, process.env.MINIMAX_API_KEY),
 };
 const major = Number(process.versions.node.split('.')[0]);
 checks.push({ name: 'Node.js 22+', ok: major >= 22 });
@@ -22,7 +23,8 @@ for (const [name, url] of Object.entries({ ...services(), worker: rendererOrigin
     if (name === 'worker' && response.ok) {
       const health = await response.json();
       // A reachable worker is authoritative; local key changes may still need a restart.
-      credentialCheck.ok = hasRequiredCredential(health.falKeyConfigured === true, health.minimaxKeyConfigured === true);
+      credentialCheck.ok = health.fakeClipsEnabled === true
+        || hasRequiredCredential(health.falKeyConfigured === true, health.minimaxKeyConfigured === true);
     } else await response.body?.cancel();
     // A 404 still proves the HTTP service is reachable; it is not protocol/auth verification.
     checks.push({ name, ok: response.status < 500, status: response.status, check: 'HTTP reachability' });

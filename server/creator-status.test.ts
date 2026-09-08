@@ -11,6 +11,7 @@ function run(overrides: Partial<ExternalRendererRunStatus> = {}): ExternalRender
     state: 'running',
     rendererId: 'bbbbbbbb-0000-4000-8000-000000000001',
     rendererVersion: 'h3.opensource.v1.1',
+    fakeClips: false,
     startMode: 'opaque',
     storyRunId: 'cccccccc-0000-4000-8000-000000000001',
     audienceJoinUrl: 'https://dev.pickford.ai/join/abc',

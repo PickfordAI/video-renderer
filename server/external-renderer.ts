@@ -17,7 +17,7 @@ import { requestStoryStart, requestTransientDependency, type TransientDependency
 import { storyStartRefusalMessage } from './story-bundles.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
-import type { PlayoutClipBoundary, PlayoutManager, PlayoutSession } from './playout.js';
+import type { PlayoutClipBoundary, PlayoutClipInput, PlayoutStatus } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -62,6 +62,20 @@ interface ExternalRendererRunConfig {
 interface VideoProvider {
   kind: 'minimax-direct' | 'fal';
   apiKey: string;
+  fakeClips: boolean;
+}
+
+export interface ExternalPlayoutSession {
+  readonly sessionId: string;
+  readonly hlsUrl: string;
+  enqueue(value: unknown): PlayoutClipInput;
+  status(): PlayoutStatus;
+  clipBoundary?(position: number): PlayoutClipBoundary | null;
+}
+
+export interface ExternalPlayoutManager {
+  start(options?: { startupBufferClips?: number; startupWaitMs?: number }): Promise<ExternalPlayoutSession>;
+  stop(sessionId: string): Promise<boolean>;
 }
 
 /** How a shot used the camera-anchor cache: it established the key, reused it, or the run has no anchors. */
@@ -174,6 +188,8 @@ export interface ExternalRendererRunStatus {
   state: 'connecting' | 'running' | 'ended' | 'stopped' | 'failed';
   rendererId: string;
   rendererVersion: string;
+  /** True only for the explicit local smoke-test mode; no provider or media renderer was used. */
+  fakeClips: boolean;
   startMode: StoryStartMode;
   storyRunId: string | null;
   audienceJoinUrl: string | null;
@@ -329,6 +345,7 @@ const MAX_PREPARED_DSS_FRAMES = 32;
 const MAX_PENDING_DSS_FRAMES = 256;
 const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
+const FAKE_FAILURE_VERDICT_TIMEOUT_MS = 10_000;
 const DSS_IDLE_TIMEOUT_MS = 300_000;
 const MAX_CLIP_RECORDS = 1_000;
 /** Clips that must be rendered before the stream starts; the fallback timer starts a lone clip. */
@@ -997,7 +1014,7 @@ class ExternalRendererRun {
   readonly runId = randomUUID();
   readonly status: ExternalRendererRunStatus;
   private socket: WebSocket | null = null;
-  private playout: PlayoutSession | null = null;
+  private playout: ExternalPlayoutSession | null = null;
   /** The most recent clip whose output-timeline placement is known; decides whether a gap is line- or block-level. */
   private lastPlacedClip: { storyBlockId: string; position: number } | null = null;
   /** Timed-control seconds owed to the audience before the next clip that reaches the playout. */
@@ -1031,8 +1048,10 @@ class ExternalRendererRun {
 
   constructor(
     private readonly config: ExternalRendererRunConfig,
-    private readonly playoutManager: PlayoutManager,
+    private readonly playoutManager: ExternalPlayoutManager,
     private readonly provider: VideoProvider,
+    private readonly fakeFailureAfterClips: number | null,
+    private readonly consumeFakeFailure: () => void,
   ) {
     this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds });
     this.scheduler = new ShotScheduler(config.generationConcurrency, config.maxBufferedSeconds, this.abortController.signal);
@@ -1047,6 +1066,7 @@ class ExternalRendererRun {
       state: 'connecting',
       rendererId: config.rendererId,
       rendererVersion: config.rendererVersion,
+      fakeClips: provider.fakeClips,
       startMode: config.startMode,
       storyRunId: null,
       audienceJoinUrl: null,
@@ -1116,7 +1136,7 @@ class ExternalRendererRun {
     if (closingPlayout) this.recordRetainedMedia(closingPlayout);
   }
 
-  private recordRetainedMedia(playout: PlayoutSession): void {
+  private recordRetainedMedia(playout: ExternalPlayoutSession): void {
     const status = playout.status();
     this.status.mediaDir = status.mediaDir ?? null;
     this.status.finalMp4 = status.finalMp4 ?? null;
@@ -1169,6 +1189,17 @@ class ExternalRendererRun {
     signal.throwIfAborted();
     this.verdicts.acknowledge(ack.message);
     if (ack.failure) throw new Error(ack.failure);
+  }
+
+  private async settleFakeFailureVerdicts(): Promise<void> {
+    const deadline = Date.now() + FAKE_FAILURE_VERDICT_TIMEOUT_MS;
+    while (this.verdicts.status.pending > 0) {
+      this.verdicts.assertHealthy();
+      if (Date.now() >= deadline) {
+        throw new Error(`Synthetic local renderer failure could not settle ${this.verdicts.status.pending} pending verdicts`);
+      }
+      await waitWithAbort(10, this.abortController.signal);
+    }
   }
 
   /** Resolves once the audience has started seeing `position`, or once it has fully played. */
@@ -1482,10 +1513,11 @@ class ExternalRendererRun {
       for (const clip of planned) {
         if (this.stopped) throw this.abortController.signal.reason;
         this.verdicts.assertHealthy();
+        const position = this.clipPosition;
         const record = this.trackClip(
           frame,
-          { id: `${clip.groupId}:${this.clipPosition}`, groupId: clip.groupId, storyBlockId: clip.storyBlockId, durationSeconds: clip.durationSeconds, anchorKey: '' },
-          this.clipPosition,
+          { id: `${clip.groupId}:${position}`, groupId: clip.groupId, storyBlockId: clip.storyBlockId, durationSeconds: clip.durationSeconds, anchorKey: '' },
+          position,
           'none',
         );
         record.submittedAt = new Date().toISOString();
@@ -1496,7 +1528,23 @@ class ExternalRendererRun {
           aspectRatio: '16:9' as const,
           ...(frame.sceneContext ? { referenceImageUrls: sceneContextImageUrls(frame.sceneContext) } : {}),
         };
-        const generated = this.provider.kind === 'minimax-direct'
+        if (this.provider.fakeClips && this.fakeFailureAfterClips !== null && position >= this.fakeFailureAfterClips) {
+          // Exercise cleanup without manufacturing a poison cancel record: the
+          // platform must commit verdicts for the completed synthetic clips
+          // before this local-only failure closes the renderer connection.
+          await this.settleFakeFailureVerdicts();
+          this.consumeFakeFailure();
+          throw new Error(`Synthetic local renderer failure after ${this.fakeFailureAfterClips} fake clips`);
+        }
+        const generated = this.provider.fakeClips
+          ? {
+              requestId: `fake-${this.runId}-${position}`,
+              videoUrl: `fake://pickford-clips/${this.runId}/${position}`,
+              expandedPrompt: null,
+              generationMode: 'text' as const,
+              timings: { submitSeconds: 0, queueSeconds: 0, totalSeconds: 0, polls: 0 },
+            }
+          : this.provider.kind === 'minimax-direct'
           ? await generateMiniMaxVideo(input, {
               apiKey: this.provider.apiKey,
               baseUrl: process.env.MINIMAX_API_BASE_URL,
@@ -1514,7 +1562,6 @@ class ExternalRendererRun {
             });
         if (this.stopped) throw this.abortController.signal.reason;
         this.completeClip(record, generated.requestId, generated.timings ?? null);
-        const position = this.clipPosition;
         this.playout!.enqueue({
           position,
           storyBlockId: clip.storyBlockId,
@@ -1893,8 +1940,14 @@ class ExternalRendererRun {
 export class ExternalRendererRunManager {
   private readonly runs = new Map<string, ExternalRendererRun>();
   private activeRunId: string | null = null;
+  private fakeFailureArmed: boolean;
 
-  constructor(private readonly playoutManager: PlayoutManager) {}
+  constructor(
+    private readonly playoutManager: ExternalPlayoutManager,
+    private readonly options: { fakeClips?: boolean; fakeFailureAfterClips?: number | null } = {},
+  ) {
+    this.fakeFailureArmed = options.fakeFailureAfterClips !== null && options.fakeFailureAfterClips !== undefined;
+  }
 
   start(value: unknown): ExternalRendererRunStatus {
     if ([...this.runs.values()].some(run => ['connecting', 'running'].includes(run.status.state))) {
@@ -1904,15 +1957,37 @@ export class ExternalRendererRunManager {
       if (['stopped', 'failed', 'ended'].includes(run.status.state)) this.runs.delete(id);
     }
     const config = parseExternalRendererRunConfig(value);
+    if (this.options.fakeClips) {
+      const hostname = new URL(config.baseUrl).hostname;
+      const localHost = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'].includes(hostname);
+      // Local unified stacks identify their Renderer Platform tier as `dev` even
+      // though the service itself is bound to loopback. The loopback boundary is
+      // the safety fence; environment alone is not a reliable locality signal.
+      if (!localHost || !LOOPBACK_PLAINTEXT_ENVIRONMENTS.has(config.environment)) {
+        throw new Error('PICKFORD_FAKE_CLIPS is restricted to a loopback local renderer run');
+      }
+      if (config.renderMode !== 'auto') throw new Error('PICKFORD_FAKE_CLIPS supports only the auto MiniMax adapter');
+    }
     const minimaxKey = process.env.MINIMAX_API_KEY;
     const falKey = process.env.FAL_KEY || process.env.FAL_API_KEY;
-    const provider: VideoProvider | null = config.renderMode !== 'auto'
-      ? falKey ? { kind: 'fal', apiKey: falKey } : null
+    const provider: VideoProvider | null = this.options.fakeClips
+      ? { kind: 'minimax-direct', apiKey: '', fakeClips: true }
+      : config.renderMode !== 'auto'
+      ? falKey ? { kind: 'fal', apiKey: falKey, fakeClips: false } : null
       : minimaxKey
-      ? { kind: 'minimax-direct', apiKey: minimaxKey }
-      : falKey ? { kind: 'fal', apiKey: falKey } : null;
+      ? { kind: 'minimax-direct', apiKey: minimaxKey, fakeClips: false }
+      : falKey ? { kind: 'fal', apiKey: falKey, fakeClips: false } : null;
     if (!provider) throw new Error(config.renderMode === 'auto' ? 'MINIMAX_API_KEY or FAL_KEY is not configured on the renderer server' : 'Explicit fal rendering requires FAL_KEY; no provider fallback is used');
-    const run = new ExternalRendererRun(config, this.playoutManager, provider);
+    const fakeFailureAfterClips = provider.fakeClips && this.fakeFailureArmed
+      ? this.options.fakeFailureAfterClips ?? null
+      : null;
+    const run = new ExternalRendererRun(
+      config,
+      this.playoutManager,
+      provider,
+      fakeFailureAfterClips,
+      () => { this.fakeFailureArmed = false; },
+    );
     this.runs.set(run.runId, run);
     this.activeRunId = run.runId;
     void run.start();

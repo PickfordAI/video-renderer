@@ -5,7 +5,7 @@ export function viewerStatus(setup: { ready: boolean; missing: string[] }, run: 
   // The relay publishes an HLS manifest before generated video reaches playout. Attaching hls.js
   // to that early manifest can leave a browser following filler until it reconnects. The local
   // home page waits for an actual clip to enter playout before it receives the stream capability.
-  const playbackStarted = run?.clips?.some(clip => clip.playedAt !== null) ?? false;
+  const playbackStarted = !run?.fakeClips && (run?.clips?.some(clip => clip.playedAt !== null) ?? false);
   return {
     setup,
     story: run ? {

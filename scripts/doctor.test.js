@@ -12,14 +12,15 @@ const cli = fileURLToPath(new URL('./doctor.mjs', import.meta.url));
 
 describe('doctor model credential checks', () => {
   it.each([
-    { model: 'auto', workerFal: false, workerMinimax: true, localFal: false, expected: true },
-    { model: 'fal-max-ref2v', workerFal: false, workerMinimax: true, localFal: true, expected: false },
-    { model: 'fal-turbo-i2v', workerFal: true, workerMinimax: false, localFal: false, expected: true },
-  ])('uses worker capabilities for $model', async ({ model, workerFal, workerMinimax, localFal, expected }) => {
+    { model: 'auto', workerFal: false, workerMinimax: true, workerFake: false, localFal: false, localFake: false, expected: true },
+    { model: 'fal-max-ref2v', workerFal: false, workerMinimax: true, workerFake: false, localFal: true, localFake: false, expected: false },
+    { model: 'fal-turbo-i2v', workerFal: true, workerMinimax: false, workerFake: false, localFal: false, localFake: false, expected: true },
+    { model: 'auto', workerFal: false, workerMinimax: false, workerFake: true, localFal: false, localFake: true, expected: true },
+  ])('uses worker capabilities for $model', async ({ model, workerFal, workerMinimax, workerFake, localFal, localFake, expected }) => {
     const root = await mkdtemp(join(tmpdir(), 'renderer-doctor-'));
     const server = createServer((_req, res) => {
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ falKeyConfigured: workerFal, minimaxKeyConfigured: workerMinimax }));
+      res.end(JSON.stringify({ falKeyConfigured: workerFal, minimaxKeyConfigured: workerMinimax, fakeClipsEnabled: workerFake }));
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = String(server.address().port);
@@ -31,7 +32,7 @@ describe('doctor model credential checks', () => {
     await writeFile(ffmpeg, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith('STORY_')) delete env[key];
-    Object.assign(env, { STORY_HANDOFF_PATH: path, PORT: port, NARRATIVE_ENGINE_URL: origin, RENDERER_PLATFORM_URL: origin, NARRATIVE_AUTHORING_URL: '', REALTIME_GATEWAY_URL: '', CHAT_BACKEND_URL: '', MEDIA_RELAY_HLS_BASE_URL: origin, FFMPEG_PATH: ffmpeg, FAL_KEY: localFal ? 'fixture-private-fal' : '', FAL_API_KEY: '', MINIMAX_API_KEY: '' });
+    Object.assign(env, { STORY_HANDOFF_PATH: path, PORT: port, NARRATIVE_ENGINE_URL: origin, RENDERER_PLATFORM_URL: origin, NARRATIVE_AUTHORING_URL: '', REALTIME_GATEWAY_URL: '', CHAT_BACKEND_URL: '', MEDIA_RELAY_HLS_BASE_URL: origin, FFMPEG_PATH: ffmpeg, FAL_KEY: localFal ? 'fixture-private-fal' : '', FAL_API_KEY: '', MINIMAX_API_KEY: '', PICKFORD_FAKE_CLIPS: localFake ? '1' : '' });
     try {
       const run = async () => {
         const result = await exec(process.execPath, [cli], { cwd: root, env }).catch(error => ({ stdout: error.stdout }));

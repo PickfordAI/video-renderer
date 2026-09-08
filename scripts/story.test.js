@@ -146,6 +146,41 @@ describe('opaque agent story lifecycle', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('starts a fake-clip run without presenting its sentinel as a watch link', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'renderer-cli-fake-'));
+    const server = createServer(async (req, res) => {
+      for await (const _chunk of req) { /* consume request */ }
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/api/health') res.end(JSON.stringify({ fakeClipsEnabled: true }));
+      else res.end(JSON.stringify({
+        runId, state: 'running', startMode: 'opaque', fakeClips: true,
+        storyRunId: '11111111-1111-4111-8111-111111111111', storyId: 77,
+        hlsUrl: `fake://pickford-clips/${runId}`,
+      }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const path = join(root, 'handoff.json');
+    await writeFile(path, JSON.stringify({
+      startMode: 'opaque', environment: 'local', storyType: 'MINIMAX',
+      evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'private-installation',
+      services: { rendererBaseUrl: 'http://127.0.0.1:8195' },
+    }));
+    try {
+      const { stdout } = await exec(process.execPath, [cli, 'start', '--handoff', path], {
+        cwd: root, env: { ...process.env, PORT: String(server.address().port) },
+      });
+      expect(JSON.parse(stdout)).toMatchObject({ hlsUrl: `fake://pickford-clips/${runId}`, watchUrl: null });
+      expect(JSON.parse(await readFile(join(root, '.renderer/session.json'), 'utf8'))).toMatchObject({
+        hlsUrl: `fake://pickford-clips/${runId}`, watchUrl: null,
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('explicit fal preflight', () => {

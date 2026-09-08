@@ -70,8 +70,8 @@ try {
       validateHandoff({ ...handoff, services: endpoints }, hosted);
       const health = await api('/api/health', undefined, 'GET');
       const renderOptions = renderingOptions(handoff);
-      if (renderOptions.rendererConfig.model !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
-      if (!health.falKeyConfigured && !health.minimaxKeyConfigured) throw new Error('Configure MINIMAX_API_KEY or FAL_KEY in the worker environment before starting a story.');
+      if (!health.fakeClipsEnabled && renderOptions.rendererConfig.model !== 'auto' && !health.falKeyConfigured) throw new Error('The selected rendering mode requires FAL_KEY in the worker environment.');
+      if (!health.fakeClipsEnabled && !health.falKeyConfigured && !health.minimaxKeyConfigured) throw new Error('Configure MINIMAX_API_KEY or FAL_KEY in the worker environment before starting a story.');
       if (saved?.runId) {
         const previous = await api(`/api/external-renderer/runs/${saved.runId}`, undefined, 'GET').catch(error => {
           if (error.status === 404) return null;
@@ -124,7 +124,7 @@ try {
         if (run.state === 'failed') throw new Error('Renderer startup failed. Use npm run story -- status for diagnostics.');
       }
       if (!run.hlsUrl) throw new Error('Renderer did not initialize playout. Check story status.');
-      const watchUrl = watchUrlForStream(run.hlsUrl);
+      const watchUrl = run.fakeClips ? null : watchUrlForStream(run.hlsUrl);
       if (['failed', 'stopped'].includes(run.state)) throw new Error('Renderer startup failed. Inspect status and stop the story before retrying.');
       const identityFromRun = opaque ? { storyRunId: run.storyRunId ?? null, audienceJoinUrl: run.audienceJoinUrl ?? null, storyId: run.storyId ?? null } : {};
       writePrivate(resolve(stateDir, sessionFile), { ...recovery, ...identityFromRun, runId: run.runId, hlsUrl: run.hlsUrl, watchUrl });
