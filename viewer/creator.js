@@ -4,6 +4,7 @@ import {
   environmentLabel,
   falKeyLabel,
   playbackLabel,
+  playbackSupportHref,
   rendererLabel,
   runIdentityLines,
   shouldAutoRefresh,
@@ -18,6 +19,7 @@ const environment = document.querySelector('#creator-environment');
 const account = document.querySelector('#creator-account');
 const rendererState = document.querySelector('#creator-renderer');
 const playbackState = document.querySelector('#creator-playback');
+const playbackSupport = document.querySelector('#creator-playback-support');
 const identity = document.querySelector('#creator-identity');
 const signIn = document.querySelector('#creator-sign-in');
 const signOut = document.querySelector('#creator-sign-out');
@@ -63,6 +65,10 @@ function renderStatus() {
   setText(account, signedInLabel(status.auth));
   setText(rendererState, rendererLabel(status.credential));
   setText(playbackState, playbackLabel(status.playback));
+  const supportHref = playbackSupportHref(status.playback);
+  playbackSupport.hidden = !supportHref;
+  if (supportHref) playbackSupport.href = supportHref;
+  else playbackSupport.removeAttribute('href');
   setText(falState, falKeyLabel(status.falKey));
   document.querySelector('#setup').hidden = true;
   signIn.hidden = Boolean(status.auth?.signedIn);

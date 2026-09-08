@@ -33,15 +33,38 @@ const PLAYBACK_LABELS = {
 };
 
 export function playbackLabel(playback) {
-  // A backend refusal (a StoryBundle that turned out not to be playable) is more useful than the
-  // generic failure line, so it replaces it outright.
-  if (playback?.state === 'failed' && playback.error) return playback.error;
   const base = PLAYBACK_LABELS[playback?.state] ?? PLAYBACK_LABELS.idle;
   const eta = playback?.firstClipEtaSeconds;
   if (!['starting', 'preparing'].includes(playback?.state) || typeof eta !== 'number') return base;
   if (eta <= 0) return `${base} — any moment now`;
   const minutes = Math.ceil(eta / 60);
   return `${base} — first clip in about ${minutes === 1 ? 'a minute' : `${minutes} minutes`}`;
+}
+
+/** Keep backend diagnostics out of the page while making them easy to attach to an opt-in email. */
+export function playbackSupportHref(playback) {
+  if (playback?.state !== 'failed') return null;
+  const detail = typeof playback.error === 'string' && playback.error.trim()
+    ? playback.error.trim()
+    : 'No detailed error was provided.';
+  const context = [
+    ['Story run', playback.storyRunId],
+    ['Story', typeof playback.storyId === 'number' ? String(playback.storyId) : null],
+    ['Renderer run', playback.runId],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}: ${value}`);
+  const body = [
+    'Hi Pickford support,',
+    '',
+    'My StoryBundle stopped unexpectedly.',
+    '',
+    'Technical details:',
+    detail,
+    ...(context.length ? ['', ...context] : []),
+  ].join('\n');
+  const query = new URLSearchParams({ subject: 'StoryBundle playback problem', body });
+  return `mailto:help@pickford.ai?${query.toString()}`;
 }
 
 /** What the Play control does for one bundle. `disabled` covers preparing and blocked bundles. */

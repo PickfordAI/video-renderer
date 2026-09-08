@@ -21,7 +21,7 @@ export interface PlaybackStatus {
   hlsUrl: string | null;
   firstClipEtaSeconds: number | null;
   clipsRendered: number;
-  /** Why the run stopped, in the words the backend used. Shown in the picker. */
+  /** Bounded backend diagnostic used only to prefill an explicit support email action. */
   error: string | null;
 }
 
