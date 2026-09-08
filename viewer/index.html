@@ -71,6 +71,7 @@
   <main>
     <h1 class="eyebrow">Pickford · Story player</h1>
     <p id="status" role="status">Connecting to the story…</p>
+    <video id="video" controls playsinline preload="none" hidden></video>
     <section id="setup" hidden aria-labelledby="setup-title">
       <h2 id="setup-title">Your agent handles setup.</h2>
       <ul id="checks"></ul>
@@ -105,7 +106,6 @@
       <ul id="bundle-list"></ul>
       <p id="bundle-status" role="status" aria-live="polite"></p>
     </section>
-    <video id="video" controls playsinline preload="none" hidden></video>
     <section id="audience-chat" hidden aria-labelledby="audience-chat-title">
       <h2 id="audience-chat-title">Join the story</h2>
       <p>Send an audience suggestion to the story in progress.</p>

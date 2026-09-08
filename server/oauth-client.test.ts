@@ -152,14 +152,30 @@ describe('scope pairing', () => {
     expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'dev' })).toMatchObject({
       apiBaseUrl: 'https://api.dev.pickford.ai',
       webBaseUrl: 'https://dev.pickford.ai',
+      chatBaseUrl: 'https://chat.dev.pickford.ai',
       oauthResource: 'https://api.dev.pickford.ai/renderer',
       oauthScope: 'storykernel:renderer',
     });
     expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'prod' })).toMatchObject({
       apiBaseUrl: 'https://api.pickford.ai',
+      chatBaseUrl: 'https://chat.pickford.ai',
       oauthResource: 'https://api.pickford.ai/renderer',
       oauthScope: 'storykernel:renderer',
     });
+    expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'local' })).toMatchObject({
+      apiBaseUrl: 'http://127.0.0.1:8081',
+      webBaseUrl: 'http://127.0.0.1:5173',
+      chatBaseUrl: 'http://127.0.0.1:8080',
+      oauthResource: 'http://localhost:8090/renderer',
+      oauthScope: 'storykernel:renderer',
+    });
+  });
+
+  it('uses the configured chat backend for the public audience exchange', () => {
+    expect(pickfordEnvironment({
+      STORY_ENVIRONMENT: 'dev',
+      CHAT_BACKEND_URL: 'https://chat.preview.example/api',
+    })).toMatchObject({ chatBaseUrl: 'https://chat.preview.example/api' });
   });
 
   it('keeps an overridden resource paired with the right scope', () => {

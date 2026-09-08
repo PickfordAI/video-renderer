@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { creatorStatus, type CreatorStatus } from './creator-status.js';
-import type { ExternalRendererRunManager, ExternalRendererRunStatus } from './external-renderer.js';
+import { AUDIENCE_EXCHANGE_PATH, type ExternalRendererRunManager, type ExternalRendererRunStatus } from './external-renderer.js';
 import { clearFalKey, falKeyStatus, saveFalKey } from './fal-key.js';
 import { CALLBACK_PATH, PickfordAuth } from './pickford-auth.js';
 import { pickfordEnvironment, type PickfordEnvironment } from './pickford-environment.js';
@@ -197,6 +197,7 @@ export class CreatorApi {
     const credential = await this.ensureCredential();
     const run = this.runs.start({
       baseUrl: this.environment.webBaseUrl,
+      audienceExchangeUrl: `${this.environment.chatBaseUrl}${AUDIENCE_EXCHANGE_PATH}`,
       environment: this.environment.name,
       rendererId: credential.rendererId,
       credentialId: credential.credentialId,
