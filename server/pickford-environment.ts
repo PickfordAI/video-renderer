@@ -104,7 +104,12 @@ export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): Pickf
   const webBaseUrl = origin(env.PICKFORD_WEB_URL || defaults.webBaseUrl, 'PICKFORD_WEB_URL');
   const chatBaseUrl = origin(env.CHAT_BACKEND_URL || defaults.chatBaseUrl, 'CHAT_BACKEND_URL');
   // The renderer has its own resource (PIC-1739), separate from the hosted MCP's.
-  const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || `${apiBaseUrl}/renderer`, 'PICKFORD_OAUTH_RESOURCE');
+  // Local web-endpoints proxies discovery on :8081, but Identity is the canonical resource
+  // server and advertises :8090. Request that exact resource so RFC 9728 validation succeeds.
+  const defaultOauthResource = name === 'local' || name === 'test'
+    ? 'http://localhost:8090/renderer'
+    : `${apiBaseUrl}/renderer`;
+  const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || defaultOauthResource, 'PICKFORD_OAUTH_RESOURCE');
   const oauthScope = env.PICKFORD_OAUTH_SCOPE?.trim() || scopeForResource(oauthResource);
   return { name, apiBaseUrl, webBaseUrl, chatBaseUrl, oauthResource, oauthScope };
 }

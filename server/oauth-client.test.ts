@@ -162,6 +162,13 @@ describe('scope pairing', () => {
       oauthResource: 'https://api.pickford.ai/renderer',
       oauthScope: 'storykernel:renderer',
     });
+    expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'local' })).toMatchObject({
+      apiBaseUrl: 'http://127.0.0.1:8081',
+      webBaseUrl: 'http://127.0.0.1:5173',
+      chatBaseUrl: 'http://127.0.0.1:8080',
+      oauthResource: 'http://localhost:8090/renderer',
+      oauthScope: 'storykernel:renderer',
+    });
   });
 
   it('uses the configured chat backend for the public audience exchange', () => {
