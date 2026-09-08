@@ -2,6 +2,7 @@ import Hls from 'hls.js';
 import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
+import { startLivePlayback } from './playback.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
@@ -114,6 +115,16 @@ function showStream(raw) {
   video.hidden = false;
   setup.hidden = true;
   status.textContent = 'Preparing your first scene. This can take a few minutes.';
+  const startPlayback = async () => {
+    if (disposed || version !== generation) return;
+    const result = await startLivePlayback(video);
+    if (disposed || version !== generation) return;
+    status.textContent = result === 'playing-muted'
+      ? 'Now playing muted. Use the player controls to turn on sound.'
+      : result === 'playing'
+        ? 'Now playing'
+        : 'Your story is ready. Press play to watch.';
+  };
   const connect = async () => {
     if (disposed || version !== generation) return;
     try {
@@ -131,11 +142,15 @@ function showStream(raw) {
           clearTimeout(retry);
           retry = setTimeout(connect, 5000);
         });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { void startPlayback(); });
         hls.loadSource(streamUrl);
         hls.attachMedia(video);
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) video.src = streamUrl;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.addEventListener('loadedmetadata', () => { void startPlayback(); }, { once: true });
+        video.src = streamUrl;
+      }
       else throw new Error('This browser cannot play this video. Try another browser.');
-      status.textContent = 'Your story is ready. Press play to watch.';
+      status.textContent = 'Starting your story…';
     } catch (error) {
       if (disposed || version !== generation) return;
       const unsupported = error.message.includes('browser');
