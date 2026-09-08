@@ -139,13 +139,35 @@ describe('PickfordAuth', () => {
     expect(client.userId()).toBe('b4c9d1e2-0000-4000-8000-000000000001');
   });
 
-  it('stays signed in when the whoami refuses', async () => {
+  it('stays signed in when the whoami refuses, and keeps the reason as a notice', async () => {
     const client = auth(fakeIdentity({ identity: null }));
     const { state } = await client.beginSignIn(REDIRECT);
     const status = await client.completeSignIn({ state, code: 'code-1' });
     expect(status.signedIn).toBe(true);
     expect(status.email).toBeNull();
     expect(status.role).toBeNull();
+    expect(client.notice()).toMatch(/Could not read the signed-in Pickford account/);
+  });
+
+  it('says so immediately when the account lacks the creator role', async () => {
+    const identity = fakeIdentity();
+    const refusing = {
+      impl: async (url: string, init?: RequestInit) => (url === `${BFF}/bff/v1/session`
+        ? json({ detail: 'Creator or admin role required' }, 403)
+        : identity.impl(url, init)),
+    };
+    const client = auth(refusing as ReturnType<typeof fakeIdentity>);
+    const { state } = await client.beginSignIn(REDIRECT);
+    expect((await client.completeSignIn({ state, code: 'code-1' })).signedIn).toBe(true);
+    expect(client.notice()).toMatch(/does not have the creator role/);
+  });
+
+  it('drops the notice once signed out', async () => {
+    const client = auth(fakeIdentity({ identity: null }));
+    const { state } = await client.beginSignIn(REDIRECT);
+    await client.completeSignIn({ state, code: 'code-1' });
+    await client.signOut();
+    expect(client.notice()).toBeNull();
   });
 
   it('names the account from the BFF whoami even when Identity withholds the email', async () => {

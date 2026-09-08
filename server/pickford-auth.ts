@@ -121,6 +121,7 @@ export async function fetchPickfordIdentity(options: {
 export class PickfordAuth {
   private readonly pending = new Map<string, PendingSignIn>();
   private refreshing: Promise<StoredAuth> | null = null;
+  private identityNotice: string | null = null;
 
   constructor(private readonly options: {
     environment: PickfordEnvironment;
@@ -259,7 +260,7 @@ export class PickfordAuth {
     return auth;
   }
 
-  /** Best-effort: the email is a display convenience, never a gate on the rest of the flow. */
+  /** Best-effort: naming the account never gates the rest of the flow. */
   private async attachIdentity(auth: StoredAuth): Promise<void> {
     try {
       const identity = await fetchPickfordIdentity({
@@ -268,11 +269,18 @@ export class PickfordAuth {
         accessToken: auth.accessToken,
         fetchImpl: this.fetchImpl,
       });
+      this.identityNotice = null;
       writeStoredAuth({ ...auth, email: identity.email, userId: identity.userId, role: identity.role }, this.options.env);
-    } catch {
-      // A whoami failure must not undo a valid sign-in; the page shows the account as unnamed and
-      // the next real call reports the actual problem (for example a missing creator role).
+    } catch (error) {
+      // A whoami failure must not undo a valid sign-in. It is kept as a notice instead, so a
+      // missing creator role is visible right away rather than on the first StoryBundle call.
+      this.identityNotice = error instanceof Error ? error.message : null;
     }
+  }
+
+  /** A bounded, credential-free explanation of why the account could not be named, if any. */
+  notice(): string | null {
+    return this.signedIn() ? this.identityNotice : null;
   }
 
   /** The stored user id, when the whoami answered. Used to scope the fallback bundle listing. */
@@ -324,6 +332,7 @@ export class PickfordAuth {
   async signOut(): Promise<void> {
     const auth = readStoredAuth(this.options.env);
     this.pending.clear();
+    this.identityNotice = null;
     clearStoredAuth(this.options.env);
     if (!auth) return;
     try {

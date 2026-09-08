@@ -68,6 +68,8 @@ function renderStatus() {
   signIn.hidden = Boolean(status.auth?.signedIn);
   signOut.hidden = !status.auth?.signedIn;
   bundleSection.hidden = !status.auth?.signedIn;
+  // A sign-in problem the creator has to act on (a missing role) outranks a bundle-list caveat.
+  if (status.authNotice) setText(notice, status.authNotice);
   identity.replaceChildren(...runIdentityLines(status.playback).map(line => {
     const item = document.createElement('li');
     item.textContent = line;

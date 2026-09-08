@@ -126,7 +126,7 @@ export class CreatorApi {
     return this.runs.latest();
   }
 
-  status(includeCsrf: boolean): CreatorStatus & { bundleNotice: string | null } {
+  status(includeCsrf: boolean): CreatorStatus & { bundleNotice: string | null; authNotice: string | null } {
     return {
       ...creatorStatus({
         environment: this.environment.name,
@@ -140,6 +140,7 @@ export class CreatorApi {
         csrfToken: includeCsrf ? this.csrfToken : null,
       }),
       bundleNotice: this.bundleNotice,
+      authNotice: this.auth.notice(),
     };
   }
 
