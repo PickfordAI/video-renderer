@@ -7,7 +7,7 @@ export type RenderMode = typeof RENDER_MODES[number];
  * so these caps exist to catch typos rather than to size a run: the sweep harness measures the
  * real ceiling per provider and the README records the defaults that came out of it.
  */
-export const MAX_CONCURRENCY = 32;
+export const MAX_CONCURRENCY = 16;
 export const MAX_BUFFERED_SECONDS = 150;
 
 export type ContinuityStrategy = 'none' | 'last-frame-chain' | 'camera-anchors';

@@ -46,7 +46,7 @@ describe('render mode handoff', () => {
     expect(renderingOptions({ renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://example.com/scene.jpg' })).toMatchObject({ rendererConfig: { model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 2, maxBufferedSeconds: 30 } });
   });
   it('rejects incomplete models and unsafe reference settings before provisioning', () => {
-    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { generationConcurrency: 33 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
+    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { generationConcurrency: 17 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
       expect(() => validateHandoff({ ...valid(), ...change })).toThrow();
     }
   });

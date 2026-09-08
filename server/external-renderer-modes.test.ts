@@ -16,7 +16,7 @@ describe('explicit bridge generation modes', () => {
   it('validates budget limits and image requirements before starting a run', () => {
     const base = config('http://127.0.0.1:8193');
     expect(() => parseExternalRendererRunConfig({ ...base, renderMode: 'fal-turbo-i2v', initialImageUrl: undefined })).toThrow('initialImageUrl');
-    expect(() => parseExternalRendererRunConfig({ ...base, generationConcurrency: 33 })).toThrow('1 to 32');
+    expect(() => parseExternalRendererRunConfig({ ...base, generationConcurrency: 17 })).toThrow('1 to 16');
     expect(() => parseExternalRendererRunConfig({ ...base, maxBufferedSeconds: 151 })).toThrow('5 to 150');
     const parsed = parseExternalRendererRunConfig({ ...base, renderMode: 'fal-turbo-i2v', rendererConfig: { model: 'fal-max-ref2v', continuity: 'none', concurrency: 3, maxBufferedSeconds: 40 } });
     expect(parsed).toMatchObject({ renderMode: 'fal-max-ref2v', continuityStrategy: 'none', generationConcurrency: 3, maxBufferedSeconds: 40 });
