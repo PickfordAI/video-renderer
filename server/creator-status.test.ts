@@ -119,7 +119,7 @@ describe('creator status', () => {
       credential,
       falKey: { present: false, source: null },
       bundleAdapter: null,
-      run: run({ state: 'failed', failures: ['fal generation failed'] }),
+      run: run({ state: 'failed', failures: ['fal queue submission failed (403): TOP_UP_REQUIRED'] }),
       evdId: null, nowMs: START, csrfToken: null,
     });
     expect(status.credential.fenced).toBe(false);

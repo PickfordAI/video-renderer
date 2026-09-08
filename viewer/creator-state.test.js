@@ -7,6 +7,7 @@ import {
   falKeyLabel,
   homeStatusMessage,
   playbackLabel,
+  playbackSupportHref,
   rendererLabel,
   runIdentityLines,
   shouldAutoRefresh,
@@ -46,10 +47,28 @@ describe('labels', () => {
     expect(playbackLabel(undefined)).toBe('No StoryBundle playing');
   });
 
-  it('prefers a backend refusal over the generic failure line', () => {
+  it('keeps backend failure details out of the visible playback label', () => {
     expect(playbackLabel({ state: 'failed', error: 'Images are still generating for this StoryBundle.' }))
-      .toBe('Images are still generating for this StoryBundle.');
+      .toBe('This StoryBundle stopped unexpectedly');
     expect(playbackLabel({ state: 'failed', error: null })).toBe('This StoryBundle stopped unexpectedly');
+  });
+
+  it('puts detailed failure context only in an opt-in support email', () => {
+    const href = playbackSupportHref({
+      state: 'failed',
+      error: 'Story Orchestration rejected renderer-initiated start with HTTP 500',
+      storyRunId: 'story-run-1',
+      storyId: 1397,
+      runId: 'renderer-run-1',
+    });
+    const url = new URL(href);
+
+    expect(url.protocol).toBe('mailto:');
+    expect(url.pathname).toBe('help@pickford.ai');
+    expect(url.searchParams.get('subject')).toBe('StoryBundle playback problem');
+    expect(url.searchParams.get('body')).toContain('Story Orchestration rejected renderer-initiated start with HTTP 500');
+    expect(url.searchParams.get('body')).toContain('Story run: story-run-1');
+    expect(playbackSupportHref({ state: 'playing' })).toBeNull();
   });
 
   it('names the account by role when no email is available', () => {

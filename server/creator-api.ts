@@ -206,6 +206,9 @@ export class CreatorApi {
       // Renderer-initiated opaque start: Pickford allocates the story and the room from the bundle.
       startMode: 'opaque',
       evdId,
+      // Pressing Play means "start this as a new story." The authenticated backend may cancel only
+      // this renderer's prior exact assignment before admitting the fresh idempotency identity.
+      supersedeExistingStory: true,
       // The creator picker currently lists MiniMax StoryBundles. Select the reference-to-video
       // pipeline explicitly so playback uses its bounded concurrent scheduler and camera anchors;
       // `auto` is the legacy serial provider path and cannot build enough lookahead to avoid gaps.

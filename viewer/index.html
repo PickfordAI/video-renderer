@@ -47,6 +47,8 @@
     #creator-rows span { color: #ffba9f; text-align: right; }
     #creator-actions { display: flex; gap: 10px; flex-wrap: wrap; }
     #creator-sign-out { background: transparent; color: #ffc2ac; border: 1px solid #3c3d47; }
+    #creator-playback-support { display: inline-block; margin-top: 2px; padding: 10px 14px; border: 1px solid #ff987b; border-radius: 8px; color: #ffc2ac; text-decoration: none; }
+    #creator-playback-support:hover { background: #2b1d1c; }
     #creator-notice { min-height: 1.4em; margin: 12px 0 0; font-size: 14px; color: #d6d4d0; }
     #creator-identity { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; color: #8d9099; font-size: 13px; word-break: break-all; }
     #fal { margin-top: 20px; border-top: 1px solid #30313c; padding-top: 16px; }
@@ -86,6 +88,7 @@
           <li>Renderer<span id="creator-renderer">Not connected yet</span></li>
           <li>Playback<span id="creator-playback">No StoryBundle playing</span></li>
         </ul>
+        <a id="creator-playback-support" hidden>Email Pickford support</a>
         <div id="creator-actions">
           <button id="creator-sign-in" type="button">Sign in with Pickford</button>
           <button id="creator-sign-out" type="button" hidden>Sign out</button>

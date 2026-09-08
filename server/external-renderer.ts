@@ -50,6 +50,8 @@ interface ExternalRendererRunConfig {
   resolution: '480P' | '768P';
   clipDurationSeconds: number;
   resumeExistingStory: boolean;
+  /** Creator intent to replace this renderer's prior Story Run before admitting this one. */
+  supersedeExistingStory: boolean;
   renderMode: RenderMode;
   rendererConfig: RendererConfig;
   continuityStrategy: ContinuityStrategy;
@@ -448,6 +450,11 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const startMode = body.startMode ?? 'legacy';
   if (startMode !== 'legacy' && startMode !== 'opaque') throw new Error('startMode must be legacy or opaque');
   const opaque = startMode === 'opaque';
+  if (body.supersedeExistingStory !== undefined && typeof body.supersedeExistingStory !== 'boolean') {
+    throw new Error('supersedeExistingStory must be boolean');
+  }
+  const supersedeExistingStory = body.supersedeExistingStory === true;
+  if (supersedeExistingStory && !opaque) throw new Error('supersedeExistingStory requires opaque start mode');
   const evdId = opaque ? uuid(body.evdId ?? storyConfig.evd_id, 'evdId') : null;
   if (body.storyConfig !== undefined && !resumeExistingStory && !opaque) {
     uuid(storyConfig.evd_id, 'storyConfig.evd_id');
@@ -500,6 +507,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     resolution,
     clipDurationSeconds,
     resumeExistingStory,
+    supersedeExistingStory,
   };
 }
 
@@ -1863,6 +1871,7 @@ class ExternalRendererRun {
     return {
       evd_id: this.config.evdId,
       idempotency_key: `video-renderer:${this.config.rendererId}:${this.config.evdId}:${this.runId}`,
+      ...(this.config.supersedeExistingStory ? { supersede_existing: true } : {}),
     };
   }
 
