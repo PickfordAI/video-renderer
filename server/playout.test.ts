@@ -122,6 +122,10 @@ describe('H3 continuous playout', () => {
     expect(() => parsePlayoutClip({ ...clip, videoUrl: 'http://private/clip.mp4' })).toThrow('must use HTTPS');
     expect(parsePlayoutClip({ ...clip, videoUrl: 'http://127.0.0.1:9000/clip.mp4' }).videoUrl).toContain('127.0.0.1');
     expect(() => parsePlayoutClip({ ...clip, position: -1 })).toThrow('position');
+    expect(parsePlayoutClip({ ...clip, leadInSeconds: 2 })).toEqual({ ...clip, leadInSeconds: 2 });
+    expect(parsePlayoutClip({ ...clip, leadInSeconds: 0 })).toEqual(clip);
+    expect(() => parsePlayoutClip({ ...clip, leadInSeconds: -1 })).toThrow('leadInSeconds');
+    expect(() => parsePlayoutClip({ ...clip, leadInSeconds: 61 })).toThrow('leadInSeconds');
   });
 
   it('normalizes every clip onto one fixed format and cumulative timeline', () => {
@@ -351,7 +355,7 @@ describe('H3 continuous playout', () => {
 
     // First real clip: fed at the head of the timeline, nothing before it.
     await vi.waitFor(() => expect(session.clipBoundary(0)).not.toBeNull());
-    expect(session.clipBoundary(0)).toEqual({ position: 0, storyBlockId: 'beat-0', startSeconds: 0, endSeconds: 5, holdSecondsBefore: 0 });
+    expect(session.clipBoundary(0)).toEqual({ position: 0, storyBlockId: 'beat-0', startSeconds: 0, endSeconds: 5, holdSecondsBefore: 0, leadInSecondsBefore: 0 });
 
     // Let hold frames accumulate (each is paced over one real second), then feed the next clip:
     // its gap is exactly the hold seconds inserted.
@@ -363,6 +367,41 @@ describe('H3 continuous playout', () => {
     expect(second.startSeconds).toBe(5 + second.holdSecondsBefore);
     expect(second.endSeconds).toBe(second.startSeconds + 5);
     expect(session.status().holdSeconds).toBeGreaterThanOrEqual(second.holdSecondsBefore);
+    await session.stop();
+  });
+
+  it('feeds a commanded lead-in as hold frames before the clip and reports it apart from stall holds', async () => {
+    const spawnImpl = vi.fn((_executable: string, args: string[]) => {
+      if (!args.at(-1)?.startsWith('rtsp://')) {
+        writeFileSync(args.at(-1)!, new Uint8Array([1, 2, 3]));
+        return successfulSpawn();
+      }
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      // The encoder never reports progress, so runway stays ahead and no stall hold is inserted:
+      // every hold second in the timeline is the commanded lead-in.
+      child.stdin.resume();
+      return child;
+    });
+    const session = new PlayoutSession({
+      spawnImpl: spawnImpl as never,
+      fetchImpl: successfulFetch as never,
+      startupBufferClips: 2,
+      audienceDelaySeconds: 0,
+      holdPollMs: 1,
+    }, '00000000-0000-4000-8000-000000000008');
+    await session.initialize();
+    // Nothing to hold ahead of the first clip, so its lead-in is dropped rather than shown.
+    session.enqueue({ ...clip, leadInSeconds: 3 });
+    session.enqueue({ ...clip, position: 1, storyBlockId: 'beat-1', videoUrl: 'https://video.example/beat-1.mp4', leadInSeconds: 2 });
+    await vi.waitFor(() => expect(session.clipBoundary(1)).not.toBeNull(), { timeout: 8_000 });
+    expect(session.clipBoundary(0)).toEqual({ position: 0, storyBlockId: 'beat-0', startSeconds: 0, endSeconds: 5, holdSecondsBefore: 0, leadInSecondsBefore: 0 });
+    expect(session.clipBoundary(1)).toEqual({ position: 1, storyBlockId: 'beat-1', startSeconds: 7, endSeconds: 12, holdSecondsBefore: 0, leadInSecondsBefore: 2 });
+    expect(session.status().leadInSeconds).toBe(2);
+    expect(session.status().holdSeconds).toBe(0);
     await session.stop();
   });
 

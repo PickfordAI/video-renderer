@@ -375,7 +375,7 @@ describe('groupRenderMetrics', () => {
     shotId: 's', groupId: 'g', storyBlockId: 'b', sequence: 1, position: 0, durationSeconds: 6,
     submittedAt: '2026-09-07T23:00:10.000Z', readyAt: '2026-09-07T23:00:19.000Z', generationMs: 9_000, playedAt: '2026-09-07T23:00:40.000Z',
     providerRequestId: 'r', continuity: 'camera-anchors', anchor: 'reuse', anchorKey: null,
-    streamStartSeconds: 30, streamEndSeconds: 36, gapBeforeSeconds: 2, gapKind: 'line',
+    streamStartSeconds: 30, streamEndSeconds: 36, gapBeforeSeconds: 2, leadInBeforeSeconds: 2, gapKind: 'line',
     falSubmitSeconds: 0.2, falQueueSeconds: 8.1, falTotalSeconds: 8.4, falMaxQueuePosition: 0,
     ...over,
   });
@@ -383,12 +383,13 @@ describe('groupRenderMetrics', () => {
   it('sums provider timings across a split line and keeps the outer submit/ready/played bounds', () => {
     const metrics = groupRenderMetrics([
       record({}),
-      record({ position: 1, submittedAt: '2026-09-07T23:00:12.000Z', readyAt: '2026-09-07T23:00:25.000Z', playedAt: '2026-09-07T23:00:46.000Z', generationMs: 13_000, falSubmitSeconds: 0.4, falQueueSeconds: 12.2, falTotalSeconds: 12.7, gapBeforeSeconds: 0 }),
+      record({ position: 1, submittedAt: '2026-09-07T23:00:12.000Z', readyAt: '2026-09-07T23:00:25.000Z', playedAt: '2026-09-07T23:00:46.000Z', generationMs: 13_000, falSubmitSeconds: 0.4, falQueueSeconds: 12.2, falTotalSeconds: 12.7, gapBeforeSeconds: 0, leadInBeforeSeconds: 0 }),
     ]);
     expect(metrics).toEqual({
       provider: 'fal', clips: 2,
       submitted_at: '2026-09-07T23:00:10.000Z', ready_at: '2026-09-07T23:00:25.000Z', played_at: '2026-09-07T23:00:46.000Z',
       generation_ms: 22_000, fal_submit_seconds: 0.6, fal_queue_seconds: 20.3, fal_total_seconds: 21.1, gap_before_seconds: 2,
+      lead_in_seconds: 2,
     });
   });
 

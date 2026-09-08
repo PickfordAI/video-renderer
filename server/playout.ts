@@ -11,7 +11,13 @@ export interface PlayoutClipInput {
   storyBlockId: string;
   videoUrl: string;
   durationSeconds: number;
+  /** Kernel-commanded pause (a timed control such as `fade` or `delay`) the audience must see
+   *  before this clip starts. Fed as hold frames on the timeline, so it is never a stall. */
+  leadInSeconds?: number;
 }
+
+/** Longest commanded pause a single clip may carry; longer ones are a DSS authoring error. */
+export const MAX_LEAD_IN_SECONDS = 60;
 
 export interface PlayoutStatus {
   sessionId: string;
@@ -22,8 +28,12 @@ export interface PlayoutStatus {
   currentPosition: number | null;
   playedThroughPosition: number;
   outputSeconds: number;
-  /** Total hold-frame seconds fed so far: dead air the audience saw between real clips. */
+  /** Output-timeline second the audience is watching now: encoder progress minus relay delay. */
+  audienceSeconds: number;
+  /** Total stall hold-frame seconds fed so far: dead air the audience saw between real clips. */
   holdSeconds: number;
+  /** Total kernel-commanded lead-in seconds fed so far; deliberate pauses, not dead air. */
+  leadInSeconds: number;
   error: string | null;
   /** Absolute media directory, reported only while opt-in retention keeps it after the run. */
   mediaDir: string | null;
@@ -37,8 +47,10 @@ export interface PlayoutClipBoundary {
   /** Output-timeline second at which this clip's first frame was fed to the publisher. */
   startSeconds: number;
   endSeconds: number;
-  /** Hold-frame seconds fed between the previous real clip's end and this clip's start. */
+  /** Stall hold-frame seconds fed between the previous real clip's end and this clip's start. */
   holdSecondsBefore: number;
+  /** Kernel-commanded lead-in seconds fed before this clip, on top of any stall hold. */
+  leadInSecondsBefore: number;
 }
 
 interface NormalizedClip extends PlayoutClipInput {
@@ -50,6 +62,7 @@ interface PublishedBoundary extends PlayoutClipInput {
   startSeconds: number;
   endSeconds: number;
   holdSecondsBefore: number;
+  leadInSecondsBefore: number;
 }
 
 interface PlayoutOptions {
@@ -113,7 +126,15 @@ function requiredClip(value: unknown): PlayoutClipInput {
   if (typeof durationSeconds !== 'number' || durationSeconds < 5 || durationSeconds > 15) {
     throw new Error('clip durationSeconds must be from 5 to 15');
   }
-  return { position: position as number, storyBlockId, videoUrl, durationSeconds };
+  const leadInSeconds = body.leadInSeconds;
+  if (leadInSeconds !== undefined) {
+    if (typeof leadInSeconds !== 'number' || !Number.isFinite(leadInSeconds) || leadInSeconds < 0 || leadInSeconds > MAX_LEAD_IN_SECONDS) {
+      throw new Error(`clip leadInSeconds must be from 0 to ${MAX_LEAD_IN_SECONDS}`);
+    }
+  }
+  const clip: PlayoutClipInput = { position: position as number, storyBlockId, videoUrl, durationSeconds };
+  if (leadInSeconds) clip.leadInSeconds = leadInSeconds;
+  return clip;
 }
 
 export function parsePlayoutClip(value: unknown): PlayoutClipInput {
@@ -329,6 +350,7 @@ export class PlayoutSession {
   private fedSeconds = 0;
   private holdSeconds = 0;
   private holdSecondsSinceClip = 0;
+  private leadInSeconds = 0;
   private outputSeconds = 0;
   private state: PlayoutStatus['state'] = 'buffering';
   private error: string | null = null;
@@ -415,7 +437,9 @@ export class PlayoutSession {
       currentPosition: current?.position ?? null,
       playedThroughPosition,
       outputSeconds: Math.round(this.outputSeconds * 100) / 100,
+      audienceSeconds: Math.round(audienceSeconds * 100) / 100,
       holdSeconds: this.holdSeconds,
+      leadInSeconds: this.leadInSeconds,
       error: this.error,
       mediaDir: this.keepMedia ? this.tempRoot : null,
       finalMp4: this.finalMp4,
@@ -432,6 +456,7 @@ export class PlayoutSession {
       startSeconds: boundary.startSeconds,
       endSeconds: boundary.endSeconds,
       holdSecondsBefore: boundary.holdSecondsBefore,
+      leadInSecondsBefore: boundary.leadInSecondsBefore,
     };
   }
 
@@ -552,11 +577,32 @@ export class PlayoutSession {
           await this.waitForFeed();
           continue;
         }
+        // A commanded pause holds the previous clip's last frame for its whole duration before
+        // this clip starts. Whole seconds only: hold frames are one-second units. Nothing to hold
+        // ahead of the very first clip, so a lead-in there is dropped rather than shown as black.
+        let leadInSecondsBefore = 0;
+        const leadIn = Math.round(clip.leadInSeconds ?? 0);
+        if (leadIn > 0 && this.activeHoldFilePath) {
+          for (let held = 0; held < leadIn && !this.stopped && this.publisher === publisher; held += HOLD_CLIP_SECONDS) {
+            await this.appendAtTimelineOffset(
+              this.activeHoldFilePath,
+              join(this.tempRoot, 'active-hold.feed.ts'),
+              this.fedSeconds,
+              publisher.stdin,
+            );
+            this.fedSeconds += HOLD_CLIP_SECONDS;
+            this.leadInSeconds += HOLD_CLIP_SECONDS;
+            leadInSecondsBefore += HOLD_CLIP_SECONDS;
+          }
+          if (this.stopped || this.publisher !== publisher) break;
+        }
         const feedFilePath = join(this.tempRoot, `${String(clip.position).padStart(6, '0')}.feed.ts`);
         const startSeconds = this.fedSeconds;
         await this.appendAtTimelineOffset(clip.filePath, feedFilePath, this.fedSeconds, publisher.stdin);
         this.fedSeconds += clip.durationSeconds;
-        this.boundaries.push({ ...clip, startSeconds, endSeconds: this.fedSeconds, holdSecondsBefore: this.holdSecondsSinceClip });
+        this.boundaries.push({
+          ...clip, startSeconds, endSeconds: this.fedSeconds, holdSecondsBefore: this.holdSecondsSinceClip, leadInSecondsBefore,
+        });
         this.holdSecondsSinceClip = 0;
         const previousHoldFilePath = this.activeHoldFilePath;
         this.activeHoldFilePath = clip.holdFilePath;

@@ -85,8 +85,10 @@ export interface RendererClipRecord {
   /** Output-timeline placement once the playout has fed this clip; null before that. */
   streamStartSeconds: number | null;
   streamEndSeconds: number | null;
-  /** Hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
+  /** Stall hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
   gapBeforeSeconds: number | null;
+  /** Kernel-commanded pause (timed control such as `fade`) fed before this clip; deliberate, not a gap. */
+  leadInBeforeSeconds: number | null;
   /** fal-side timing: how long the submit call took to return a request id, seconds from that
    *  acknowledgement to completion, and the deepest queue position reported while waiting. */
   falSubmitSeconds: number | null;
@@ -130,6 +132,7 @@ export interface GroupRenderMetrics {
   fal_queue_seconds: number | null;
   fal_total_seconds: number | null;
   gap_before_seconds: number | null;
+  lead_in_seconds: number | null;
 }
 
 export function groupRenderMetrics(records: readonly RendererClipRecord[], provider: GroupRenderMetrics['provider'] = 'fal'): GroupRenderMetrics | null {
@@ -151,6 +154,7 @@ export function groupRenderMetrics(records: readonly RendererClipRecord[], provi
     fal_queue_seconds: sum(records.map(r => r.falQueueSeconds)),
     fal_total_seconds: sum(records.map(r => r.falTotalSeconds)),
     gap_before_seconds: records[0]?.gapBeforeSeconds ?? null,
+    lead_in_seconds: records[0]?.leadInBeforeSeconds ?? null,
   };
 }
 
@@ -934,6 +938,8 @@ class ExternalRendererRun {
   private playout: PlayoutSession | null = null;
   /** The most recent clip whose output-timeline placement is known; decides whether a gap is line- or block-level. */
   private lastPlacedClip: { storyBlockId: string; position: number } | null = null;
+  /** Timed-control seconds owed to the audience before the next clip that reaches the playout. */
+  private pendingLeadInSeconds = 0;
   private stopped = false;
   private ending = false;
   private closing: Promise<void> | null = null;
@@ -1109,10 +1115,17 @@ class ExternalRendererRun {
       const current = this.playout?.status();
       if (current?.state === 'error') throw new Error(current.error ?? 'playout failed');
       if (current) {
-        const started = typeof current.currentPosition === 'number'
-          ? current.currentPosition >= position
-          : current.playedThroughPosition >= position - 1;
-        if (started || current.playedThroughPosition >= position) return;
+        if (current.playedThroughPosition >= position) return;
+        const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
+        const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(position) : null;
+        if (typeof current.audienceSeconds === 'number') {
+          // Exact: the clip has been fed and the audience clock has reached its first frame. Any
+          // stall or commanded lead-in ahead of it is still "not started", so the kernel's
+          // `playing` stamp (and the dashboard's inter-line gap) measure the real dead air.
+          if (boundary && current.audienceSeconds + 0.05 >= boundary.startSeconds) return;
+        } else if (typeof current.currentPosition === 'number' ? current.currentPosition >= position : current.playedThroughPosition >= position - 1) {
+          return;
+        }
       }
       await waitWithAbort(250, this.abortController.signal);
     }
@@ -1185,6 +1198,7 @@ class ExternalRendererRun {
       streamStartSeconds: null,
       streamEndSeconds: null,
       gapBeforeSeconds: null,
+      leadInBeforeSeconds: null,
       gapKind: null,
       falSubmitSeconds: null,
       falQueueSeconds: null,
@@ -1212,6 +1226,7 @@ class ExternalRendererRun {
     record.streamStartSeconds = boundary.startSeconds;
     record.streamEndSeconds = boundary.endSeconds;
     record.gapBeforeSeconds = boundary.holdSecondsBefore;
+    record.leadInBeforeSeconds = boundary.leadInSecondsBefore ?? 0;
     const previous = this.lastPlacedClip;
     record.gapKind = previous === null ? 'start' : previous.storyBlockId === record.storyBlockId ? 'line' : 'block';
     this.lastPlacedClip = { storyBlockId: record.storyBlockId, position: record.position };
@@ -1287,17 +1302,24 @@ class ExternalRendererRun {
   }
 
   private async enqueuePlannedFrame({ frame, groups }: PreparedFrame): Promise<void> {
-    for (const { plan, shots, completed } of groups) {
+    for (const { plan, shots } of groups) {
       for (const { shot, job, position, enqueued } of shots) {
         const generated = await job.result;
         this.assertCurrentAssignment(frame);
-        this.playout!.enqueue({ position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds });
+        // A timed control that preceded this shot is owed to the audience as a pause; the playout
+        // holds the previous clip's last frame for it. Handing the clip over now, instead of after
+        // that pause has played, keeps normalization and the startup buffer ahead of playback.
+        const leadInSeconds = this.pendingLeadInSeconds;
+        this.pendingLeadInSeconds = 0;
+        this.playout!.enqueue({
+          position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds,
+          ...(leadInSeconds > 0 ? { leadInSeconds } : {}),
+        });
         this.status.clipsRendered += 1;
         enqueued.resolve();
       }
-      // A timed control follows its group's video and precedes the next group.
-      // Ordinary cuts can prefeed normalization without advancing any kernel ACK.
-      if (plan.delaySeconds > 0) await abortable(completed.promise, this.abortController.signal);
+      // A timed control follows its group's video and precedes the next group's clip.
+      if (plan.delaySeconds > 0) this.pendingLeadInSeconds += plan.delaySeconds;
     }
   }
 

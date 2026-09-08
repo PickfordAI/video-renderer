@@ -64,9 +64,12 @@ external subject; it is a pseudonym, not authentication. Possession of the watch
 participation for the active story.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
-hold frames while generation catches up. MediaMTX exposes fMP4 HLS internally. FFmpeg progress
-and the configured audience delay estimate playback completion; acknowledgements are not proof
-that every individual viewer has watched the clip.
+hold frames while generation catches up. A kernel-commanded pause (a timed control such as `fade`
+or `delay`) travels with the next clip as `leadInSeconds` and is fed as hold frames on the timeline,
+so clips keep normalizing ahead of playback; each clip boundary reports that lead-in separately from
+stall holds, and only stall holds count as playback gaps. MediaMTX exposes fMP4 HLS internally.
+FFmpeg progress and the configured audience delay estimate playback completion; acknowledgements
+are not proof that every individual viewer has watched the clip.
 
 `server/media.ts` only proxies HLS files belonging to a live in-memory playout session. The UUID
 in a stream URL is a capability, not a user login. On stop/restart the gateway no longer serves
