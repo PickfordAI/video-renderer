@@ -598,11 +598,22 @@ export class PlayoutSession {
         }
         const feedFilePath = join(this.tempRoot, `${String(clip.position).padStart(6, '0')}.feed.ts`);
         const startSeconds = this.fedSeconds;
-        await this.appendAtTimelineOffset(clip.filePath, feedFilePath, this.fedSeconds, publisher.stdin);
-        this.fedSeconds += clip.durationSeconds;
-        this.boundaries.push({
-          ...clip, startSeconds, endSeconds: this.fedSeconds, holdSecondsBefore: this.holdSecondsSinceClip, leadInSecondsBefore,
-        });
+        // Register the placement before writing: the publisher reads its stdin in real time, so a
+        // clip's bytes finish draining only shortly before it ends, and a boundary recorded then
+        // would make "the audience has reached this clip" observable several seconds late.
+        const boundary: PublishedBoundary = {
+          ...clip, startSeconds, endSeconds: startSeconds + clip.durationSeconds, holdSecondsBefore: this.holdSecondsSinceClip, leadInSecondsBefore,
+        };
+        this.boundaries.push(boundary);
+        try {
+          await this.appendAtTimelineOffset(clip.filePath, feedFilePath, this.fedSeconds, publisher.stdin);
+        } catch (cause) {
+          // A publisher restart re-feeds this clip from the start; drop the placement it did not keep.
+          const index = this.boundaries.lastIndexOf(boundary);
+          if (index >= 0) this.boundaries.splice(index, 1);
+          throw cause;
+        }
+        this.fedSeconds = boundary.endSeconds;
         this.holdSecondsSinceClip = 0;
         const previousHoldFilePath = this.activeHoldFilePath;
         this.activeHoldFilePath = clip.holdFilePath;

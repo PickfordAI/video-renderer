@@ -370,6 +370,39 @@ describe('H3 continuous playout', () => {
     await session.stop();
   });
 
+  it('registers a clip placement as soon as feeding starts, before the publisher has drained its bytes', async () => {
+    let publisherStdin: PassThrough | null = null;
+    const spawnImpl = vi.fn((_executable: string, args: string[]) => {
+      if (!args.at(-1)?.startsWith('rtsp://')) {
+        writeFileSync(args.at(-1)!, new Uint8Array([1, 2, 3]));
+        return successfulSpawn();
+      }
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> };
+      // A one-byte buffer with no reader: like the real-time publisher, the write only completes
+      // once the bytes are consumed, so feeding stays blocked until the test releases it.
+      child.stdin = new PassThrough({ highWaterMark: 1 });
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      publisherStdin = child.stdin;
+      return child;
+    });
+    const session = new PlayoutSession({
+      spawnImpl: spawnImpl as never,
+      fetchImpl: successfulFetch as never,
+      startupBufferClips: 1,
+      audienceDelaySeconds: 0,
+    }, '00000000-0000-4000-8000-000000000009');
+    await session.initialize();
+    session.enqueue(clip);
+    await vi.waitFor(() => expect(session.clipBoundary(0)).toEqual({ position: 0, storyBlockId: 'beat-0', startSeconds: 0, endSeconds: 5, holdSecondsBefore: 0, leadInSecondsBefore: 0 }));
+    // The clip's bytes are still waiting in the publisher's pipe: the placement did not wait for them.
+    expect(publisherStdin!.readableLength).toBeGreaterThan(0);
+    expect(session.status().playedThroughPosition).toBe(-1);
+    publisherStdin!.resume();
+    await session.stop();
+  });
+
   it('feeds a commanded lead-in as hold frames before the clip and reports it apart from stall holds', async () => {
     const spawnImpl = vi.fn((_executable: string, args: string[]) => {
       if (!args.at(-1)?.startsWith('rtsp://')) {
