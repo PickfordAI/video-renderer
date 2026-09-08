@@ -45,7 +45,8 @@ export function onboardingStatus(env = process.env) {
   } catch { missing.push('storyAccess'); }
   const needsFal = handoff ? handoffRendererConfig(handoff).model !== 'auto' : false;
   const hasFal = Boolean(env.FAL_KEY || env.FAL_API_KEY);
-  if (needsFal ? !hasFal : !(hasFal || env.MINIMAX_API_KEY)) missing.unshift('videoAccount');
+  const fakeClips = env.PICKFORD_FAKE_CLIPS === '1';
+  if (!fakeClips && (needsFal ? !hasFal : !(hasFal || env.MINIMAX_API_KEY))) missing.unshift('videoAccount');
   try {
     const endpoints = { ...services(), ...handoff?.services };
     if (!endpoints.rendererBaseUrl || (handoff?.startMode !== 'opaque' && !endpoints.narrativeEngineUrl)) missing.push('storyConnection');

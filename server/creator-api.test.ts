@@ -17,6 +17,7 @@ function run(): ExternalRendererRunStatus {
     state: 'connecting',
     rendererId: RENDERER_ID,
     rendererVersion: 'h3.opensource.v1.1',
+    fakeClips: false,
     startMode: 'opaque',
     storyRunId: null,
     audienceJoinUrl: null,

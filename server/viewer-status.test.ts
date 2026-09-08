@@ -19,4 +19,8 @@ describe('local viewer status', () => {
     const run = { state: 'running', hlsUrl: 'http://localhost:4174/hls/example/index.m3u8', clips: [{ playedAt: null }] } as unknown as ExternalRendererRunStatus;
     expect(viewerStatus({ ready: true, missing: [] }, run).story?.hlsUrl).toBeNull();
   });
+  it('never presents synthetic clips as playable media', () => {
+    const run = { state: 'running', fakeClips: true, hlsUrl: 'fake://pickford-clips/example', clips: [{ playedAt: '2026-09-07T13:08:34Z' }] } as unknown as ExternalRendererRunStatus;
+    expect(viewerStatus({ ready: true, missing: [] }, run).story?.hlsUrl).toBeNull();
+  });
 });

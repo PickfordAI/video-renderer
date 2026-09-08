@@ -38,6 +38,21 @@ describe('agent onboarding readiness', () => {
       expect(JSON.parse((await status()).stdout).ready).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it('treats explicit fake clips as the local no-provider smoke path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'onboarding-fake-clips-'));
+    const handoff = join(root, 'private.json');
+    await writeFile(handoff, JSON.stringify({ ...valid, environment: 'local' }));
+    const env = {
+      ...process.env,
+      STORY_HANDOFF_PATH: handoff,
+      PICKFORD_FAKE_CLIPS: '1',
+      FAL_KEY: '', FAL_API_KEY: '', MINIMAX_API_KEY: '',
+    };
+    try {
+      const result = await exec(process.execPath, ['--input-type=module', '-e', `import { onboardingStatus } from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify(onboardingStatus()));`], { cwd: root, env });
+      expect(JSON.parse(result.stdout)).toEqual({ ready: true, missing: [] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });
 
 describe('environment generation handoff', () => {

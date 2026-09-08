@@ -175,6 +175,24 @@ Never scrape arbitrary container environments, databases, or another user's brow
 
 ## Advanced: agent-managed local workflow (legacy)
 
+### Fast protocol smoke without video generation
+
+For a local-only bridge/lifecycle smoke test, set `PICKFORD_FAKE_CLIPS=1` on the worker. This keeps
+the real renderer login, WebSocket, opaque start, DSS parsing, progress/completion events, verdicts,
+story lifecycle, and audience-message path, but replaces provider calls and FFmpeg/HLS playout with
+immediate synthetic clip completion. Run status carries `fakeClips: true` and a `fake://` HLS
+sentinel; it is protocol evidence, never playable-media evidence. The mode permits the local
+`local`, `test`, or `dev` stack labels only when the Renderer Platform URL is loopback, and refuses
+remote URLs.
+
+To exercise recovery, set `PICKFORD_FAKE_CLIPS_FAIL_ONCE_AFTER=<N>` with the fake mode. The first
+run waits for the N completed clips' renderer verdicts, fails, then disarms the injection for that worker.
+Use `npm run story -- stop` to clean up the failed kernel run before starting the second run. Stop
+the second run after at least one synthetic clip and its renderer events are acknowledged when the
+goal is only to prove restartability; a control-only first DSS acknowledgement is not clip proof.
+Do not wait for the full episode. Neither setting belongs in hosted or shared dev, edge, staging,
+or prod configuration.
+
 1. Clone the repository. Select Node 22+ and run `npm ci`.
 2. Obtain `MINIMAX_API_KEY` (configured direct adapter) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
    environment or `.env` with mode `0600`. Never use a `VITE_` prefix for secrets.
@@ -226,6 +244,8 @@ The agent, never the browser user, supplies these values in its process environm
 | Variable | Handoff field / source |
 |---|---|
 | `MINIMAX_API_KEY`, `FAL_KEY` | Provider credentials; explicit fal models require FAL_KEY |
+| `PICKFORD_FAKE_CLIPS` | Local loopback smoke only: `1` bypasses provider and media rendering |
+| `PICKFORD_FAKE_CLIPS_FAIL_ONCE_AFTER` | With fake clips, fail the first run after N synthetic clips, then disarm |
 | `STORY_HANDOFF_PATH` | Private onboarding handoff path; recommended alternative to individual variables |
 | `STORY_EVD_ID` | `evdId` |
 | `STORY_SETUP_TOKEN` | `setupToken`, required for stop even with a pre-provisioned story |
