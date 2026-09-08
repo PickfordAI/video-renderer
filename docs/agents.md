@@ -110,7 +110,7 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `storyType` | Use `MINIMAX` for a MiniMax EVD; `CREATOR` (legacy default) and `WHISPERS` remain supported |
 | `storyConfig` | Episode configuration from kernel onboarding; EVD and story-channel IDs are pinned by the CLI |
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
-| `rendererVersion` | Optional four-component version; default `h3.opensource.v1.1`. The platform pins one immutable asset manifest per renderer and version and closes the bridge with 4400 on a mismatch, so bump it whenever the provider, model, or continuity changes. Concurrency and buffering are not part of the manifest |
+| `rendererVersion` | Optional four-component version; default `h3.opensource.v1.2`. The platform pins one immutable asset manifest per renderer and version and closes the bridge with 4400 on a mismatch, so bump it whenever the provider, model, or continuity changes. Concurrency and buffering are not part of the manifest |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
 | `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–16), and `maxBufferedSeconds` (5–150); see README generation choices |
 | `initialImageUrl` | Authorized HTTPS starting frame, required for Turbo i2v |
