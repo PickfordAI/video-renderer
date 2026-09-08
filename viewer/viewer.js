@@ -1,5 +1,7 @@
 import Hls from 'hls.js';
 import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
+import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
+import { homeStatusMessage } from './creator-state.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
@@ -178,6 +180,11 @@ async function followLocalStory() {
       if (currentStream) clearStream();
       setup.hidden = true;
       status.textContent = 'Preparing your first scene. This can take a few minutes.';
+    } else if (creatorPanelVisible()) {
+      // The creator signs in and picks a StoryBundle here; the agent-setup checklist is retired.
+      if (currentStream) clearStream();
+      setup.hidden = true;
+      status.textContent = homeStatusMessage(creatorStatusSnapshot());
     } else {
       if (currentStream) clearStream();
       showSetup(value);
@@ -195,5 +202,8 @@ const raw = location.hash.slice(1) || import.meta.env.VITE_STREAM_URL;
 if (raw) {
   try { showStream(location.hash ? decodeURIComponent(raw) : raw); }
   catch { status.textContent = 'This watch link is invalid. Ask your agent for a new link.'; }
-} else void followLocalStory();
+} else {
+  startCreatorPanel();
+  void followLocalStory();
+}
 void updateAudienceChat();

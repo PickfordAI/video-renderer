@@ -110,6 +110,65 @@ default), it additionally serves the allowlisted `GET /api/viewer-status` payloa
 the active local story after real clip playout begins. Hosted listeners bind externally and retain
 the capability-link-only root. Worker and viewer ship together on the chosen host.
 
+### Creator surface (loopback local page only)
+
+When the viewer listener is bound to loopback, it also serves the creator surface that lets the
+signed-in creator drive the renderer without an agent. Every route requires a same-origin local
+page (`Host`, `Sec-Fetch-Site: same-origin`, no forwarding headers); mutations additionally require
+this process's ephemeral CSRF token. It is handled before the permissive media CORS header is
+applied, so nothing here is readable cross-origin.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/creator/status` | Sign-in, renderer-credential, fal-key and playback status, plus the CSRF token. Never a token, secret, or key |
+| `POST /api/creator/sign-in` | Discover Pickford's OAuth metadata, register dynamically if needed, return an authorization URL |
+| `GET /auth/pickford/callback` | The loopback redirect. Authenticated by the PKCE `state`, since it is a cross-site top-level navigation by design |
+| `POST /api/creator/sign-out` | Revoke the refresh token and clear `.renderer/auth.json` |
+| `GET /api/creator/story-bundles` | The creator's StoryBundles with `ready`/`preparing`/`blocked` state |
+| `POST /api/creator/play` | Mint or rotate the renderer credential if needed, then start an opaque run from one StoryBundle |
+| `POST /api/creator/stop` | Stop the active run |
+| `POST`/`DELETE /api/creator/fal-key` | Store or clear the creator's fal key in `.renderer/fal.json` (0600). Presence only is ever reported |
+
+The worker is a public OAuth 2.1 client: RFC 9728 resource-metadata discovery, RFC 8414
+authorization-server discovery, RFC 7591 dynamic registration with `token_endpoint_auth_method:
+none`, authorization code + PKCE S256, RFC 8707 resource indicators, and refresh-token rotation.
+Tokens live in `.renderer/auth.json` (0600).
+
+The resource is `https://api.<env>.pickford.ai/renderer` and the scope is `storykernel:renderer`.
+Identity treats resource and scope as a fixed pair and answers `invalid_scope` for any other
+combination, so `scopeForResource` derives one from the other and the dynamic-client cache is keyed
+by scope as well as issuer and redirect URI — a changed pairing re-registers rather than reusing a
+client that cannot authorize. Discovery rejects any metadata document that declares a resource
+other than the one requested: an origin can serve several protected resources (Pickford's
+bare-origin document describes the hosted MCP), and adopting the wrong one would bind the
+renderer's tokens to the wrong audience. When a resource's metadata advertises exactly one scope and it is not
+the derived one, the advertised value wins, so a renamed scope needs no renderer release.
+
+Access tokens last 12 hours and the grant 90 days. Refresh tokens are single-use and rotating: a
+replay revokes the grant. `PickfordAuth.accessToken` therefore serializes concurrent demands into a
+single refresh, attempts it exactly once per stored token, and on rejection discards the stored
+sign-in instead of retrying.
+
+`POST /bff/v1/session` doubles as the whoami for a bearer client: it answers
+`{user_id, role, csrf_token: null}` and sets no cookie. The account email is a separate best-effort
+read from Identity's `/auth/get_user`; without it the page names the account by role.
+
+Two adapters remain for each backend call, with the bearer path primary. Credential minting uses
+`POST /bff/v1/developer/renderers` with the OAuth bearer; the `browser-session` adapter
+(`POST /bff/v1/session` for a cookie + CSRF token, then replay) is dormant behind it for an older
+BFF and is only reached on a 401 — a 403 is a role denial and is reported as one. Bundle listing
+uses `GET /bff/v1/story-bundles` and falls back to `GET /show/published-evds?story_type=MINIMAX`
+only on 404/405; that fallback carries no premise line and no owner field, and the page says so
+when it cannot scope the list. Note that `/bff/v1/*` and `/api/v1/renderers/*` are served from the
+frontend origin on deployed environments, while Identity and the hosted MCP are on the API origin;
+`pickford-environment.ts` keeps those separate.
+
+`POST /api/v1/renderers/start-story` answers 202 with `story_run_id`, `story_id`, `room_shortlink`,
+`audience_join_url` and `status`. The story id and shortlink are adopted straight from that
+response, and the audience exchange then only has to agree — a contradiction fails the run. An
+unplayable bundle answers 409 `{"detail": {"code": "STORY_BUNDLE_NOT_READY", "state", "message"}}`,
+and that message is surfaced to the creator rather than collapsed into a status code.
+
 ## Compatibility and recovery
 
 The streaming DSS and playback-credit contracts were inspected at StoryKernel commit

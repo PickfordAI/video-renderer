@@ -43,4 +43,7 @@ Sessions are in memory; restarts/deploys interrupt playback. One active agent ru
 no durable resume, recording, or per-viewer authentication. The watch-link audience chat uses a
 browser-local pseudonym and the renderer's fenced backend connection. The agent bridge
 uses text prompts. The old reference-editing studio is removed; the single player has no manual
-rendering or credential setup controls. Verify provider pricing before budgeting real runs.
+rendering controls, and its only credential inputs are the creator's own Pickford sign-in and fal
+key. The Pickford sign-in needs an Identity OAuth deployment publishing the renderer resource
+(`/renderer`, scope `storykernel:renderer`) and a BFF that accepts those bearers; against a kernel
+without both, only the legacy handoff path works. Verify provider pricing before budgeting real runs.

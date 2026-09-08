@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import { allowOperatorRequest } from './access.js';
 import { AudienceChatGateway } from './audience-chat.js';
+import { CreatorApi } from './creator-api.js';
+import { loadFalKey } from './fal-key.js';
 import { serveMedia } from './media.js';
 import { servePublicViewer } from './public-viewer.js';
 import { viewerStatus } from './viewer-status.js';
@@ -22,6 +24,9 @@ const maxRequestBytes = 32_000;
 const playoutManager = new PlayoutManager();
 const externalRendererRuns = new ExternalRendererRunManager(playoutManager);
 const audienceChat = new AudienceChatGateway(externalRendererRuns);
+// A fal key the creator entered on the local page lives in .renderer/, not in the environment.
+loadFalKey();
+const creatorApi = new CreatorApi(externalRendererRuns);
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -269,6 +274,7 @@ const server = createServer(async (request, response) => {
   }
   if (await handleNarrativeEngineApi(request, response)) return;
   if (await audienceChat.handle(request, response)) return;
+  if (await creatorApi.handle(request, response)) return;
   if (await handleApi(request, response)) return;
   if (await servePublicViewer(request, response)) return;
   response.writeHead(404);
@@ -284,7 +290,12 @@ const localViewerStatus = ['127.0.0.1', 'localhost', '::1'].includes(mediaHost)
   ? () => viewerStatus(onboardingStatus(), externalRendererRuns.latest())
   : undefined;
 const mediaServer = createServer((request, response) => {
-  void serveMedia(request, response, playoutManager, undefined, audienceChat, localViewerStatus).catch(() => response.destroy());
+  void serveMedia(
+    request, response, playoutManager, undefined, audienceChat, localViewerStatus,
+    // Sign-in, the StoryBundle picker and the fal key live on the page the creator opens, which is
+    // the media port. A published (non-loopback) media host never gets the creator surface.
+    localViewerStatus ? creatorApi : undefined,
+  ).catch(() => response.destroy());
 });
 
 server.listen(port, process.env.HOST ?? '127.0.0.1', () => {

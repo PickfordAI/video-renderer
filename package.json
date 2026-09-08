@@ -12,6 +12,7 @@
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
     "story": "node scripts/story.mjs",
+    "auth": "node scripts/auth.mjs",
     "share": "node scripts/share.mjs",
     "replay": "tsx server/replay-cli.ts",
     "deploy:worker": "node scripts/deploy-worker.mjs",

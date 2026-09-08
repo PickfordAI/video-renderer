@@ -14,6 +14,7 @@ import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
+import { storyStartRefusalMessage } from './story-bundles.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import type { PlayoutClipBoundary, PlayoutManager, PlayoutSession } from './playout.js';
@@ -878,6 +879,9 @@ async function jsonResponse(response: Response, label: string, expected: number)
     try {
       const body = JSON.parse(text) as { detail?: unknown };
       if (typeof body.detail === 'string' && body.detail) detail = `: ${body.detail.slice(0, 300)}`;
+      // A structured refusal carries the reason the creator needs to see, not just a status.
+      const refusal = storyStartRefusalMessage(body);
+      if (refusal) detail = `: ${refusal}`;
     } catch {
       // Preserve the bounded status-only error when the response is not JSON.
     }
@@ -1800,6 +1804,12 @@ class ExternalRendererRun {
     if (payload.status !== 'audience_ready') throw new Error('renderer story start did not commit audience readiness');
     this.status.storyRunId = uuid(payload.story_run_id, 'story_run_id');
     this.status.audienceJoinUrl = requiredString(payload.audience_join_url, 'audience_join_url');
+    // PIC-1739 names the story in the start response. Adopt it immediately so the creator sees the
+    // identity without waiting on the audience exchange, which then only has to agree.
+    if (payload.story_id !== undefined) this.status.storyId = positiveInteger(payload.story_id, Number.NaN, 'story_id');
+    if (typeof payload.room_shortlink === 'string' && payload.room_shortlink) {
+      this.status.roomShortlink = payload.room_shortlink;
+    }
   }
 
   // The opaque start hides the platform story; the audience exchange is the public route that names it.
@@ -1830,7 +1840,11 @@ class ExternalRendererRun {
       onRetry: (reason) => this.logAudienceExchangeRetry(reason),
     });
     const session = asObject(result.session, 'audience exchange session');
-    this.status.storyId = positiveInteger(session.story_id, Number.NaN, 'audience exchange story_id');
+    const exchanged = positiveInteger(session.story_id, Number.NaN, 'audience exchange story_id');
+    if (this.status.storyId !== null && this.status.storyId !== exchanged) {
+      throw new Error('audience exchange named a different story than the start response');
+    }
+    this.status.storyId = exchanged;
     if (session.message_channel_id !== undefined) {
       this.status.storyMessageChannelId = uuid(session.message_channel_id, 'audience exchange message_channel_id');
     }

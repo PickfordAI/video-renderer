@@ -187,6 +187,101 @@ describe('opaque renderer-initiated story start', () => {
     }
   });
 
+  it('adopts the story id and room shortlink the start response now carries', async () => {
+    vi.stubEnv('FAL_KEY', 'test-fal');
+    const http = createServer();
+    const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    ws.on('connection', socket => socket.on('message', raw => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
+    }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/login')) return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
+      if (String(url).endsWith('/api/v1/renderers/start-story')) {
+        return Response.json({
+          story_run_id: storyRunId, story_id: 77, room_shortlink: 'night-shift-1',
+          audience_join_url: 'http://audience.example/audience/opaque-handle-1234567890', status: 'audience_ready',
+        }, { status: 202 });
+      }
+      return Response.json({ session: { story_id: 77, message_channel_id: storyChannel }, websocket_url: 'ws://127.0.0.1:8080/ws' });
+    }));
+    const manager = new ExternalRendererRunManager(playout().manager);
+    const run = manager.start(config(`http://127.0.0.1:${port}`));
+    try {
+      await vi.waitFor(() => expect(run.storyId).toBe(77));
+      expect(run.roomShortlink).toBe('night-shift-1');
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  });
+
+  it('fails closed when the audience exchange contradicts the story the start response named', async () => {
+    vi.stubEnv('FAL_KEY', 'test-fal');
+    const http = createServer();
+    const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    ws.on('connection', socket => socket.on('message', raw => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
+    }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/login')) return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
+      if (String(url).endsWith('/api/v1/renderers/start-story')) {
+        return Response.json({ story_run_id: storyRunId, story_id: 77, audience_join_url: 'http://audience.example/audience/opaque-handle-1234567890', status: 'audience_ready' }, { status: 202 });
+      }
+      return Response.json({ session: { story_id: 91, message_channel_id: storyChannel }, websocket_url: 'ws://127.0.0.1:8080/ws' });
+    }));
+    const manager = new ExternalRendererRunManager(playout().manager);
+    const run = manager.start(config(`http://127.0.0.1:${port}`));
+    try {
+      await vi.waitFor(() => expect(run.state).toBe('failed'));
+      expect(run.failures.join(' ')).toContain('named a different story than the start response');
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  });
+
+  it('surfaces a STORY_BUNDLE_NOT_READY refusal in the words the backend used', async () => {
+    vi.stubEnv('FAL_KEY', 'test-fal');
+    const http = createServer();
+    const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    ws.on('connection', socket => socket.on('message', raw => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+      if (frame.type === 'renderer.asset_manifest') socket.send(JSON.stringify({ type: 'renderer.asset_manifest.accepted', sha256: frame.sha256 }));
+    }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/login')) return Response.json({ access_token: 'test-token', websocket_url: `ws://127.0.0.1:${port}` });
+      if (String(url).endsWith('/api/v1/renderers/start-story')) {
+        return Response.json({
+          detail: { code: 'STORY_BUNDLE_NOT_READY', state: 'preparing', message: 'Images are still generating for this StoryBundle.' },
+        }, { status: 409 });
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    }));
+    const manager = new ExternalRendererRunManager(playout().manager);
+    const run = manager.start(config(`http://127.0.0.1:${port}`));
+    try {
+      await vi.waitFor(() => expect(run.state).toBe('failed'));
+      expect(run.failures.join(' ')).toContain('Images are still generating for this StoryBundle.');
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  });
+
   it('rejects an exchange that names a different story than the assignment', async () => {
     vi.stubEnv('FAL_KEY', 'test-fal');
     const http = createServer();
