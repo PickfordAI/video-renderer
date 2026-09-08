@@ -206,6 +206,10 @@ export class CreatorApi {
       // Renderer-initiated opaque start: Pickford allocates the story and the room from the bundle.
       startMode: 'opaque',
       evdId,
+      // The creator picker currently lists MiniMax StoryBundles. Select the reference-to-video
+      // pipeline explicitly so playback uses its bounded concurrent scheduler and camera anchors;
+      // `auto` is the legacy serial provider path and cannot build enough lookahead to avoid gaps.
+      rendererConfig: { model: 'fal-max-ref2v' },
       resolution: this.env.STORY_RESOLUTION || '480P',
       clipDurationSeconds: Number.parseInt(this.env.STORY_CLIP_SECONDS ?? '6', 10),
     });
