@@ -79,6 +79,7 @@ describe('CreatorApi playback routing', () => {
       baseUrl: 'https://dev.pickford.ai',
       audienceExchangeUrl: 'https://chat.dev.pickford.ai/api/v1/external-audience/exchange',
       rendererVersion: 'h3.opensource.v1.2',
+      supersedeExistingStory: true,
     }));
   });
 });

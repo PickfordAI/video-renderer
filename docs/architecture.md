@@ -125,7 +125,7 @@ applied, so nothing here is readable cross-origin.
 | `GET /auth/pickford/callback` | The loopback redirect. Authenticated by the PKCE `state`, since it is a cross-site top-level navigation by design |
 | `POST /api/creator/sign-out` | Revoke the refresh token and clear `.renderer/auth.json` |
 | `GET /api/creator/story-bundles` | The creator's StoryBundles with `ready`/`preparing`/`blocked` state |
-| `POST /api/creator/play` | Mint or rotate the renderer credential if needed, then start an opaque run from one StoryBundle |
+| `POST /api/creator/play` | Mint or rotate the renderer credential if needed, then start a new opaque run and request fenced supersession of this renderer's prior Story Run |
 | `POST /api/creator/stop` | Stop the active run |
 | `POST`/`DELETE /api/creator/fal-key` | Store or clear the creator's fal key in `.renderer/fal.json` (0600). Presence only is ever reported |
 
@@ -167,7 +167,10 @@ frontend origin on deployed environments, while Identity and the hosted MCP are 
 `audience_join_url` and `status`. The story id and shortlink are adopted straight from that
 response, and the audience exchange then only has to agree — a contradiction fails the run. An
 unplayable bundle answers 409 `{"detail": {"code": "STORY_BUNDLE_NOT_READY", "state", "message"}}`,
-and that message is surfaced to the creator rather than collapsed into a status code.
+and that message is surfaced to the creator rather than collapsed into a status code. Creator Play
+also sends `supersede_existing: true`: the authenticated backend must quiesce and exact-fence only
+this renderer's previous Story Run before admitting the request's fresh idempotency identity. A
+replay of that same identity must recover the new run rather than cancel it.
 
 ## Compatibility and recovery
 
@@ -195,8 +198,9 @@ kernel Stop and keeps recovery state if either cleanup step fails. Socket closur
 prove that the kernel released its assignment.
 
 There is one active agent run per worker. Run records, queues, and media are ephemeral. Automatic
-resume after a process crash is not implemented; stale kernel sessions must be stopped and a new
-story started. Retrying `start` is not a durable idempotency guarantee across a network failure.
+resume after a process crash is not implemented. Creator Play asks the backend to supersede this
+renderer installation's previous exact Story Run before starting a new one; CLI starts retain their
+explicit stop/reconcile workflow. Retrying `start` is not a durable idempotency guarantee across a network failure.
 The CLI saves provisioned identities before renderer start so ordinary failed starts can be
 cleaned up. If provisioning itself fails partway, inspect/reconcile the created room through the
 kernel onboarding flow before retrying. No automatic synthetic audience traffic is generated.
