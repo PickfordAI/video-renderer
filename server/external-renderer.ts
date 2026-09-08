@@ -321,6 +321,7 @@ const MANIFEST_SCHEMA_VERSION = 1;
 const MAX_FAILURES = 50;
 const COMMAND_GROUP_PROGRESS_MESSAGE_ID = 10;
 const SCRIPT_STATUS_MESSAGE_ID = 6;
+const SCRIPT_STARTED_STATUS_ID = 5;
 const GROUP_FINISHED_STATUS_ID = 10;
 // A duration budget does not bound control-only payloads or unscheduled plans.
 const MAX_PREPARED_DSS_FRAMES = 32;
@@ -814,6 +815,31 @@ export function createCommandProgressEvent(input: {
   };
 }
 
+export function createScriptStartedEvent(input: {
+  streamId: string;
+  assignmentId: string;
+  assignmentGeneration: number;
+  sequence: number;
+  groupId: string;
+  storyBlockId: string;
+}): JsonObject {
+  return {
+    type: 'renderer.event',
+    client_event_id: rendererEventId([input.streamId, input.assignmentId, input.assignmentGeneration, input.storyBlockId, 'script_started']),
+    event: 'script_started',
+    id: SCRIPT_STATUS_MESSAGE_ID,
+    stream_id: input.streamId,
+    assignment_id: input.assignmentId,
+    assignment_generation: input.assignmentGeneration,
+    sequence: input.sequence,
+    status: SCRIPT_STARTED_STATUS_ID,
+    duration: 0,
+    dss_id: input.groupId,
+    timestamp: Date.now() / 1_000,
+    story_block_id: input.storyBlockId,
+  };
+}
+
 export function createGroupFinishedEvent(input: {
   streamId: string;
   assignmentId: string;
@@ -948,6 +974,7 @@ class ExternalRendererRun {
   private heartbeat: NodeJS.Timeout | null = null;
   private verdictWatch: NodeJS.Timeout | null = null;
   private readonly seenDss = new Set<string>();
+  private readonly startedBlocks = new Set<string>();
   private readonly unplayedDss = new Set<string>();
   private readonly verdicts = new RendererEventVerdicts();
   private readonly abortController = new AbortController();
@@ -1131,11 +1158,26 @@ class ExternalRendererRun {
     }
   }
 
-  private async waitForPlayback(position: number): Promise<void> {
+  private async waitForPlayback(position: number, frame: DssFrame, group: DssGroup): Promise<void> {
     for (;;) {
       if (this.stopped) throw new Error('renderer run stopped');
       const current = this.playout?.status();
       if (current?.state === 'error') throw new Error(current.error ?? 'playout failed');
+      if (current && (current.currentPosition === position || current.playedThroughPosition >= position)) {
+        this.assertCurrentAssignment(frame);
+        const key = `${frame.assignmentId}:${frame.assignmentGeneration}:${frame.storyBlockId}`;
+        if (!this.startedBlocks.has(key)) {
+          this.sendRendererEvent(createScriptStartedEvent({
+            streamId: this.config.rendererId,
+            assignmentId: frame.assignmentId,
+            assignmentGeneration: frame.assignmentGeneration,
+            sequence: frame.sequence,
+            groupId: group.id,
+            storyBlockId: frame.storyBlockId,
+          }), frame);
+          this.startedBlocks.add(key);
+        }
+      }
       if (current && current.playedThroughPosition >= position) return;
       await waitWithAbort(250, this.abortController.signal);
     }
@@ -1339,7 +1381,7 @@ class ExternalRendererRun {
           this.sendRendererEvent(this.progressEvent(frame, group, 0, group.commands.length), frame);
           announced = true;
         }
-        await this.waitForPlayback(position);
+        await this.waitForPlayback(position, frame, group);
         this.markPlayed(record);
         this.assertCurrentAssignment(frame);
         job.release();
@@ -1357,6 +1399,8 @@ class ExternalRendererRun {
   }
 
   private acceptFrame(frame: DssFrame): boolean {
+    this.assignmentKey ??= `${frame.assignmentId}:${frame.assignmentGeneration}`;
+    this.assertCurrentAssignment(frame);
     const dedupeKey = `${frame.assignmentId}:${frame.assignmentGeneration}:${frame.sequence}`;
     if (this.seenDss.has(dedupeKey)) return false;
     this.seenDss.add(dedupeKey);
@@ -1443,7 +1487,7 @@ class ExternalRendererRun {
         });
         this.clipPosition += 1;
         this.status.clipsRendered += 1;
-        await this.waitForPlayback(position);
+        await this.waitForPlayback(position, frame, group);
         this.markPlayed(record);
         playedSeconds += clip.durationSeconds;
       }

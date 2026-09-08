@@ -2,6 +2,9 @@ import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { parseRenderMode, type RenderMode } from './render-mode.js';
 
 const TERMINAL_ERROR_STATUSES = new Set(['ERROR', 'FAILED', 'CANCELLED']);
+const RETRYABLE_READ_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_READ_RETRIES = 5;
+const MAX_READ_RETRY_DELAY_MS = 5_000;
 
 export interface GenerateVideoInput {
   prompt: string;
@@ -68,6 +71,52 @@ async function readFalJson<T>(response: Response, label: string): Promise<T> {
     return JSON.parse(text) as T;
   } catch {
     throw new FalVideoError(`${label} returned invalid JSON`);
+  }
+}
+
+async function readFalJsonWithRetry<T>(options: {
+  url: string;
+  headers: Record<string, string>;
+  label: string;
+  fetchImpl: typeof fetch;
+  signal?: AbortSignal;
+  retryDelayMs: number;
+  deadlineAt: number;
+  timeoutError: () => FalVideoError;
+  maxRetries?: number | null;
+}): Promise<T> {
+  let retries = 0;
+  const retriesExhausted = () =>
+    options.maxRetries !== null && retries >= (options.maxRetries ?? MAX_READ_RETRIES);
+  for (;;) {
+    if (performance.now() >= options.deadlineAt) throw options.timeoutError();
+    try {
+      const response = await options.fetchImpl(options.url, {
+        headers: options.headers,
+        signal: options.signal,
+      });
+      if (response.ok || !RETRYABLE_READ_STATUSES.has(response.status) || retriesExhausted()) {
+        return await readFalJson<T>(response, options.label);
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason;
+      if (!(error instanceof TypeError)) throw error;
+      if (retriesExhausted()) {
+        throw new FalVideoError(
+          `${options.label} failed after ${retries + 1} transport attempts: ${error.message}`,
+        );
+      }
+    }
+
+    retries += 1;
+    const remainingMs = options.deadlineAt - performance.now();
+    if (remainingMs <= 0) throw options.timeoutError();
+    const delayMs = Math.min(
+      options.retryDelayMs * 2 ** (retries - 1),
+      MAX_READ_RETRY_DELAY_MS,
+      remainingMs,
+    );
+    await abortableDelay(delayMs, options.signal);
   }
 }
 
@@ -222,19 +271,30 @@ export async function generateVideo(
         : `${queueBaseUrl}/${modelId}/requests/${requestId}`;
 
     const queueStartedAt = performance.now();
-    const timeoutMs = options.timeoutMs ?? defaultRequestTimeoutMs();
     let polls = 0;
     let maxQueuePosition: number | null = null;
     let lastStatus = '';
+    const timeoutMs = options.timeoutMs ?? defaultRequestTimeoutMs();
+    const deadlineAt = overallStartedAt + timeoutMs;
+    const timeoutError = () => new FalVideoError(
+      `fal request ${requestId} timed out after ${Math.round(elapsedSeconds(overallStartedAt))}s`
+        + ` (last status ${lastStatus || 'unknown'}, max queue position ${maxQueuePosition ?? 'n/a'})`,
+    );
+    const readOptions = {
+      headers,
+      fetchImpl,
+      signal: options.signal,
+      retryDelayMs: options.pollIntervalMs ?? 500,
+      deadlineAt,
+      timeoutError,
+    };
     for (;;) {
-      if (performance.now() - overallStartedAt > timeoutMs) {
-        throw new FalVideoError(
-          `fal request ${requestId} timed out after ${Math.round(elapsedSeconds(overallStartedAt))}s`
-            + ` (last status ${lastStatus || 'unknown'}, max queue position ${maxQueuePosition ?? 'n/a'})`,
-        );
-      }
-      const statusResponse = await fetchWithRetry(fetchImpl, statusUrl, { headers, signal: options.signal }, 'fal status poll', options.signal);
-      const statusBody = await readFalJson<FalStatus>(statusResponse, 'fal status poll');
+      if (performance.now() >= deadlineAt) throw timeoutError();
+      const statusBody = await readFalJsonWithRetry<FalStatus>({
+        ...readOptions,
+        url: statusUrl,
+        label: 'fal status poll',
+      });
       polls += 1;
       const status = typeof statusBody.status === 'string' ? statusBody.status : '';
       lastStatus = status;
@@ -251,8 +311,14 @@ export async function generateVideo(
       await abortableDelay(options.pollIntervalMs ?? 500, options.signal);
     }
 
-    const resultResponse = await fetchWithRetry(fetchImpl, responseUrl, { headers, signal: options.signal }, 'fal result fetch', options.signal);
-    const result = await readFalJson<FalResult>(resultResponse, 'fal result fetch');
+    const result = await readFalJsonWithRetry<FalResult>({
+      ...readOptions,
+      url: responseUrl,
+      label: 'fal result fetch',
+      // COMPLETED identifies an already-paid job whose result is safe to reread.
+      // Keep recovering transient result-service failures until the generation deadline.
+      maxRetries: null,
+    });
     const videoUrl = requiredString(result.video?.url, 'video.url');
     return {
       requestId,

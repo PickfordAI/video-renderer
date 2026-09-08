@@ -13,7 +13,7 @@ async function withGateway(
 ): Promise<void> {
   const submit = vi.fn(async () => ({ accepted: true, duplicate: false, messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }));
   const runs = {
-    latest: () => ({ state: runState, storyStartStatus: 202, hlsUrl: 'http://127.0.0.1:4174/hls/h3-run/index.m3u8' }),
+    latest: () => ({ runId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', state: runState, storyStartStatus: 202, hlsUrl: 'http://127.0.0.1:4174/hls/h3-run/index.m3u8' }),
     submitAudienceMessage: submit,
   } as unknown as ExternalRendererRunManager;
   const gateway = new AudienceChatGateway(runs, {});
@@ -78,6 +78,21 @@ describe('public audience chat gateway', () => {
 
   it('keeps chat hidden until renderer start has established the story grant', async () => {
     await withGateway('connecting', async (base) => {
+      expect(await (await fetch(`${base}/api/audience-chat/session`)).json()).toMatchObject({ ready: false, csrfToken: null });
+    });
+  });
+
+  it('retires chat for a run after StoryKernel fences its audience grant', async () => {
+    await withGateway('running', async (base, submit) => {
+      submit.mockResolvedValueOnce({ accepted: false, code: 'renderer_fenced', detail: 'renderer audience grant is fenced' });
+      const session = await (await fetch(`${base}/api/audience-chat/session`)).json() as { csrfToken: string };
+      const response = await fetch(`${base}/api/audience-chat/messages`, {
+        method: 'POST',
+        headers: { Origin: base, 'Content-Type': 'application/json', 'X-CSRF-Token': session.csrfToken },
+        body: JSON.stringify({ viewerId, idempotencyKey, displayName: 'Ada', content: 'Hello' }),
+      });
+      expect(response.status).toBe(410);
+      await expect(response.json()).resolves.toEqual({ error: 'This story is no longer accepting audience messages.' });
       expect(await (await fetch(`${base}/api/audience-chat/session`)).json()).toMatchObject({ ready: false, csrfToken: null });
     });
   });

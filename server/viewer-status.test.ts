@@ -4,7 +4,7 @@ import type { ExternalRendererRunStatus } from './external-renderer.js';
 
 describe('local viewer status', () => {
   it('exposes only readiness and playback, never runtime identities or diagnostics', () => {
-    const run = { state: 'running', hlsUrl: 'http://localhost:4174/hls/example/index.m3u8', rendererId: 'private-id', failures: ['private-diagnostic'], clientSecret: 'private-secret' } as unknown as ExternalRendererRunStatus;
+    const run = { state: 'running', hlsUrl: 'http://localhost:4174/hls/example/index.m3u8', clips: [{ playedAt: '2026-09-07T13:08:34Z' }], rendererId: 'private-id', failures: ['private-diagnostic'], clientSecret: 'private-secret' } as unknown as ExternalRendererRunStatus;
     const result = viewerStatus({ ready: true, missing: [] }, run);
     expect(result.story).toEqual({ state: 'running', hlsUrl: run.hlsUrl });
     expect(JSON.stringify(result)).not.toContain('private');
@@ -14,5 +14,9 @@ describe('local viewer status', () => {
     for (const state of ['stopped', 'failed'] as const) {
       expect(viewerStatus({ ready: true, missing: [] }, { state, hlsUrl: 'https://story.example/old.m3u8' } as ExternalRendererRunStatus).story?.hlsUrl).toBeNull();
     }
+  });
+  it('does not attach the local player to the relay before generated video enters playout', () => {
+    const run = { state: 'running', hlsUrl: 'http://localhost:4174/hls/example/index.m3u8', clips: [{ playedAt: null }] } as unknown as ExternalRendererRunStatus;
+    expect(viewerStatus({ ready: true, missing: [] }, run).story?.hlsUrl).toBeNull();
   });
 });

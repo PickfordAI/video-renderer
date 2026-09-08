@@ -268,6 +268,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (await handleNarrativeEngineApi(request, response)) return;
+  if (await audienceChat.handle(request, response)) return;
   if (await handleApi(request, response)) return;
   if (await servePublicViewer(request, response)) return;
   response.writeHead(404);
@@ -278,15 +279,19 @@ const server = createServer(async (request, response) => {
   }
 });
 
+const mediaHost = process.env.MEDIA_HOST ?? '127.0.0.1';
+const localViewerStatus = ['127.0.0.1', 'localhost', '::1'].includes(mediaHost)
+  ? () => viewerStatus(onboardingStatus(), externalRendererRuns.latest())
+  : undefined;
 const mediaServer = createServer((request, response) => {
-  void serveMedia(request, response, playoutManager, undefined, audienceChat).catch(() => response.destroy());
+  void serveMedia(request, response, playoutManager, undefined, audienceChat, localViewerStatus).catch(() => response.destroy());
 });
 
 server.listen(port, process.env.HOST ?? '127.0.0.1', () => {
   console.log(`Pickford renderer listening at http://localhost:${port}`);
 });
 
-mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), process.env.MEDIA_HOST ?? '127.0.0.1');
+mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), mediaHost);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

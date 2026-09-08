@@ -59,6 +59,26 @@ public audience exchange and reports all three in `start`/`status` output. Kerne
 needs a `setupToken` and `narrativeEngineUrl` to cancel through the resolved story; without them
 `stop` ends local work, states that kernel cancel was not possible, and leaves the run kernel-owned.
 
+### Pickford-hosted environment mapping
+
+For a Pickford-hosted `dev`, `edge`, or `staging` run, use the public frontend origin for Renderer
+Platform/BFF routes, not a stale local `host.docker.internal` URL. The service variables follow this
+mapping (shown for `dev`; replace every `dev` segment consistently for `edge` or `staging`):
+
+```dotenv
+STORY_ENVIRONMENT=dev
+STORY_START_MODE=opaque
+RENDERER_PLATFORM_URL=https://dev.pickford.ai
+STORY_RENDERER_WEBSOCKET_URL=wss://dev.pickford.ai/api/v1/renderer-bridge/ws
+NARRATIVE_ENGINE_URL=https://api.dev.pickford.ai
+CHAT_BACKEND_URL=https://chat.dev.pickford.ai
+```
+
+`RENDERER_PLATFORM_URL` is the base for `POST /api/v1/renderers/start-story`. Do not substitute
+`RENDERER_PLATFORM_BASE_URL`: that variable belongs to the separate direct bridge configuration.
+An EVD-only start must set `STORY_START_MODE=opaque`; otherwise the CLI selects legacy provisioning
+and requires a setup token or an already-provisioned story.
+
 The reference kernel exposes credential creation through `POST /bff/v1/developer/renderers`,
 body `{ "installation_name": "My video renderer" }`. It requires an authenticated browser session,
 CSRF protection, and a creator/admin role. Reuse the authenticated onboarding flow; do not call
@@ -86,12 +106,16 @@ Never scrape arbitrary container environments, databases, or another user's brow
 4. Run `docker compose up -d media-relay`, `npm run build`, and `npm start` as a managed persistent
    process. Read startup output for a port conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
 5. Register the onboarding handoff with `npm run setup -- --handoff /absolute/path/to/handoff.json`
-   (or configure the environment as described below). Open `http://localhost:4173`. It shows only
-   setup status and playback; do not send the user to an installation form. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
+   (or configure the environment as described below). Open `http://localhost:4174`. The bare local
+   viewer root follows the active local story once generated video enters playout. Port 4173 shows
+   private setup status and playback; do not send the user to an installation form. Run `npm run doctor`. Its JSON checks dependencies and HTTP reachability, not authentication or
    protocol compatibility. Resolve errors; do not hide a failed check.
 6. Run `npm run story -- start` once. This submits paid
    video jobs when DSS arrives, so the user must have requested rendering.
-7. Poll `npm run story -- status`. Return the watch URL once the first clip is actually playable,
+7. Poll `npm run story -- status`. Do not treat the `start` command's early HLS URL as playable.
+   Open `http://localhost:4174/` or return the capability watch URL only after at least one clip has
+   a non-null `playedAt` and the HLS manifest decodes visible video. If playback attached while the
+   manifest contained only startup filler, reload once at the live edge. Return the link once playable,
    or report a startup failure. `connecting` is not success. A manifest HTTP 200 plus playable
    video is stronger evidence than `clipsRendered` alone.
    `status` also carries a `clips` array (one entry per planned shot with `submittedAt`,
@@ -153,8 +177,10 @@ form is needed. After configuration, `story -- start`, `status`, and `stop` reus
 Restart the local worker after `.env` changes. On hosted deployments, keep story setup credentials
 and handoff registration on the agent's machine; the CLI sends only runtime credentials to the
 worker. Host preparation/deployment scripts transfer fal/operator keys, not setup user tokens.
-The local player polls `/api/viewer-status` for readiness and playback only; it cannot start paid
-jobs or stop a story. The agent owns start/stop and reports any cleanup failure.
+The bare local player on a loopback-bound port 4174 polls `/api/viewer-status` for allowlisted
+readiness and playback, then attaches only after a generated clip enters playout. The same route
+remains unavailable on a hosted/public listener. The player cannot start paid jobs or stop a story;
+the agent owns start/stop and reports any cleanup failure.
 
 ## Hosted workflow
 

@@ -3,7 +3,6 @@ import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
-const play = document.querySelector('#play');
 const setup = document.querySelector('#setup');
 let hls;
 let retry;
@@ -20,6 +19,20 @@ const chatName = document.querySelector('#chat-name');
 const chatMessage = document.querySelector('#chat-message');
 const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
+const chatHistory = document.querySelector('#chat-history');
+const chatMessages = document.querySelector('#chat-messages');
+const sentMessageIds = new Set();
+
+function showSentMessage(input, messageId) {
+  if (typeof messageId === 'string' && sentMessageIds.has(messageId)) return;
+  if (typeof messageId === 'string') sentMessageIds.add(messageId);
+  const item = document.createElement('li');
+  const author = document.createElement('strong');
+  author.textContent = `${input.displayName}: `;
+  item.append(author, document.createTextNode(input.content));
+  chatMessages.append(item);
+  chatHistory.hidden = false;
+}
 
 function viewerId() {
   try {
@@ -61,7 +74,14 @@ chatForm.addEventListener('submit', async (event) => {
       signal: AbortSignal.timeout(15_000),
     });
     const value = await response.json();
-    if (!response.ok) throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    if (!response.ok) {
+      if (response.status === 410) {
+        chatCsrfToken = undefined;
+        chat.hidden = true;
+      }
+      throw new Error(typeof value.error === 'string' ? value.error : 'The story did not accept the message.');
+    }
+    showSentMessage(input, value.messageId);
     chatMessage.value = '';
     chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
   } catch (error) {
@@ -80,8 +100,7 @@ function clearStream() {
   video.pause();
   video.removeAttribute('src');
   video.load();
-  video.hidden = play.hidden = true;
-  document.querySelector('#share').hidden = true;
+  video.hidden = true;
 }
 
 function showStream(raw) {
@@ -90,7 +109,7 @@ function showStream(raw) {
   clearStream();
   currentStream = streamUrl;
   const version = generation;
-  video.hidden = play.hidden = false;
+  video.hidden = false;
   setup.hidden = true;
   status.textContent = 'Preparing your first scene. This can take a few minutes.';
   const connect = async () => {
@@ -155,11 +174,10 @@ async function followLocalStory() {
     if (disposed) return;
     if (value.story?.hlsUrl) {
       showStream(value.story.hlsUrl);
-      const stream = new URL(value.story.hlsUrl);
-      const watch = new URL('/', stream);
-      watch.hash = encodeURIComponent(stream.toString());
-      document.querySelector('#watch-link').href = watch.toString();
-      document.querySelector('#share').hidden = false;
+    } else if (value.story && ['connecting', 'running'].includes(value.story.state)) {
+      if (currentStream) clearStream();
+      setup.hidden = true;
+      status.textContent = 'Preparing your first scene. This can take a few minutes.';
     } else {
       if (currentStream) clearStream();
       showSetup(value);
@@ -170,10 +188,6 @@ async function followLocalStory() {
   if (!disposed) poll = setTimeout(followLocalStory, 2000);
 }
 
-play.addEventListener('click', () => {
-  video.muted = false;
-  void video.play().catch(() => { status.textContent = 'The next scene is still loading. Try play again in a moment.'; });
-});
 video.addEventListener('playing', () => { status.textContent = 'Now playing'; });
 window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearTimeout(chatPoll); clearStream(); });
 

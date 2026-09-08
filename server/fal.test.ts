@@ -93,6 +93,118 @@ describe('generateVideo', () => {
     ).rejects.toBeInstanceOf(FalVideoError);
   });
 
+  it('recovers transient status and result reads without replaying the paid submission', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-retry' }))
+      .mockResolvedValueOnce(json({ detail: 'status unavailable' }, 503))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ detail: [{ type: 'downstream_service_unavailable' }] }, 504))
+      .mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/recovered.mp4' } }));
+
+    const result = await generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    );
+
+    expect(result.videoUrl).toBe('https://cdn.example/recovered.mp4');
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.slice(1, 3).map(([url]) => url)).toEqual([
+      'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-retry/status',
+      'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-retry/status',
+    ]);
+    expect(fetchImpl.mock.calls.slice(3).map(([url]) => url)).toEqual([
+      'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-retry',
+      'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-retry',
+    ]);
+  });
+
+  it('keeps recovering completed results beyond the status-read retry budget without replaying submission', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-result-recovery' }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }));
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      fetchImpl.mockResolvedValueOnce(json({ detail: 'result service unavailable' }, 504));
+    }
+    fetchImpl.mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/recovered-late.mp4' } }));
+
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    )).resolves.toMatchObject({
+      requestId: 'request-result-recovery',
+      videoUrl: 'https://cdn.example/recovered-late.mp4',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('does not retry terminal fal read responses', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-terminal' }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ detail: 'invalid key' }, 401));
+
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    )).rejects.toThrow('fal result fetch failed (401)');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('recovers a transient transport failure while polling the same request', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-transport' }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/recovered.mp4' } }));
+
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    )).resolves.toMatchObject({ requestId: 'request-transport' });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it('bounds repeated transient fal reads', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-exhausted' }))
+      .mockResolvedValue(json({ detail: 'downstream unavailable' }, 504));
+
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '480P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    )).rejects.toThrow('fal status poll failed (504)');
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
+  });
+
+  it('aborts a transient-read retry delay and cancels an incomplete request', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ request_id: 'request-retry-stop' }))
+      .mockResolvedValueOnce(json({ detail: 'temporarily unavailable' }, 503))
+      .mockResolvedValueOnce(json({ ok: true }));
+
+    const pending = generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 60_000, signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    controller.abort(new DOMException('Renderer stopped', 'AbortError'));
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+      'https://queue.fal.run/minimax/h3-max-turbo/text-to-video/requests/request-retry-stop/cancel',
+    );
+  });
+
   it('pins explicit Turbo i2v to its endpoint and sends only the first frame, without voice references', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(json({ request_id: 'image-request' }))

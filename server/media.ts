@@ -5,6 +5,22 @@ import { pipeline } from 'node:stream/promises';
 import type { PlayoutManager } from './playout.js';
 import type { AudienceChatGateway } from './audience-chat.js';
 
+function isSameOriginLocalViewer(request: IncomingMessage): boolean {
+  try {
+    const host = new URL(`http://${request.headers.host ?? ''}`).hostname;
+    const source = request.headers.origin ?? request.headers.referer;
+    const origin = source ? new URL(source) : null;
+    return ['localhost', '127.0.0.1', '[::1]'].includes(host)
+      && request.headers['sec-fetch-site'] === 'same-origin'
+      // The viewer itself sends Referrer-Policy: no-referrer, and browsers do not
+      // normally add Origin to same-origin GETs. The listener binding and Host
+      // check provide the local boundary; validate source only when one exists.
+      && (origin === null || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname));
+  } catch {
+    return false;
+  }
+}
+
 export function mediaPath(pathname: string): { sessionId: string; relayPath: string } | null {
   const match = pathname.match(/^\/hls\/h3-([0-9a-f-]{36})\/([a-zA-Z0-9_-]+\.(?:m3u8|mp4|m4s|ts))$/);
   return match ? { sessionId: match[1], relayPath: `/h3-${match[1]}/${match[2]}` } : null;
@@ -16,12 +32,18 @@ export async function serveMedia(
   manager: PlayoutManager,
   viewerRoot?: string,
   audienceChat?: AudienceChatGateway,
+  localViewerStatus?: () => unknown,
 ): Promise<void> {
   if (audienceChat && await audienceChat.handle(request, response)) return;
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   const url = new URL(request.url ?? '/', 'http://local');
+  if (localViewerStatus && url.pathname === '/api/viewer-status' && request.method === 'GET' && isSameOriginLocalViewer(request)) {
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify(localViewerStatus()));
+    return;
+  }
   if (url.pathname === '/healthz' && request.method === 'GET') {
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end('{"ok":true}');

@@ -3,13 +3,14 @@ import { connectionCommand, hostingConfig } from './hosting-config.mjs';
 import { watchUrlForStream } from './watch-url.mjs';
 describe('single-provider hosting', () => {
   it('returns same-host watch links without a viewer setting', () => {
-    for (const origin of ['https://story.fly.dev', 'https://story.onrender.com', 'https://stories.example.com', 'http://127.0.0.1:4174']) {
+    for (const origin of ['https://story.fly.dev', 'https://story.onrender.com', 'https://stories.example.com']) {
       const stream = `${origin}/hls/h3-session/index.m3u8`;
       const link = new URL(watchUrlForStream(stream));
       expect(link.origin).toBe(origin);
       expect(link.pathname).toBe('/');
       expect(decodeURIComponent(link.hash.slice(1))).toBe(stream);
     }
+    expect(watchUrlForStream('http://127.0.0.1:4174/hls/h3-session/index.m3u8')).toBe('http://127.0.0.1:4174/');
   });
   it('retains explicit external viewers as an opt-in and rejects unsafe URLs', () => {
     expect(new URL(watchUrlForStream('https://story.fly.dev/hls/test/index.m3u8', 'https://viewer.example')).origin).toBe('https://viewer.example');

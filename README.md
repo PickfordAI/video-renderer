@@ -38,8 +38,9 @@ docker compose up -d media-relay
 npm start
 ```
 
-Open [the local player](http://localhost:4173). It shows which account connections the agent
-still needs to finish. In another managed terminal:
+Open [the local player](http://localhost:4174). The bare local root follows the active story once
+its first generated clip enters playout; before then it shows setup/preparation status. The private
+operator listener remains at `http://localhost:4173`. In another managed terminal:
 
 ```sh
 npm run doctor
@@ -110,8 +111,9 @@ npm run share -- --hosted
 
 Hosted workers must reach HTTPS kernel services. The setup user credential remains with the
 agent; only the runtime installation credential is sent to the worker. The public page receives
-only the watch link and media. Opening the public root without a link does not reveal active
-stories or account setup status. Vercel is an optional standalone build of the **same player**.
+only the watch link and media. A hosted public root without a link does not reveal active stories
+or account setup status; the bare loopback-only local root deliberately follows its worker's active
+story. Vercel is an optional standalone build of the **same player**.
 
 Anyone with the watch link can watch and submit audience suggestions while the story runs. The
 renderer relays messages through its authenticated Story Kernel connection; credentials never
