@@ -157,8 +157,9 @@ An EVD-only start must set `STORY_START_MODE=opaque`; otherwise the CLI selects 
 and requires a setup token or an already-provisioned story.
 
 The reference kernel exposes credential creation through `POST /bff/v1/developer/renderers`,
-body `{ "installation_name": "My video renderer" }`. It requires an authenticated browser session,
-CSRF protection, and a creator/admin role. Reuse the authenticated onboarding flow; do not call
+body `{ "installation_name": "My video renderer" }`. It requires a creator or admin role, and
+accepts either an Identity OAuth bearer (no CSRF) or an authenticated browser session with CSRF
+protection. Reuse the authenticated onboarding flow; do not call
 `/internal/v1/developer-renderers` or invent privileged credentials. Map the response fields:
 
 ```text
