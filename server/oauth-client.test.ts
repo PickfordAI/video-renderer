@@ -18,6 +18,7 @@ import {
   discoverProtectedResource,
   resourceMetadataFromChallenge,
   resourceMetadataUrls,
+  sameResource,
   type AuthorizationServerMetadata,
 } from './oauth-discovery.js';
 import { pickfordEnvironment, scopeForResource } from './pickford-environment.js';
@@ -189,6 +190,30 @@ describe('discovery', () => {
     expect(resource.authorizationServers).toEqual([ISSUER]);
     const server = await discoverAuthorizationServer(resource.authorizationServers[0], identity.impl);
     expect(server.tokenEndpoint).toBe(metadata.tokenEndpoint);
+  });
+
+  it('refuses metadata that describes a different resource on the same origin', async () => {
+    // Pickford's bare-origin document describes the hosted MCP. Adopting it for the renderer
+    // resource would bind tokens to the wrong audience and scope, so every candidate is checked.
+    const seen: string[] = [];
+    const impl = async (url: string): Promise<Response> => {
+      seen.push(url);
+      return json({
+        resource: 'https://api.dev.pickford.ai/storykernel/mcp',
+        authorization_servers: [ISSUER],
+        scopes_supported: ['storykernel:onboarding'],
+      });
+    };
+    await expect(discoverProtectedResource(RESOURCE, impl)).rejects.toThrow(/describes https:\/\/api\.dev\.pickford\.ai\/storykernel\/mcp, not the requested resource/);
+    // It kept trying the remaining candidates rather than stopping at the first mismatch.
+    expect(seen.length).toBeGreaterThan(1);
+  });
+
+  it('accepts metadata whose resource differs only by a trailing slash', async () => {
+    const impl = async (): Promise<Response> => json({ resource: `${RESOURCE}/`, authorization_servers: [ISSUER] });
+    await expect(discoverProtectedResource(RESOURCE, impl)).resolves.toMatchObject({ authorizationServers: [ISSUER] });
+    expect(sameResource(`${RESOURCE}/`, RESOURCE)).toBe(true);
+    expect(sameResource('https://api.dev.pickford.ai/renderer', 'https://api.dev.pickford.ai/storykernel/mcp')).toBe(false);
   });
 
   it('refuses an authorization server that is not on the issuer origin', async () => {

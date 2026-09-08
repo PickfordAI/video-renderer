@@ -135,7 +135,10 @@ The resource is `https://api.<env>.pickford.ai/renderer` and the scope is `story
 Identity treats resource and scope as a fixed pair and answers `invalid_scope` for any other
 combination, so `scopeForResource` derives one from the other and the dynamic-client cache is keyed
 by scope as well as issuer and redirect URI — a changed pairing re-registers rather than reusing a
-client that cannot authorize. When a resource's metadata advertises exactly one scope and it is not
+client that cannot authorize. Discovery rejects any metadata document that declares a resource
+other than the one requested: an origin can serve several protected resources (Pickford's
+bare-origin document describes the hosted MCP), and adopting the wrong one would bind the
+renderer's tokens to the wrong audience. When a resource's metadata advertises exactly one scope and it is not
 the derived one, the advertised value wins, so a renamed scope needs no renderer release.
 
 Access tokens last 12 hours and the grant 90 days. Refresh tokens are single-use and rotating: a

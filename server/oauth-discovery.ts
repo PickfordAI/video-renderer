@@ -86,7 +86,25 @@ export function authorizationServerMetadataUrls(issuer: string): string[] {
   return [...new Set(candidates)];
 }
 
-async function fetchJson(urls: string[], fetchImpl: FetchLike, label: string): Promise<Record<string, unknown>> {
+/** Compares two resource identifiers the way RFC 9728 does: exact, bar a trailing slash. */
+export function sameResource(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+  };
+  try {
+    return normalize(left) === normalize(right);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchJson(
+  urls: string[],
+  fetchImpl: FetchLike,
+  label: string,
+  accept: (body: Record<string, unknown>) => string | null = () => null,
+): Promise<Record<string, unknown>> {
   const problems: string[] = [];
   for (const url of urls) {
     let response: Response;
@@ -111,8 +129,16 @@ async function fetchJson(urls: string[], fetchImpl: FetchLike, label: string): P
       problems.push(`${url}: response was not JSON`);
       continue;
     }
-    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
-    problems.push(`${url}: metadata was not an object`);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      problems.push(`${url}: metadata was not an object`);
+      continue;
+    }
+    const rejection = accept(value as Record<string, unknown>);
+    if (rejection) {
+      problems.push(`${url}: ${rejection}`);
+      continue;
+    }
+    return value as Record<string, unknown>;
   }
   throw new Error(`Could not read ${label} from Pickford (${problems.join('; ')}).`);
 }
@@ -122,7 +148,19 @@ export async function discoverProtectedResource(
   fetchImpl: FetchLike,
   extraUrls: readonly string[] = [],
 ): Promise<ProtectedResourceMetadata> {
-  const body = await fetchJson([...extraUrls, ...resourceMetadataUrls(resource)], fetchImpl, 'the resource metadata');
+  // A candidate that describes some *other* resource must be rejected, not adopted. An origin can
+  // serve several protected resources (Pickford's bare-origin document describes the hosted MCP),
+  // and silently accepting one would bind the renderer's tokens to the wrong audience and scope.
+  const body = await fetchJson(
+    [...extraUrls, ...resourceMetadataUrls(resource)],
+    fetchImpl,
+    'the resource metadata',
+    (value) => {
+      const declared = typeof value.resource === 'string' ? value.resource : null;
+      if (!declared) return 'metadata declared no resource';
+      return sameResource(declared, resource) ? null : `metadata describes ${declared}, not the requested resource`;
+    },
+  );
   const authorizationServers = stringList(body.authorization_servers).map(value => secureUrl(value, 'authorization_servers[]'));
   if (!authorizationServers.length) throw new Error('The Pickford resource metadata lists no authorization server.');
   return {
