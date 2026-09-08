@@ -6,7 +6,9 @@ export function environmentLabel(name) {
 
 export function signedInLabel(auth) {
   if (!auth?.signedIn) return 'Not signed in';
-  return auth.email ? `Signed in as ${auth.email}` : 'Signed in to Pickford';
+  if (auth.email) return `Signed in as ${auth.email}`;
+  // The whoami names a role but not always an address.
+  return auth.role ? `Signed in to Pickford (${auth.role})` : 'Signed in to Pickford';
 }
 
 export function falKeyLabel(falKey) {
@@ -31,6 +33,9 @@ const PLAYBACK_LABELS = {
 };
 
 export function playbackLabel(playback) {
+  // A backend refusal (a StoryBundle that turned out not to be playable) is more useful than the
+  // generic failure line, so it replaces it outright.
+  if (playback?.state === 'failed' && playback.error) return playback.error;
   const base = PLAYBACK_LABELS[playback?.state] ?? PLAYBACK_LABELS.idle;
   const eta = playback?.firstClipEtaSeconds;
   if (!['starting', 'preparing'].includes(playback?.state) || typeof eta !== 'number') return base;

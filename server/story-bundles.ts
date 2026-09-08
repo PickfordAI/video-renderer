@@ -158,3 +158,22 @@ export async function listStoryBundles(options: {
     ownerFilterApplied: mapped.length > 0 && mapped.every(item => item.ownerKnown),
   };
 }
+
+/**
+ * `POST /api/v1/renderers/start-story` answers 409
+ * `{"detail": {"code": "STORY_BUNDLE_NOT_READY", "state": "preparing"|"blocked", "message": …}}`
+ * when a bundle is not playable. The creator sees that message in the picker, so it is read out of
+ * the structured detail rather than collapsed into a bare status code.
+ */
+export function storyStartRefusalMessage(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const value = detail as Record<string, unknown>;
+  if (optionalText(value.code) !== 'STORY_BUNDLE_NOT_READY') return null;
+  const message = optionalText(value.message);
+  const state = optionalText(value.state);
+  if (message) return message.slice(0, 300);
+  return state === 'blocked'
+    ? 'Pickford cannot play this StoryBundle.'
+    : PREPARING_REASON;
+}

@@ -129,17 +129,39 @@ applied, so nothing here is readable cross-origin.
 The worker is a public OAuth 2.1 client: RFC 9728 resource-metadata discovery, RFC 8414
 authorization-server discovery, RFC 7591 dynamic registration with `token_endpoint_auth_method:
 none`, authorization code + PKCE S256, RFC 8707 resource indicators, and refresh-token rotation.
-Tokens live in `.renderer/auth.json` (0600) and are refreshed on demand; a rejected refresh clears
-the file rather than refusing forever.
+Tokens live in `.renderer/auth.json` (0600).
 
-Two backend adapters exist because the Pickford side is landing in parallel (PIC-1739). Credential
-minting prefers `POST /bff/v1/developer/renderers` with the OAuth bearer and falls back to
-`POST /bff/v1/session` (bearer to cookie + CSRF) followed by the same mutation. Bundle listing
-prefers `GET /bff/v1/story-bundles` and falls back to `GET /show/published-evds?story_type=MINIMAX`
-on the API origin, which carries no premise line and, until that ticket lands, no owner field — the
-page says so when it cannot scope the list. Note that `/bff/v1/*` and `/api/v1/renderers/*` are
-served from the frontend origin on deployed environments, while Identity and the hosted MCP are on
-the API origin; `pickford-environment.ts` keeps those separate.
+The resource is `https://api.<env>.pickford.ai/renderer` and the scope is `storykernel:renderer`.
+Identity treats resource and scope as a fixed pair and answers `invalid_scope` for any other
+combination, so `scopeForResource` derives one from the other and the dynamic-client cache is keyed
+by scope as well as issuer and redirect URI — a changed pairing re-registers rather than reusing a
+client that cannot authorize. When a resource's metadata advertises exactly one scope and it is not
+the derived one, the advertised value wins, so a renamed scope needs no renderer release.
+
+Access tokens last 12 hours and the grant 90 days. Refresh tokens are single-use and rotating: a
+replay revokes the grant. `PickfordAuth.accessToken` therefore serializes concurrent demands into a
+single refresh, attempts it exactly once per stored token, and on rejection discards the stored
+sign-in instead of retrying.
+
+`POST /bff/v1/session` doubles as the whoami for a bearer client: it answers
+`{user_id, role, csrf_token: null}` and sets no cookie. The account email is a separate best-effort
+read from Identity's `/auth/get_user`; without it the page names the account by role.
+
+Two adapters remain for each backend call, with the bearer path primary. Credential minting uses
+`POST /bff/v1/developer/renderers` with the OAuth bearer; the `browser-session` adapter
+(`POST /bff/v1/session` for a cookie + CSRF token, then replay) is dormant behind it for an older
+BFF and is only reached on a 401 — a 403 is a role denial and is reported as one. Bundle listing
+uses `GET /bff/v1/story-bundles` and falls back to `GET /show/published-evds?story_type=MINIMAX`
+only on 404/405; that fallback carries no premise line and no owner field, and the page says so
+when it cannot scope the list. Note that `/bff/v1/*` and `/api/v1/renderers/*` are served from the
+frontend origin on deployed environments, while Identity and the hosted MCP are on the API origin;
+`pickford-environment.ts` keeps those separate.
+
+`POST /api/v1/renderers/start-story` answers 202 with `story_run_id`, `story_id`, `room_shortlink`,
+`audience_join_url` and `status`. The story id and shortlink are adopted straight from that
+response, and the audience exchange then only has to agree — a contradiction fails the run. An
+unplayable bundle answers 409 `{"detail": {"code": "STORY_BUNDLE_NOT_READY", "state", "message"}}`,
+and that message is surfaced to the creator rather than collapsed into a status code.
 
 ## Compatibility and recovery
 

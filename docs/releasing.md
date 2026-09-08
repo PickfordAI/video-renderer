@@ -44,5 +44,6 @@ no durable resume, recording, or per-viewer authentication. The watch-link audie
 browser-local pseudonym and the renderer's fenced backend connection. The agent bridge
 uses text prompts. The old reference-editing studio is removed; the single player has no manual
 rendering controls, and its only credential inputs are the creator's own Pickford sign-in and fal
-key. The Pickford sign-in needs an Identity OAuth deployment with the renderer resource published;
-against a kernel without it, only the legacy handoff path works. Verify provider pricing before budgeting real runs.
+key. The Pickford sign-in needs an Identity OAuth deployment publishing the renderer resource
+(`/renderer`, scope `storykernel:renderer`) and a BFF that accepts those bearers; against a kernel
+without both, only the legacy handoff path works. Verify provider pricing before budgeting real runs.

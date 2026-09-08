@@ -21,6 +21,8 @@ export interface PlaybackStatus {
   hlsUrl: string | null;
   firstClipEtaSeconds: number | null;
   clipsRendered: number;
+  /** Why the run stopped, in the words the backend used. Shown in the picker. */
+  error: string | null;
 }
 
 export interface CreatorStatus {
@@ -57,6 +59,16 @@ export function firstClipEtaSeconds(run: ExternalRendererRunStatus | null, nowMs
   return Math.max(0, budgetSeconds - Math.round((nowMs - startedAt) / 1000));
 }
 
+/**
+ * The first failure is the cause; later ones are usually consequences of the same stop. A refusal
+ * such as `STORY_BUNDLE_NOT_READY` already reads as a sentence, so it is passed through unchanged.
+ */
+export function playbackError(run: ExternalRendererRunStatus | null): string | null {
+  if (!run || run.state !== 'failed') return null;
+  const failure = run.failures.find(value => value.trim());
+  return failure ? failure.trim().slice(0, 300) : 'This StoryBundle stopped unexpectedly.';
+}
+
 export function playbackStatus(run: ExternalRendererRunStatus | null, evdId: string | null, nowMs: number): PlaybackStatus {
   const played = run?.clips?.some(clip => clip.playedAt !== null) ?? false;
   const state = playbackState(run, played);
@@ -71,6 +83,7 @@ export function playbackStatus(run: ExternalRendererRunStatus | null, evdId: str
     hlsUrl: state === 'playing' ? run?.hlsUrl ?? null : null,
     firstClipEtaSeconds: firstClipEtaSeconds(run, nowMs),
     clipsRendered: run?.clipsRendered ?? 0,
+    error: playbackError(run),
   };
 }
 

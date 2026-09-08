@@ -32,10 +32,12 @@ rotate a credential by hand, or send the user to a Pickford developer page.
 
 StoryBundle states on the page: `ready` plays; `preparing` means Pickford is still generating that
 bundle's images, so its Play button is disabled and the list refreshes itself; `blocked` shows why
-Pickford cannot play it. A blocked bundle is a Pickford-side condition, not a renderer bug.
+Pickford cannot play it. A blocked bundle is a Pickford-side condition, not a renderer bug. If a
+bundle turns out not to be playable at start time, Pickford answers the start with 409
+`STORY_BUNDLE_NOT_READY` and the page shows that message verbatim; re-list rather than retrying.
 
 Once playback starts, the page shows the `storyRunId`, the shareable `audienceJoinUrl`, and the
-platform story id once Pickford resolves it. Treat the audience link as shareable access to the
+`story_id` and `room_shortlink` that the start response now carries directly. Treat the audience link as shareable access to the
 story and say so when handing it to the user.
 
 Private local state, all mode `0600` under `.renderer/`: `auth.json` (Pickford tokens),
@@ -49,8 +51,26 @@ The worker is a public OAuth 2.1 client. It discovers the resource metadata Pick
 (`/.well-known/oauth-protected-resource`), follows it to the authorization server, registers
 dynamically (RFC 7591, `token_endpoint_auth_method: none`), and runs authorization-code + PKCE S256
 with a loopback redirect it serves itself at `http://127.0.0.1:<media port>/auth/pickford/callback`.
-`PICKFORD_API_URL`, `PICKFORD_WEB_URL` and `PICKFORD_OAUTH_RESOURCE` override the discovered
-origins for a self-hosted or one-off kernel; the defaults follow `STORY_ENVIRONMENT`.
+
+The renderer's own resource is `https://api.<env>.pickford.ai/renderer` (`https://api.pickford.ai/renderer`
+on prod) and its scope is `storykernel:renderer`. **Resource and scope are a fixed pair:** mixing
+the renderer resource with the MCP's `storykernel:onboarding` scope, or the reverse, fails with
+`invalid_scope`. The renderer derives the scope from the resource for that reason, so overriding
+one cannot silently break the other. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
+`PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual values for a self-hosted
+or one-off kernel; the defaults follow `STORY_ENVIRONMENT`.
+
+Access tokens last 12 hours, the grant 90 days, and refresh tokens are **single-use and rotating**:
+replaying one revokes the whole grant. The renderer refreshes a stored token exactly once and never
+retries with the same value — a rejected refresh discards the sign-in and the creator signs in
+again. Do not script a refresh retry around it.
+
+The BFF accepts these bearers directly, with no CSRF, on `POST /bff/v1/session` (the whoami:
+`{user_id, role, csrf_token: null}`, no cookie set), `GET /bff/v1/story-bundles`, and the
+`GET`/`POST /bff/v1/developer/renderers` family including `/{id}/rotate` and `/{id}/revoke`. All of
+them require the `creator` or `admin` role; a 403 means the role is missing, which is an admin
+action, not something to retry. The developer mutation budget is 20 a day, which a creator signing
+in and playing stories will not reach.
 
 ## User-facing choice
 

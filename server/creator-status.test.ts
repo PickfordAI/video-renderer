@@ -71,6 +71,14 @@ describe('playback status', () => {
     expect(playbackStatus(null, null, START).state).toBe('idle');
   });
 
+  it('reports the backend refusal that stopped a run', () => {
+    const refused = run({ state: 'failed', failures: ['renderer story start failed with HTTP 409: This StoryBundle is still preparing images.'] });
+    expect(playbackStatus(refused, 'evd', START).error)
+      .toBe('renderer story start failed with HTTP 409: This StoryBundle is still preparing images.');
+    expect(playbackStatus(run({ state: 'failed', failures: [] }), 'evd', START).error).toBe('This StoryBundle stopped unexpectedly.');
+    expect(playbackStatus(run(), 'evd', START).error).toBeNull();
+  });
+
   it('carries the opaque start identities the creator needs', () => {
     expect(playbackStatus(run(), 'evd-1', START)).toMatchObject({
       storyRunId: 'cccccccc-0000-4000-8000-000000000001',
@@ -91,7 +99,7 @@ describe('creator status', () => {
   it('flags a fenced credential from an authentication failure on the run', () => {
     const status = creatorStatus({
       environment: 'dev',
-      auth: { signedIn: true, environment: 'dev', email: 'creator@example.com', scope: 'storykernel:onboarding', expiresAt: null },
+      auth: { signedIn: true, environment: 'dev', email: 'creator@example.com', role: 'creator', scope: 'storykernel:renderer', expiresAt: null },
       credential,
       falKey: { present: true, source: 'local-config' },
       bundleAdapter: 'story-bundles',
@@ -105,7 +113,7 @@ describe('creator status', () => {
   it('does not flag an ordinary generation failure as a fence', () => {
     const status = creatorStatus({
       environment: 'dev',
-      auth: { signedIn: true, environment: 'dev', email: null, scope: null, expiresAt: null },
+      auth: { signedIn: true, environment: 'dev', email: null, role: null, scope: null, expiresAt: null },
       credential,
       falKey: { present: false, source: null },
       bundleAdapter: null,

@@ -45,6 +45,10 @@ paid video jobs to fal. `STORY_ENVIRONMENT` selects the Pickford environment (`d
 `prod` for the gated creator group). `npm run auth -- status` prints the same status from a
 terminal, and `npm run auth -- logout` signs out and clears the stored tokens.
 
+Your Pickford account needs the **creator** role for the renderer to list and play your
+StoryBundles; a Pickford admin grants it. The renderer stays signed in on its own: access tokens
+last 12 hours and it refreshes them silently, within a grant that lasts 90 days.
+
 The private operator listener remains at `http://localhost:4173`.
 
 ## Advanced: agent-managed setup

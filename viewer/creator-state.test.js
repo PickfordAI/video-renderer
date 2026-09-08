@@ -45,6 +45,17 @@ describe('labels', () => {
     expect(playbackLabel({ state: 'playing', firstClipEtaSeconds: null })).toBe('Playing');
     expect(playbackLabel(undefined)).toBe('No StoryBundle playing');
   });
+
+  it('prefers a backend refusal over the generic failure line', () => {
+    expect(playbackLabel({ state: 'failed', error: 'Images are still generating for this StoryBundle.' }))
+      .toBe('Images are still generating for this StoryBundle.');
+    expect(playbackLabel({ state: 'failed', error: null })).toBe('This StoryBundle stopped unexpectedly');
+  });
+
+  it('names the account by role when no email is available', () => {
+    expect(signedInLabel({ signedIn: true, email: null, role: 'creator' })).toBe('Signed in to Pickford (creator)');
+    expect(signedInLabel({ signedIn: true, email: 'creator@example.com', role: 'creator' })).toBe('Signed in as creator@example.com');
+  });
 });
 
 describe('bundle cards', () => {

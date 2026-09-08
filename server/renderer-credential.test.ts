@@ -53,7 +53,7 @@ function cookieOnlyBff(options: { sessionStatus?: number } = {}) {
       response.headers.append('Set-Cookie', 'storykernel_csrf=csrf-1; Path=/');
       return response;
     }
-    if (!headers.cookie || headers['x-csrf-token'] !== 'csrf-1') return json({ detail: 'CSRF proof required' }, 403);
+    if (!headers.cookie || headers['x-csrf-token'] !== 'csrf-1') return json({ detail: 'Identity session required' }, 401);
     if (url.endsWith('/rotate')) return json(credentialBody('secret-2', '2026-09-08T00:00:00Z'));
     return json(credentialBody(), 201);
   };
@@ -126,7 +126,7 @@ describe('mint and rotate', () => {
     expect(readStoredCredential(env)?.clientSecret).toBe('secret-1');
   });
 
-  it('falls back to the cookie + CSRF session the BFF requires today', async () => {
+  it('keeps the cookie + CSRF session dormant behind the bearer, for an older BFF', async () => {
     const bff = cookieOnlyBff();
     const credential = await mintRendererCredential({ bffBaseUrl: BFF, accessToken: 'access-1', environment: 'dev', fetchImpl: bff.impl, env });
     expect(credential.adapter).toBe('browser-session');
@@ -150,13 +150,22 @@ describe('mint and rotate', () => {
   it('explains an unaccepted sign-in instead of leaking the HTTP detail', async () => {
     const bff = cookieOnlyBff({ sessionStatus: 401 });
     await expect(mintRendererCredential({ bffBaseUrl: BFF, accessToken: 'access-1', environment: 'dev', fetchImpl: bff.impl, env }))
-      .rejects.toThrow(/PIC-1739/);
+      .rejects.toThrow(/Sign in with Pickford again/);
+  });
+
+  it('treats 403 as a role denial and does not retry it through the session path', async () => {
+    const calls: string[] = [];
+    const impl = async (url: string): Promise<Response> => {
+      calls.push(url);
+      return json({ detail: 'Creator or admin role required' }, 403);
+    };
+    await expect(mintRendererCredential({ bffBaseUrl: BFF, accessToken: 'access-1', environment: 'dev', fetchImpl: impl, env }))
+      .rejects.toThrow(/creator or admin role/);
+    expect(calls).toEqual([`${BFF}/bff/v1/developer/renderers`]);
   });
 
   it('surfaces the developer rate limit as a retryable message', async () => {
-    const impl = async (url: string): Promise<Response> => (url.endsWith('/session')
-      ? json({ csrf_token: 'csrf-1' }, 200, { 'Set-Cookie': 'storykernel_csrf=csrf-1' })
-      : json({ detail: 'slow down' }, 429));
+    const impl = async (): Promise<Response> => json({ detail: 'slow down' }, 429);
     await expect(mintRendererCredential({ bffBaseUrl: BFF, accessToken: 'access-1', environment: 'dev', fetchImpl: impl, env }))
       .rejects.toThrow(/rate limited/);
   });

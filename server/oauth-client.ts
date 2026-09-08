@@ -6,9 +6,12 @@ import type { AuthorizationServerMetadata, FetchLike } from './oauth-discovery.j
  * OAuth 2.1 public client: dynamic registration (RFC 7591), authorization code with PKCE S256
  * (RFC 7636), resource indicators (RFC 8707), and refresh-token rotation. The renderer holds no
  * client secret; `token_endpoint_auth_method` is `none`, which is what Pickford advertises.
+ *
+ * Refresh tokens are single-use and rotate: replaying one revokes the whole grant. So a refresh is
+ * attempted exactly once per stored token and is never retried with the same value — see
+ * `PickfordAuth.refresh`, which discards the stored sign-in rather than trying again.
  */
 
-export const PICKFORD_SCOPE = 'storykernel:onboarding';
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface PkcePair {
@@ -69,6 +72,8 @@ export async function registerClient(options: {
   metadata: AuthorizationServerMetadata;
   redirectUris: string[];
   clientName: string;
+  /** Must be the scope paired with the resource this client will request. */
+  scope: string;
   clientUri?: string;
   softwareId?: string;
   softwareVersion?: string;
@@ -83,7 +88,7 @@ export async function registerClient(options: {
       token_endpoint_auth_method: 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      scope: PICKFORD_SCOPE,
+      scope: options.scope,
       ...(options.clientUri ? { client_uri: options.clientUri } : {}),
       ...(options.softwareId ? { software_id: options.softwareId } : {}),
       ...(options.softwareVersion ? { software_version: options.softwareVersion } : {}),
@@ -107,7 +112,7 @@ export function buildAuthorizationUrl(options: {
   resource: string;
   state: string;
   codeChallenge: string;
-  scope?: string;
+  scope: string;
 }): string {
   const url = new URL(options.metadata.authorizationEndpoint);
   url.searchParams.set('response_type', 'code');
@@ -117,11 +122,11 @@ export function buildAuthorizationUrl(options: {
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('resource', options.resource);
   url.searchParams.set('state', options.state);
-  url.searchParams.set('scope', options.scope ?? PICKFORD_SCOPE);
+  url.searchParams.set('scope', options.scope);
   return url.toString();
 }
 
-function parseTokenResponse(body: unknown, now: number): TokenSet {
+function parseTokenResponse(body: unknown, now: number, requestedScope: string): TokenSet {
   const value = (body ?? {}) as { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; scope?: unknown };
   if (typeof value.access_token !== 'string' || !value.access_token) throw new Error('Pickford returned no access token.');
   if (typeof value.refresh_token !== 'string' || !value.refresh_token) {
@@ -131,7 +136,7 @@ function parseTokenResponse(body: unknown, now: number): TokenSet {
   return {
     accessToken: value.access_token,
     refreshToken: value.refresh_token,
-    scope: typeof value.scope === 'string' ? value.scope : PICKFORD_SCOPE,
+    scope: typeof value.scope === 'string' ? value.scope : requestedScope,
     expiresAt: now + Math.max(0, Math.floor(expiresIn)) * 1000,
   };
 }
@@ -142,6 +147,7 @@ async function requestToken(
   fetchImpl: FetchLike,
   now: number,
   label: string,
+  requestedScope: string,
 ): Promise<TokenSet> {
   const response = await fetchImpl(metadata.tokenEndpoint, {
     method: 'POST',
@@ -150,7 +156,7 @@ async function requestToken(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) throw await failure(response, label);
-  return parseTokenResponse(await response.json(), now);
+  return parseTokenResponse(await response.json(), now, requestedScope);
 }
 
 export async function exchangeAuthorizationCode(options: {
@@ -160,6 +166,7 @@ export async function exchangeAuthorizationCode(options: {
   redirectUri: string;
   codeVerifier: string;
   resource: string;
+  scope: string;
   fetchImpl: FetchLike;
   now?: number;
 }): Promise<TokenSet> {
@@ -170,7 +177,7 @@ export async function exchangeAuthorizationCode(options: {
     redirect_uri: options.redirectUri,
     code_verifier: options.codeVerifier,
     resource: options.resource,
-  }, options.fetchImpl, options.now ?? Date.now(), 'Completing the Pickford sign-in');
+  }, options.fetchImpl, options.now ?? Date.now(), 'Completing the Pickford sign-in', options.scope);
 }
 
 export async function refreshAccessToken(options: {
@@ -178,6 +185,7 @@ export async function refreshAccessToken(options: {
   clientId: string;
   refreshToken: string;
   resource: string;
+  scope: string;
   fetchImpl: FetchLike;
   now?: number;
 }): Promise<TokenSet> {
@@ -186,7 +194,7 @@ export async function refreshAccessToken(options: {
     client_id: options.clientId,
     refresh_token: options.refreshToken,
     resource: options.resource,
-  }, options.fetchImpl, options.now ?? Date.now(), 'Refreshing the Pickford sign-in');
+  }, options.fetchImpl, options.now ?? Date.now(), 'Refreshing the Pickford sign-in', options.scope);
 }
 
 export async function revokeRefreshToken(options: {

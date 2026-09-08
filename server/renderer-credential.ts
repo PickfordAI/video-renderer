@@ -5,11 +5,11 @@ import type { FetchLike } from './oauth-discovery.js';
  * The renderer mints its own installation credential as the signed-in creator, so there is no
  * developer page and no handoff file.
  *
- * Two adapters, chosen at runtime:
- *  - `bearer`: `POST /bff/v1/developer/renderers` with the OAuth access token (PIC-1739).
- *  - `browser-session`: `POST /bff/v1/session` with the same bearer to obtain the session cookie
- *    plus a CSRF token, then replay the mutation with cookie + `X-CSRF-Token`. This is what the
- *    BFF requires today, so it is the fallback that keeps dev working before PIC-1739 lands.
+ * The BFF accepts the OAuth access token directly on these routes (PIC-1739) with no CSRF, so
+ * `bearer` is the only adapter a current Pickford environment uses. The `browser-session` adapter
+ * (`POST /bff/v1/session` for a cookie + CSRF token, then replay the mutation) is kept dormant
+ * behind it for an older BFF that still enforces the browser boundary; it is only reached when the
+ * bearer attempt is refused with 401.
  *
  * Both talk to the frontend origin, which is where `/bff/v1/*` is served on deployed environments.
  */
@@ -115,6 +115,8 @@ function cookieValue(setCookies: readonly string[], name: string): string | null
 
 /** Builds the cookie header for the CSRF replay from a `POST /bff/v1/session` response. */
 export function browserSessionFrom(setCookies: readonly string[], body: unknown): BrowserSession {
+  // A current BFF answers a bearer with `csrf_token: null` and sets no cookie; that is the signal
+  // that the browser boundary does not apply and the bearer attempt should have succeeded.
   const csrfToken = text(((body ?? {}) as { csrf_token?: unknown }).csrf_token, 'CSRF token');
   const cookies = setCookies
     .map(cookie => cookie.split(';')[0].trim())
@@ -143,7 +145,7 @@ async function establishBrowserSession(options: {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     throw new Error(response.status === 401
-      ? 'Pickford did not accept this sign-in for the developer API yet (PIC-1739 makes the BFF accept the renderer\'s OAuth token).'
+      ? 'Pickford did not accept this sign-in for the developer API. Sign in with Pickford again.'
       : `Establishing the Pickford developer session failed (HTTP ${response.status}).`);
   }
   const setCookies = response.headers.getSetCookie?.() ?? [];
@@ -152,9 +154,10 @@ async function establishBrowserSession(options: {
 
 function mutationFailure(status: number, label: string): Error {
   if (status === 429) {
+    // The developer budget is 20 mutations a day, which one creator cannot reach by hand.
     return new Error(`${label} was rate limited by Pickford. Wait and try again, or ask an admin to raise the developer limit.`);
   }
-  if (status === 403) return new Error(`${label} was refused: this account needs the creator role.`);
+  if (status === 403) return new Error(`${label} was refused: this account needs the creator or admin role.`);
   return new Error(`${label} failed (HTTP ${status}).`);
 }
 
@@ -185,8 +188,9 @@ async function mutate(options: {
   });
   if (bearer.ok) return { body: await bearer.json(), adapter: 'bearer' };
   await bearer.body?.cancel().catch(() => undefined);
-  // 403 is the CSRF boundary the BFF enforces today; 401 means the bearer was not accepted at all.
-  if (![401, 403].includes(bearer.status)) throw mutationFailure(bearer.status, options.label);
+  // A current BFF accepts the bearer, so 403 is a real role denial rather than a CSRF boundary and
+  // must not be retried through the session path. Only 401 falls through to the dormant adapter.
+  if (bearer.status !== 401) throw mutationFailure(bearer.status, options.label);
   const session = await establishBrowserSession({
     bffBaseUrl: new URL(options.url).origin,
     accessToken: options.accessToken,

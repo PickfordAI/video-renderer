@@ -24,6 +24,22 @@ export interface PickfordEnvironment {
   webBaseUrl: string;
   /** OAuth resource (audience) the renderer requests tokens for. */
   oauthResource: string;
+  /** The scope that belongs to that resource. Identity rejects any other pairing. */
+  oauthScope: string;
+}
+
+export const RENDERER_SCOPE = 'storykernel:renderer';
+export const ONBOARDING_SCOPE = 'storykernel:onboarding';
+
+/**
+ * Resource and scope are a fixed pair on Identity (PIC-1739): asking for the renderer resource
+ * with the onboarding scope, or the reverse, fails with `invalid_scope`. Deriving the scope from
+ * the resource means an override of one cannot silently break the other.
+ */
+export function scopeForResource(resource: string): string {
+  const path = new URL(resource).pathname.replace(/\/$/, '');
+  if (path.endsWith('/storykernel/mcp')) return ONBOARDING_SCOPE;
+  return RENDERER_SCOPE;
 }
 
 function origin(value: string, label: string): string {
@@ -60,16 +76,17 @@ function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webB
 }
 
 /**
- * `STORY_ENVIRONMENT` selects the environment. `PICKFORD_API_URL`, `PICKFORD_WEB_URL` and
- * `PICKFORD_OAUTH_RESOURCE` override individual origins for one-off or self-hosted kernels.
+ * `STORY_ENVIRONMENT` selects the environment. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
+ * `PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual values for one-off or
+ * self-hosted kernels.
  */
 export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): PickfordEnvironment {
   const name = environmentName(env.STORY_ENVIRONMENT);
   const defaults = defaultHosts(name);
   const apiBaseUrl = origin(env.PICKFORD_API_URL || defaults.apiBaseUrl, 'PICKFORD_API_URL');
   const webBaseUrl = origin(env.PICKFORD_WEB_URL || defaults.webBaseUrl, 'PICKFORD_WEB_URL');
-  // PIC-1739 registers a renderer-specific resource. Until it ships, the hosted MCP resource is
-  // the only audience Identity issues creator tokens for, so it stays the default.
-  const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || `${apiBaseUrl}/storykernel/mcp`, 'PICKFORD_OAUTH_RESOURCE');
-  return { name, apiBaseUrl, webBaseUrl, oauthResource };
+  // The renderer has its own resource (PIC-1739), separate from the hosted MCP's.
+  const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || `${apiBaseUrl}/renderer`, 'PICKFORD_OAUTH_RESOURCE');
+  const oauthScope = env.PICKFORD_OAUTH_SCOPE?.trim() || scopeForResource(oauthResource);
+  return { name, apiBaseUrl, webBaseUrl, oauthResource, oauthScope };
 }

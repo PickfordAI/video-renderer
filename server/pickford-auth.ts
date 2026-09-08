@@ -46,6 +46,8 @@ interface StoredClient {
   issuer: string;
   clientId: string;
   redirectUris: string[];
+  /** A client registered for one scope cannot request another, so it is part of the cache key. */
+  scope: string;
   registeredAt: number;
 }
 
@@ -55,34 +57,65 @@ interface PendingSignIn {
   redirectUri: string;
   clientId: string;
   resource: string;
+  scope: string;
   metadata: AuthorizationServerMetadata;
   createdAt: number;
 }
 
 export interface PickfordIdentity {
-  email: string | null;
   userId: string | null;
+  role: string | null;
+  email: string | null;
 }
 
-/** `GET /auth/get_user` on the API origin, once Identity accepts the OAuth bearer (PIC-1739). */
+/**
+ * Whoami. `POST /bff/v1/session` accepts the OAuth bearer directly and answers
+ * `{user_id, role, csrf_token: null}` without setting a cookie, so it is the account lookup for a
+ * bearer client. The email is a display nicety only, fetched best-effort from Identity afterwards.
+ */
 export async function fetchPickfordIdentity(options: {
-  apiBaseUrl: string;
+  bffBaseUrl: string;
+  apiBaseUrl?: string;
   accessToken: string;
   fetchImpl: FetchLike;
 }): Promise<PickfordIdentity> {
-  const response = await options.fetchImpl(`${options.apiBaseUrl}/auth/get_user`, {
-    headers: { Authorization: `Bearer ${options.accessToken}`, Accept: 'application/json' },
+  const response = await options.fetchImpl(`${options.bffBaseUrl}/bff/v1/session`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${options.accessToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: '{}',
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
-    throw new Error(`Could not read the signed-in Pickford account (HTTP ${response.status}).`);
+    throw new Error(response.status === 403
+      ? 'This Pickford account does not have the creator role yet. Ask a Pickford admin to grant it.'
+      : `Could not read the signed-in Pickford account (HTTP ${response.status}).`);
   }
-  const body = await response.json() as { email?: unknown; id?: unknown };
-  return {
-    email: typeof body.email === 'string' ? body.email : null,
-    userId: typeof body.id === 'string' ? body.id : null,
+  const body = await response.json() as { user_id?: unknown; role?: unknown };
+  const identity: PickfordIdentity = {
+    userId: typeof body.user_id === 'string' ? body.user_id : null,
+    role: typeof body.role === 'string' ? body.role : null,
+    email: null,
   };
+  if (!options.apiBaseUrl) return identity;
+  try {
+    const account = await options.fetchImpl(`${options.apiBaseUrl}/auth/get_user`, {
+      headers: { Authorization: `Bearer ${options.accessToken}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!account.ok) {
+      await account.body?.cancel().catch(() => undefined);
+      return identity;
+    }
+    const value = await account.json() as { email?: unknown };
+    return { ...identity, email: typeof value.email === 'string' ? value.email : null };
+  } catch {
+    return identity;
+  }
 }
 
 export class PickfordAuth {
@@ -113,7 +146,7 @@ export class PickfordAuth {
     return readStoredAuth(this.options.env) !== null;
   }
 
-  private async authorizationServer(resource: string): Promise<{ metadata: AuthorizationServerMetadata; resource: string }> {
+  private async authorizationServer(resource: string): Promise<{ metadata: AuthorizationServerMetadata; resource: string; scope: string }> {
     // Prefer the challenge the resource itself advertises; fall back to well-known probing.
     let challengeMetadataUrl: string | null = null;
     try {
@@ -133,24 +166,32 @@ export class PickfordAuth {
       challengeMetadataUrl ? [challengeMetadataUrl] : [],
     );
     const metadata = await discoverAuthorizationServer(protectedResource.authorizationServers[0], this.fetchImpl);
-    return { metadata, resource: protectedResource.resource };
+    // Resource and scope are a fixed pair. Trust the resource's own metadata over our default when
+    // it advertises exactly one scope, so a renamed scope does not need a renderer release.
+    const configured = this.options.environment.oauthScope;
+    const advertised = protectedResource.scopesSupported;
+    const scope = advertised.length && !advertised.includes(configured) && advertised.length === 1
+      ? advertised[0]
+      : configured;
+    return { metadata, resource: protectedResource.resource, scope };
   }
 
-  private storedClient(issuer: string, redirectUri: string): StoredClient | null {
+  private storedClient(issuer: string, redirectUri: string, scope: string): StoredClient | null {
     const value = readPrivateJson<StoredClient>(CLIENT_FILE, this.options.env);
-    if (!value || value.issuer !== issuer || !Array.isArray(value.redirectUris)) return null;
+    if (!value || value.issuer !== issuer || value.scope !== scope || !Array.isArray(value.redirectUris)) return null;
     return value.redirectUris.includes(redirectUri) ? value : null;
   }
 
   /** Step 1: register (once per issuer + redirect URI) and hand the browser an authorization URL. */
   async beginSignIn(redirectUri: string): Promise<{ authorizationUrl: string; state: string }> {
-    const { metadata, resource } = await this.authorizationServer(this.options.environment.oauthResource);
-    let client: StoredClient | RegisteredClient | null = this.storedClient(metadata.issuer, redirectUri);
+    const { metadata, resource, scope } = await this.authorizationServer(this.options.environment.oauthResource);
+    let client: StoredClient | RegisteredClient | null = this.storedClient(metadata.issuer, redirectUri, scope);
     if (!client) {
       const registered = await registerClient({
         metadata,
         redirectUris: [redirectUri],
         clientName: CLIENT_NAME,
+        scope,
         softwareId: SOFTWARE_ID,
         softwareVersion: this.options.version,
         fetchImpl: this.fetchImpl,
@@ -159,6 +200,7 @@ export class PickfordAuth {
         issuer: metadata.issuer,
         clientId: registered.clientId,
         redirectUris: registered.redirectUris,
+        scope,
         registeredAt: registered.registeredAt,
       };
       writePrivateJson(CLIENT_FILE, stored, this.options.env);
@@ -169,11 +211,11 @@ export class PickfordAuth {
     const createdAt = this.now();
     for (const [key, value] of this.pending) if (createdAt - value.createdAt > PENDING_TTL_MS) this.pending.delete(key);
     this.pending.set(state, {
-      state, codeVerifier: pkce.codeVerifier, redirectUri, clientId: client.clientId, resource, metadata, createdAt,
+      state, codeVerifier: pkce.codeVerifier, redirectUri, clientId: client.clientId, resource, scope, metadata, createdAt,
     });
     return {
       authorizationUrl: buildAuthorizationUrl({
-        metadata, clientId: client.clientId, redirectUri, resource, state, codeChallenge: pkce.codeChallenge,
+        metadata, clientId: client.clientId, redirectUri, resource, scope, state, codeChallenge: pkce.codeChallenge,
       }),
       state,
     };
@@ -195,6 +237,7 @@ export class PickfordAuth {
       redirectUri: pending.redirectUri,
       codeVerifier: pending.codeVerifier,
       resource: pending.resource,
+      scope: pending.scope,
       fetchImpl: this.fetchImpl,
       now: this.now(),
     });
@@ -220,17 +263,19 @@ export class PickfordAuth {
   private async attachIdentity(auth: StoredAuth): Promise<void> {
     try {
       const identity = await fetchPickfordIdentity({
+        bffBaseUrl: this.options.environment.webBaseUrl,
         apiBaseUrl: this.options.environment.apiBaseUrl,
         accessToken: auth.accessToken,
         fetchImpl: this.fetchImpl,
       });
-      writeStoredAuth({ ...auth, email: identity.email, userId: identity.userId }, this.options.env);
+      writeStoredAuth({ ...auth, email: identity.email, userId: identity.userId, role: identity.role }, this.options.env);
     } catch {
-      // Identity does not accept the renderer's OAuth bearer until PIC-1739 lands.
+      // A whoami failure must not undo a valid sign-in; the page shows the account as unnamed and
+      // the next real call reports the actual problem (for example a missing creator role).
     }
   }
 
-  /** The stored user id, when Identity told us one. Used to scope the fallback bundle listing. */
+  /** The stored user id, when the whoami answered. Used to scope the fallback bundle listing. */
   userId(): string | null {
     return readStoredAuth(this.options.env)?.userId ?? null;
   }
@@ -253,11 +298,13 @@ export class PickfordAuth {
         clientId: auth.clientId,
         refreshToken: auth.refreshToken,
         resource: auth.resource,
+        scope: auth.scope,
         fetchImpl: this.fetchImpl,
         now: this.now(),
       });
     } catch (error) {
-      // A rejected refresh means the grant is gone; a stale file would refuse forever.
+      // Refresh tokens are single-use: replaying one revokes the grant. So this is attempted once
+      // and never retried with the same token, and a rejection discards the stored sign-in.
       clearStoredAuth(this.options.env);
       throw new Error(`${error instanceof Error ? error.message : 'The Pickford sign-in expired.'} Sign in with Pickford again.`);
     }
@@ -270,6 +317,7 @@ export class PickfordAuth {
       signedInAt: auth.signedInAt,
       email: auth.email ?? null,
       userId: auth.userId ?? null,
+      role: auth.role ?? null,
     }, tokens);
   }
 

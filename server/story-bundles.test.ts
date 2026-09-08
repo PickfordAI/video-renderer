@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { listStoryBundles, mapPublishedEvd, mapStoryBundle, storyBundleState } from './story-bundles.js';
+import { listStoryBundles, mapPublishedEvd, mapStoryBundle, storyBundleState, storyStartRefusalMessage } from './story-bundles.js';
 
 const BFF = 'https://dev.pickford.ai';
 const API = 'https://api.dev.pickford.ai';
@@ -101,5 +101,30 @@ describe('listStoryBundles', () => {
     const impl = async (): Promise<Response> => json({ detail: 'no' }, 401);
     await expect(listStoryBundles({ bffBaseUrl: BFF, apiBaseUrl: API, accessToken: 'a', userId: null, fetchImpl: impl }))
       .rejects.toThrow(/Sign in with Pickford again/);
+  });
+});
+
+describe('start-story refusal', () => {
+  it('reads the message out of a STORY_BUNDLE_NOT_READY detail', () => {
+    expect(storyStartRefusalMessage({
+      detail: { code: 'STORY_BUNDLE_NOT_READY', state: 'preparing', message: 'Images are still generating for this StoryBundle.' },
+    })).toBe('Images are still generating for this StoryBundle.');
+  });
+
+  it('falls back to a state-appropriate line when the message is absent', () => {
+    expect(storyStartRefusalMessage({ detail: { code: 'STORY_BUNDLE_NOT_READY', state: 'preparing' } })).toBe('Preparing images…');
+    expect(storyStartRefusalMessage({ detail: { code: 'STORY_BUNDLE_NOT_READY', state: 'blocked' } }))
+      .toBe('Pickford cannot play this StoryBundle.');
+  });
+
+  it('ignores an unrelated or plain-string detail', () => {
+    expect(storyStartRefusalMessage({ detail: 'renderer is fenced' })).toBeNull();
+    expect(storyStartRefusalMessage({ detail: { code: 'SOMETHING_ELSE', message: 'no' } })).toBeNull();
+    expect(storyStartRefusalMessage(null)).toBeNull();
+  });
+
+  it('bounds the message so a long backend string cannot flood the page', () => {
+    const long = storyStartRefusalMessage({ detail: { code: 'STORY_BUNDLE_NOT_READY', message: 'x'.repeat(500) } });
+    expect(long).toHaveLength(300);
   });
 });
