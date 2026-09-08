@@ -775,6 +775,38 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
   }));
 }
 
+/**
+ * The immutable asset manifest registered under `rendererVersion`. Renderer Platform keys manifests by
+ * (renderer, version) and closes the bridge with 4400 when the same version arrives with a different
+ * hash, so only inputs that change what gets generated belong here. Scheduler tuning (`concurrency`,
+ * `maxBufferedSeconds`) changes pacing, not assets, and is deliberately left out so a creator-UI run and
+ * a CLI run that buffer differently register the same manifest instead of colliding.
+ */
+export function assetManifestFor(
+  config: Pick<ExternalRendererRunConfig, 'rendererVersion' | 'renderMode' | 'rendererConfig'>,
+  providerKind: VideoProvider['kind'],
+  env: NodeJS.ProcessEnv = process.env,
+): JsonObject {
+  return {
+    renderer_version: config.rendererVersion,
+    provider: providerKind,
+    render_mode: config.renderMode,
+    renderer_config: { model: config.rendererConfig.model, continuity: config.rendererConfig.continuity },
+    model: config.renderMode === 'fal-turbo-i2v'
+      ? 'minimax/h3-max-turbo/image-to-video'
+      : config.renderMode === 'fal-max-ref2v'
+        ? 'minimax/h3-max/reference-to-video'
+        : providerKind === 'minimax-direct'
+          ? env.MINIMAX_VIDEO_MODEL_ID ?? 'MiniMax-H3-Max'
+          : env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',
+    output: { owner: 'external_renderer', protocol: 'hls' },
+  };
+}
+
+export function assetManifestSha256(assetJson: JsonObject): string {
+  return createHash('sha256').update(canonicalJson(assetJson)).digest('hex');
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -1620,21 +1652,8 @@ class ExternalRendererRun {
         if (this.socket?.readyState === WebSocket.OPEN) send(this.socket, { type: 'renderer.heartbeat' });
       }, Math.max(1_000, Math.floor(leaseSeconds * 1_000 / 4)));
       if (this.config.registerManifest) {
-        const assetJson = {
-          renderer_version: this.config.rendererVersion,
-          provider: this.provider.kind,
-          render_mode: this.config.renderMode,
-          renderer_config: this.config.rendererConfig,
-          model: this.config.renderMode === 'fal-turbo-i2v'
-            ? 'minimax/h3-max-turbo/image-to-video'
-            : this.config.renderMode === 'fal-max-ref2v'
-              ? 'minimax/h3-max/reference-to-video'
-              : this.provider.kind === 'minimax-direct'
-            ? process.env.MINIMAX_VIDEO_MODEL_ID ?? 'MiniMax-H3-Max'
-            : process.env.FAL_VIDEO_MODEL_ID ?? 'minimax/h3-max-turbo/text-to-video',
-          output: { owner: 'external_renderer', protocol: 'hls' },
-        };
-        const sha256 = createHash('sha256').update(canonicalJson(assetJson)).digest('hex');
+        const assetJson = assetManifestFor(this.config, this.provider.kind);
+        const sha256 = assetManifestSha256(assetJson);
         send(this.socket, {
           type: 'renderer.asset_manifest',
           schema_version: MANIFEST_SCHEMA_VERSION,
