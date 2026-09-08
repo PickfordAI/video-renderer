@@ -18,8 +18,8 @@ export function handoffRendererConfig(value) {
   if (!Object.hasOwn(supported, model)) throw new Error('rendererConfig.model must be auto, fal-turbo-i2v, or fal-max-ref2v.');
   const continuity = config.continuity ?? (model === 'fal-turbo-i2v' ? 'last-frame-chain' : model === 'fal-max-ref2v' ? 'camera-anchors' : 'none');
   if (!supported[model].includes(continuity)) throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
-  const concurrency = config.concurrency ?? value.generationConcurrency ?? 2;
-  const maxBufferedSeconds = config.maxBufferedSeconds ?? value.maxBufferedSeconds ?? 30;
+  const concurrency = config.concurrency ?? value.generationConcurrency ?? 4;
+  const maxBufferedSeconds = config.maxBufferedSeconds ?? value.maxBufferedSeconds ?? 45;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error('rendererConfig.concurrency must be an integer from 1 to 16.');
   if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 150) throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 150.');
   return { model, continuity, concurrency, maxBufferedSeconds };

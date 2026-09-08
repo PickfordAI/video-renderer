@@ -9,6 +9,11 @@ export type RenderMode = typeof RENDER_MODES[number];
  */
 export const MAX_CONCURRENCY = 16;
 export const MAX_BUFFERED_SECONDS = 150;
+/** PIC-1727 sweep: 4 in-flight jobs and 60 s of unplayed video played a MiniMax story with no stall
+ *  gaps once fal submits were fast; 2 still stalled on new-camera establishing shots. 45 s is the
+ *  chosen default: room for four 6-10 s clips without paying far ahead of playback. */
+export const DEFAULT_CONCURRENCY = 4;
+export const DEFAULT_BUFFERED_SECONDS = 45;
 
 export type ContinuityStrategy = 'none' | 'last-frame-chain' | 'camera-anchors';
 export interface RendererConfig {
@@ -45,8 +50,8 @@ export function parseRendererConfig(value: unknown, legacy: {
   if (!SUPPORTED_CONTINUITY[model].includes(continuity as ContinuityStrategy)) {
     throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
   }
-  const concurrency = config.concurrency ?? legacy.generationConcurrency ?? 2;
-  const maxBufferedSeconds = config.maxBufferedSeconds ?? legacy.maxBufferedSeconds ?? 30;
+  const concurrency = config.concurrency ?? legacy.generationConcurrency ?? DEFAULT_CONCURRENCY;
+  const maxBufferedSeconds = config.maxBufferedSeconds ?? legacy.maxBufferedSeconds ?? DEFAULT_BUFFERED_SECONDS;
   if (!Number.isInteger(concurrency) || (concurrency as number) < 1 || (concurrency as number) > MAX_CONCURRENCY) {
     throw new Error('rendererConfig.concurrency must be an integer from 1 to ' + MAX_CONCURRENCY);
   }

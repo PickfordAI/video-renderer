@@ -8,9 +8,9 @@ describe('renderer configuration', () => {
     expect(parseRendererConfig({ ...base, continuity: 'camera-anchors' })).toEqual({ ...base, continuity: 'camera-anchors' });
   });
   it('preserves old handoff defaults and lets explicit canonical configuration win', () => {
-    expect(parseRendererConfig(undefined, { renderMode: 'fal-turbo-i2v', generationConcurrency: 3 })).toEqual({ model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 3, maxBufferedSeconds: 30 });
+    expect(parseRendererConfig(undefined, { renderMode: 'fal-turbo-i2v', generationConcurrency: 3 })).toEqual({ model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 3, maxBufferedSeconds: 45 });
     expect(parseRendererConfig({ model: 'fal-max-ref2v', continuity: 'none', concurrency: 4 }, { renderMode: 'auto', generationConcurrency: 1 })).toMatchObject({ model: 'fal-max-ref2v', continuity: 'none', concurrency: 4 });
-    expect(parseRendererConfig(undefined)).toEqual({ model: 'auto', continuity: 'none', concurrency: 2, maxBufferedSeconds: 30 });
+    expect(parseRendererConfig(undefined)).toEqual({ model: 'auto', continuity: 'none', concurrency: 4, maxBufferedSeconds: 45 });
   });
   it('rejects unimplemented model/strategy pairs and invalid budgets explicitly', () => {
     expect(() => parseRendererConfig({ model: 'fal-turbo-i2v', continuity: 'camera-anchors' })).toThrow('does not yet support');
