@@ -43,10 +43,10 @@ describe('render mode handoff', () => {
     const handoff = { ...valid(), renderMode: 'fal-max-ref2v', generationConcurrency: 3, maxBufferedSeconds: 25, shotPlanner };
     expect(validateHandoff(handoff)).toBe(handoff);
     expect(renderingOptions(handoff)).toMatchObject({ rendererConfig: { model: 'fal-max-ref2v', continuity: 'camera-anchors', concurrency: 3, maxBufferedSeconds: 25 }, shotPlanner });
-    expect(renderingOptions({ renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://example.com/scene.jpg' })).toMatchObject({ rendererConfig: { model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 2, maxBufferedSeconds: 30 } });
+    expect(renderingOptions({ renderMode: 'fal-turbo-i2v', initialImageUrl: 'https://example.com/scene.jpg' })).toMatchObject({ rendererConfig: { model: 'fal-turbo-i2v', continuity: 'last-frame-chain', concurrency: 4, maxBufferedSeconds: 45 } });
   });
   it('rejects incomplete models and unsafe reference settings before provisioning', () => {
-    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { generationConcurrency: 9 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
+    for (const change of [{ renderMode: 'typo' }, { renderMode: 'fal-turbo-i2v' }, { generationConcurrency: 17 }, { maxBufferedSeconds: 0 }, { initialImageUrl: 'http://example.com/scene.jpg' }, { shotPlanner: { characters: { Lily: { imageUrl: 'https://example.com/lily.jpg', voice: { url: 'https://example.com/voice.mp3', durationSeconds: 20 } } } } }]) {
       expect(() => validateHandoff({ ...valid(), ...change })).toThrow();
     }
   });

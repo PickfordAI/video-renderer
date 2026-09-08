@@ -22,6 +22,13 @@ async function fixture() {
   ws.on('connection', socket => socket.on('message', raw => {
     const message = JSON.parse(raw.toString()); events.push(message);
     if (message.type === 'renderer.hello') send({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'fixture-session', session_epoch: 1, lease_seconds: 30 });
+    // The kernel fast-acks group-start progress; these tests are about the completion handshake.
+    if (message.type === 'renderer.event' && message.event === 'command_progress') send({ type: 'renderer.event.verdict', protocol_version: 1, verdict: {
+      verdict_id: `10000000-0000-4000-8000-${String(events.length).padStart(12, '0')}`, client_event_id: message.client_event_id, event_message_id: message.client_event_id,
+      route: { tier: 'renderer-dev', environment: 'local', project_id: '11111111-1111-4111-8111-111111111111', story_run_id: '22222222-2222-4222-8222-222222222222', renderer_id: rendererId, stream_id: rendererId, renderer_lease_id: assignmentId, assignment_generation: 1 },
+      correlation: { episode_id: 2, sequence: message.sequence, supplied_episode_id: 2, supplied_sequence: message.sequence },
+      outcome: 'accepted', retryable: false, confirmed_frontier: message.sequence, missing_sequence_ranges: [], occurred_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
+    } });
     if (message.event === 'script_started') send({ type: 'renderer.event.verdict', protocol_version: 1, verdict: {
       verdict_id: message.client_event_id, client_event_id: message.client_event_id, event_message_id: message.client_event_id,
       route: { tier: 'renderer-dev', environment: 'local', project_id: '11111111-1111-4111-8111-111111111111', story_run_id: '22222222-2222-4222-8222-222222222222', renderer_id: rendererId, stream_id: rendererId, renderer_lease_id: assignmentId, assignment_generation: 1 },
@@ -83,12 +90,12 @@ describe('StoryKernel completion verdict handshake', () => {
       expect(generateVideo).toHaveBeenCalledTimes(1);
       test.play();
       await vi.waitFor(() => expect(test.completion()).toBeDefined());
-      await vi.waitFor(() => expect(test.run.eventVerdicts).toMatchObject({ pending: 1, acknowledged: 1 }));
+      await vi.waitFor(() => expect(test.run.eventVerdicts).toMatchObject({ pending: 1, acknowledged: 2 }));
       expect(test.stop).not.toHaveBeenCalled();
       test.send(test.verdict());
       await vi.waitFor(() => expect(test.acknowledgements()).toEqual([{ type: 'renderer.event.verdict.ack', protocol_version: 1, verdict_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', client_event_id: test.completion()!.client_event_id }]));
       await vi.waitFor(() => expect(test.run.state).toBe('ended'));
-      expect(test.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 2, refused: 0 });
+      expect(test.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 3, refused: 0 });
       expect(test.stop).toHaveBeenCalledOnce();
     } finally { await test.close(); }
   });
@@ -115,7 +122,7 @@ describe('StoryKernel completion verdict handshake', () => {
       test.send(test.verdict('behind_confirmed_frontier'));
       await vi.waitFor(() => expect(test.acknowledgements()).toHaveLength(1));
       await vi.waitFor(() => expect(test.run.state).toBe('failed'));
-      expect(test.run.eventVerdicts).toMatchObject({ acknowledged: 2, pending: 0, refused: 1, lastOutcome: { outcome: 'behind_confirmed_frontier' } });
+      expect(test.run.eventVerdicts).toMatchObject({ acknowledged: 3, pending: 0, refused: 1, lastOutcome: { outcome: 'behind_confirmed_frontier' } });
       expect(test.run.failures.join(' ')).toContain('behind_confirmed_frontier');
     } finally { await test.close(); }
   });
@@ -126,7 +133,7 @@ describe('StoryKernel completion verdict handshake', () => {
       test.play(); await vi.waitFor(() => expect(test.completion()).toBeDefined());
       test.send({ type: 'renderer.event.rejected', protocol_version: 1, client_event_id: test.completion()!.client_event_id, code: 'idempotency_conflict', retryable: false, correlation_mismatch: null });
       await vi.waitFor(() => expect(test.run.state).toBe('failed'));
-      expect(test.run.eventVerdicts).toMatchObject({ acknowledged: 1, pending: 1, refused: 1, lastTransportRejection: { code: 'idempotency_conflict' } });
+      expect(test.run.eventVerdicts).toMatchObject({ acknowledged: 2, pending: 1, refused: 1, lastTransportRejection: { code: 'idempotency_conflict' } });
       expect(test.acknowledgements()).toEqual([]);
     } finally { await test.close(); }
   });

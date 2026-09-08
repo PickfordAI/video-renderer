@@ -1,3 +1,4 @@
+import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { parseRenderMode, type RenderMode } from './render-mode.js';
 
 const TERMINAL_ERROR_STATUSES = new Set(['ERROR', 'FAILED', 'CANCELLED']);
@@ -27,8 +28,11 @@ export interface GenerateVideoResult {
     queueSeconds: number;
     totalSeconds: number;
     polls: number;
+    /** Deepest fal queue position observed while polling; null when the job never reported one. */
+    maxQueuePosition?: number | null;
   };
 }
+
 
 interface FalQueueHandle {
   request_id?: unknown;
@@ -138,6 +142,51 @@ function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<voi
   });
 }
 
+// Provider statuses worth one more try. 4xx other than these are the caller's fault and
+// would fail identically on retry; success and non-listed statuses return to the caller.
+const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const FETCH_ATTEMPTS = 4;
+const FETCH_RETRY_BASE_MS = 500;
+
+function describeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause as { code?: unknown; message?: unknown } | undefined;
+  const code = typeof cause?.code === 'string' ? cause.code : typeof cause?.message === 'string' ? cause.message : null;
+  return code ? `${error.message} (${code})` : error.message;
+}
+
+/**
+ * fetch with bounded retries for the failures a busy queue produces: connection resets and
+ * DNS blips (Node reports both as "fetch failed") and 5xx/429 responses. Eight or more clips
+ * poll fal concurrently, so one transient error must not fence a whole run.
+ */
+async function fetchWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let delay = FETCH_RETRY_BASE_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, init);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (attempt >= FETCH_ATTEMPTS) {
+        throw new FalVideoError(`${label} failed after ${attempt} attempts: ${describeFetchError(error)}`);
+      }
+      await abortableDelay(delay, signal);
+      delay = Math.min(delay * 2, 4_000);
+      continue;
+    }
+    if (!TRANSIENT_HTTP_STATUSES.has(response.status) || attempt >= FETCH_ATTEMPTS) return response;
+    await abortableDelay(delay, signal);
+    delay = Math.min(delay * 2, 4_000);
+  }
+}
+
 export async function generateVideo(
   input: GenerateVideoInput,
   options: {
@@ -190,7 +239,7 @@ export async function generateVideo(
   let requestId: string | null = null;
   let completed = false;
   try {
-    const submit = await fetchImpl(`${queueBaseUrl}/${modelId}`, {
+    const submit = await fetchWithRetry(fetchImpl, `${queueBaseUrl}/${modelId}`, {
       method: 'POST',
       headers,
       signal: options.signal,
@@ -208,7 +257,7 @@ export async function generateVideo(
               ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
             }),
       }),
-    });
+    }, 'fal submit', options.signal);
     const handle = await readFalJson<FalQueueHandle>(submit, 'fal submit');
     const submitSeconds = elapsedSeconds(submitStartedAt);
     requestId = requiredString(handle.request_id, 'request_id');
@@ -222,9 +271,15 @@ export async function generateVideo(
         : `${queueBaseUrl}/${modelId}/requests/${requestId}`;
 
     const queueStartedAt = performance.now();
-    const timeoutMs = options.timeoutMs ?? 180_000;
+    let polls = 0;
+    let maxQueuePosition: number | null = null;
+    let lastStatus = '';
+    const timeoutMs = options.timeoutMs ?? defaultRequestTimeoutMs();
     const deadlineAt = overallStartedAt + timeoutMs;
-    const timeoutError = () => new FalVideoError(`fal request ${requestId} timed out`);
+    const timeoutError = () => new FalVideoError(
+      `fal request ${requestId} timed out after ${Math.round(elapsedSeconds(overallStartedAt))}s`
+        + ` (last status ${lastStatus || 'unknown'}, max queue position ${maxQueuePosition ?? 'n/a'})`,
+    );
     const readOptions = {
       headers,
       fetchImpl,
@@ -233,7 +288,6 @@ export async function generateVideo(
       deadlineAt,
       timeoutError,
     };
-    let polls = 0;
     for (;;) {
       if (performance.now() >= deadlineAt) throw timeoutError();
       const statusBody = await readFalJsonWithRetry<FalStatus>({
@@ -243,6 +297,10 @@ export async function generateVideo(
       });
       polls += 1;
       const status = typeof statusBody.status === 'string' ? statusBody.status : '';
+      lastStatus = status;
+      if (typeof statusBody.queue_position === 'number') {
+        maxQueuePosition = Math.max(maxQueuePosition ?? 0, statusBody.queue_position);
+      }
       if (status === 'COMPLETED') {
         completed = true;
         break;
@@ -272,6 +330,7 @@ export async function generateVideo(
         queueSeconds: elapsedSeconds(queueStartedAt),
         totalSeconds: elapsedSeconds(overallStartedAt),
         polls,
+        maxQueuePosition,
       },
     };
   } catch (error) {

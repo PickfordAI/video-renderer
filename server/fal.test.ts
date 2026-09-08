@@ -272,3 +272,65 @@ describe('generateVideo', () => {
     expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: 'PUT', signal: expect.any(AbortSignal) });
   });
 });
+
+describe('generateVideo transient failure handling', () => {
+  const handle = () => json({ request_id: 'request-retry', status_url: 'https://fal/status', response_url: 'https://fal/result' });
+
+  it('retries a network-level fetch failure during status polling instead of fencing the run', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(handle())
+      .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }))
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/retried.mp4' } }));
+
+    const result = await generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    );
+
+    expect(result.videoUrl).toBe('https://cdn.example/retried.mp4');
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  }, 15_000);
+
+  it('retries a 503 on submit and then proceeds', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('busy', { status: 503 }))
+      .mockResolvedValueOnce(handle())
+      .mockResolvedValueOnce(json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(json({ video: { url: 'https://cdn.example/after-503.mp4' } }));
+
+    const result = await generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9' },
+      { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+    );
+    expect(result.videoUrl).toBe('https://cdn.example/after-503.mp4');
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(fetchImpl.mock.calls[1]?.[0]);
+  }, 15_000);
+
+  it('gives up with the underlying cause after repeated network failures', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }));
+
+    await expect(
+      generateVideo(
+        { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9' },
+        { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+      ),
+    ).rejects.toThrow(/fal submit failed after 4 attempts: fetch failed \(ENOTFOUND\)/);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  }, 20_000);
+
+  it('does not retry a client error, which would fail identically', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('bad request', { status: 422 }));
+    await expect(
+      generateVideo(
+        { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9' },
+        { apiKey: 'secret', fetchImpl, pollIntervalMs: 0 },
+      ),
+    ).rejects.toBeInstanceOf(FalVideoError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

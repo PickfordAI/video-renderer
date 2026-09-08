@@ -4,6 +4,9 @@ import type { ServerResponse } from 'node:http';
 import WebSocket from 'ws';
 
 import { generateVideo } from './fal.js';
+import { falReferenceUploader, sceneAssetTransport } from './fal-storage.js';
+import { ffmpegReferenceDownscaler } from './image-downscale.js';
+import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
@@ -13,7 +16,7 @@ import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
 import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
-import type { PlayoutManager, PlayoutSession } from './playout.js';
+import type { PlayoutClipBoundary, PlayoutManager, PlayoutSession } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -79,6 +82,84 @@ export interface RendererClipRecord {
   continuity: ContinuityStrategy;
   anchor: ClipAnchorRole;
   anchorKey: string | null;
+  /** Output-timeline placement once the playout has fed this clip; null before that. */
+  streamStartSeconds: number | null;
+  streamEndSeconds: number | null;
+  /** Stall hold-frame seconds the audience saw between the previous clip's end and this clip's start. */
+  gapBeforeSeconds: number | null;
+  /** Kernel-commanded pause (timed control such as `fade`) fed before this clip; deliberate, not a gap. */
+  leadInBeforeSeconds: number | null;
+  /** fal-side timing: how long the submit call took to return a request id, seconds from that
+   *  acknowledgement to completion, and the deepest queue position reported while waiting. */
+  falSubmitSeconds: number | null;
+  falQueueSeconds: number | null;
+  /** Whole provider call: submit + queue + result fetch. generationMs minus this is renderer-side work such as frame extraction. */
+  falTotalSeconds: number | null;
+  falMaxQueuePosition: number | null;
+  /** `line`: previous clip belonged to the same story block; `block`: a block boundary; `start`: first clip. */
+  gapKind: PlaybackGapKind | null;
+}
+
+export type PlaybackGapKind = 'line' | 'block' | 'start';
+
+/** Dead air the playout had to fill with hold frames, split by where it fell in the story. */
+export interface PlaybackGapSummary {
+  /** Gaps between two clips of the same story block: inside a scene, between lines. */
+  lineGapCount: number;
+  lineGapSeconds: number;
+  maxLineGapSeconds: number;
+  /** Gaps between the last clip of one story block and the first of the next. */
+  blockGapCount: number;
+  blockGapSeconds: number;
+  maxBlockGapSeconds: number;
+  /** Clips whose placement is known, i.e. the denominator for the counts above. */
+  clipsPlaced: number;
+}
+
+/**
+ * Per-group provider timing reported to the kernel on group_finished, so the admin Per-Line
+ * Timeline can draw a `fal` bar next to parse/tts/upload. One DSS group is one line (a split
+ * line yields several clips, which are summed).
+ */
+export interface GroupRenderMetrics {
+  provider: 'fal' | 'minimax-direct';
+  clips: number;
+  submitted_at: string | null;
+  ready_at: string | null;
+  played_at: string | null;
+  generation_ms: number | null;
+  fal_submit_seconds: number | null;
+  fal_queue_seconds: number | null;
+  fal_total_seconds: number | null;
+  gap_before_seconds: number | null;
+  lead_in_seconds: number | null;
+}
+
+export function groupRenderMetrics(records: readonly RendererClipRecord[], provider: GroupRenderMetrics['provider'] = 'fal'): GroupRenderMetrics | null {
+  if (records.length === 0) return null;
+  const isoMin = (values: Array<string | null>) => values.filter((v): v is string => v !== null).sort()[0] ?? null;
+  const isoMax = (values: Array<string | null>) => values.filter((v): v is string => v !== null).sort().at(-1) ?? null;
+  const sum = (values: Array<number | null>) => {
+    const present = values.filter((v): v is number => typeof v === 'number');
+    return present.length ? Math.round(present.reduce((a, b) => a + b, 0) * 10) / 10 : null;
+  };
+  return {
+    provider,
+    clips: records.length,
+    submitted_at: isoMin(records.map(r => r.submittedAt)),
+    ready_at: isoMax(records.map(r => r.readyAt)),
+    played_at: isoMax(records.map(r => r.playedAt)),
+    generation_ms: sum(records.map(r => r.generationMs)),
+    fal_submit_seconds: sum(records.map(r => r.falSubmitSeconds)),
+    fal_queue_seconds: sum(records.map(r => r.falQueueSeconds)),
+    fal_total_seconds: sum(records.map(r => r.falTotalSeconds)),
+    gap_before_seconds: records[0]?.gapBeforeSeconds ?? null,
+    lead_in_seconds: records[0]?.leadInBeforeSeconds ?? null,
+  };
+}
+
+export function emptyPlaybackGapSummary(): PlaybackGapSummary {
+  return { lineGapCount: 0, lineGapSeconds: 0, maxLineGapSeconds: 0, blockGapCount: 0, blockGapSeconds: 0, maxBlockGapSeconds: 0, clipsPlaced: 0 };
 }
 
 export interface GenerationMsPercentiles {
@@ -115,6 +196,7 @@ export interface ExternalRendererRunStatus {
   anchorsEstablished: number;
   anchorsReused: number;
   generationMsPercentiles: GenerationMsPercentiles | null;
+  playbackGaps: PlaybackGapSummary;
   mediaDir: string | null;
   finalMp4: string | null;
   hlsUrl: string | null;
@@ -248,6 +330,15 @@ const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
 const DSS_IDLE_TIMEOUT_MS = 300_000;
 const MAX_CLIP_RECORDS = 1_000;
+/** Clips that must be rendered before the stream starts; the fallback timer starts a lone clip. */
+const STARTUP_BUFFER_CLIPS = positiveIntegerEnv('RENDERER_STARTUP_BUFFER_CLIPS', 2);
+/** Fallback so a one-clip or ACK-gated story still starts if the second clip never comes. */
+const STARTUP_WAIT_MS = positiveIntegerEnv('RENDERER_STARTUP_WAIT_MS', 45_000);
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
+}
 
 export function generationMsPercentiles(records: readonly RendererClipRecord[]): GenerationMsPercentiles | null {
   const samples = records.map(record => record.generationMs).filter((value): value is number => value !== null).sort((a, b) => a - b);
@@ -757,9 +848,14 @@ export function createGroupFinishedEvent(input: {
   groupId: string;
   storyBlockId: string;
   durationSeconds: number;
+  /** Story Kernel episode id; lets the kernel attribute render metrics without a lookup. */
+  episodeId?: number;
+  renderMetrics?: GroupRenderMetrics | null;
 }): JsonObject {
   return {
     type: 'renderer.event',
+    ...(input.episodeId !== undefined ? { episode_id: input.episodeId } : {}),
+    ...(input.renderMetrics ? { render_metrics: input.renderMetrics as unknown as JsonObject } : {}),
     client_event_id: rendererEventId([input.streamId, input.assignmentId, input.assignmentGeneration, input.sequence, input.storyBlockId, input.groupId, 'group_finished']),
     event: 'completed',
     id: SCRIPT_STATUS_MESSAGE_ID,
@@ -866,6 +962,10 @@ class ExternalRendererRun {
   readonly status: ExternalRendererRunStatus;
   private socket: WebSocket | null = null;
   private playout: PlayoutSession | null = null;
+  /** The most recent clip whose output-timeline placement is known; decides whether a gap is line- or block-level. */
+  private lastPlacedClip: { storyBlockId: string; position: number } | null = null;
+  /** Timed-control seconds owed to the audience before the next clip that reaches the playout. */
+  private pendingLeadInSeconds = 0;
   private stopped = false;
   private ending = false;
   private closing: Promise<void> | null = null;
@@ -883,7 +983,10 @@ class ExternalRendererRun {
   private readonly generator: ShotGenerator;
   private readonly scenePositions = new Map<number, string>();
   private readonly assetIdentities = new Map<string, string>();
-  private readonly sceneAssets = new MinimaxSceneAssetCache();
+  private readonly sceneAssets = new MinimaxSceneAssetCache({
+    uploader: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? falReferenceUploader(process.env.FAL_KEY) : null,
+    downscale: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? ffmpegReferenceDownscaler() : null,
+  });
   private assignmentKey: string | null = null;
   private readonly pendingAudienceMessages = new Map<
     string,
@@ -901,6 +1004,7 @@ class ExternalRendererRun {
       renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
       initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
       signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
+      frameUploader: provider.kind === 'fal' && sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
     });
     this.status = {
       runId: this.runId,
@@ -930,6 +1034,7 @@ class ExternalRendererRun {
       anchorsEstablished: 0,
       anchorsReused: 0,
       generationMsPercentiles: null,
+      playbackGaps: emptyPlaybackGapSummary(),
       mediaDir: null,
       finalMp4: null,
       hlsUrl: null,
@@ -995,7 +1100,7 @@ class ExternalRendererRun {
     });
   }
 
-  private completedEvent(frame: DssFrame, group: DssGroup, durationSeconds: number): JsonObject {
+  private completedEvent(frame: DssFrame, group: DssGroup, durationSeconds: number, records: readonly RendererClipRecord[] = []): JsonObject {
     return createGroupFinishedEvent({
       streamId: this.config.rendererId,
       assignmentId: frame.assignmentId,
@@ -1004,6 +1109,8 @@ class ExternalRendererRun {
       groupId: group.id,
       storyBlockId: frame.storyBlockId,
       durationSeconds,
+      episodeId: frame.episodeId,
+      renderMetrics: groupRenderMetrics(records, this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
     });
   }
 
@@ -1026,6 +1133,29 @@ class ExternalRendererRun {
     signal.throwIfAborted();
     this.verdicts.acknowledge(ack.message);
     if (ack.failure) throw new Error(ack.failure);
+  }
+
+  /** Resolves once the audience has started seeing `position`, or once it has fully played. */
+  private async waitForPlaybackStart(position: number): Promise<void> {
+    for (;;) {
+      if (this.stopped) throw new Error('renderer run stopped');
+      const current = this.playout?.status();
+      if (current?.state === 'error') throw new Error(current.error ?? 'playout failed');
+      if (current) {
+        if (current.playedThroughPosition >= position) return;
+        const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
+        const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(position) : null;
+        if (typeof current.audienceSeconds === 'number') {
+          // Exact: the clip has been fed and the audience clock has reached its first frame. Any
+          // stall or commanded lead-in ahead of it is still "not started", so the kernel's
+          // `playing` stamp (and the dashboard's inter-line gap) measure the real dead air.
+          if (boundary && current.audienceSeconds + 0.05 >= boundary.startSeconds) return;
+        } else if (typeof current.currentPosition === 'number' ? current.currentPosition >= position : current.playedThroughPosition >= position - 1) {
+          return;
+        }
+      }
+      await waitWithAbort(250, this.abortController.signal);
+    }
   }
 
   private async waitForPlayback(position: number, frame: DssFrame, group: DssGroup): Promise<void> {
@@ -1107,6 +1237,15 @@ class ExternalRendererRun {
       continuity: this.config.continuityStrategy,
       anchor,
       anchorKey: anchor === 'none' ? null : shot.anchorKey,
+      streamStartSeconds: null,
+      streamEndSeconds: null,
+      gapBeforeSeconds: null,
+      leadInBeforeSeconds: null,
+      gapKind: null,
+      falSubmitSeconds: null,
+      falQueueSeconds: null,
+      falTotalSeconds: null,
+      falMaxQueuePosition: null,
     };
     if (anchor === 'establish') this.status.anchorsEstablished += 1;
     else if (anchor === 'reuse') this.status.anchorsReused += 1;
@@ -1115,11 +1254,53 @@ class ExternalRendererRun {
     return record;
   }
 
-  private completeClip(record: RendererClipRecord, requestId: unknown): void {
+  /**
+   * Stamp a clip as played and, when the playout can say where it landed, record the dead air
+   * before it. The playout only knows hold seconds once the clip has been fed, which is always
+   * before `waitForPlayback` returns, so a null boundary means a playout that does not report them.
+   */
+  private markPlayed(record: RendererClipRecord): void {
+    record.playedAt ??= new Date().toISOString();
+    if (record.streamStartSeconds !== null) return;
+    const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
+    const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(record.position) : null;
+    if (!boundary) return;
+    record.streamStartSeconds = boundary.startSeconds;
+    record.streamEndSeconds = boundary.endSeconds;
+    record.gapBeforeSeconds = boundary.holdSecondsBefore;
+    record.leadInBeforeSeconds = boundary.leadInSecondsBefore ?? 0;
+    const previous = this.lastPlacedClip;
+    record.gapKind = previous === null ? 'start' : previous.storyBlockId === record.storyBlockId ? 'line' : 'block';
+    this.lastPlacedClip = { storyBlockId: record.storyBlockId, position: record.position };
+    const gaps = this.status.playbackGaps;
+    gaps.clipsPlaced += 1;
+    if (boundary.holdSecondsBefore <= 0) return;
+    if (record.gapKind === 'line') {
+      gaps.lineGapCount += 1;
+      gaps.lineGapSeconds += boundary.holdSecondsBefore;
+      gaps.maxLineGapSeconds = Math.max(gaps.maxLineGapSeconds, boundary.holdSecondsBefore);
+    } else if (record.gapKind === 'block') {
+      gaps.blockGapCount += 1;
+      gaps.blockGapSeconds += boundary.holdSecondsBefore;
+      gaps.maxBlockGapSeconds = Math.max(gaps.maxBlockGapSeconds, boundary.holdSecondsBefore);
+    }
+  }
+
+  private completeClip(
+    record: RendererClipRecord,
+    requestId: unknown,
+    timings?: { submitSeconds?: number; queueSeconds?: number; totalSeconds?: number; maxQueuePosition?: number | null } | null,
+  ): void {
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
     if (typeof requestId === 'string' && requestId) record.providerRequestId = requestId;
+    if (timings) {
+      record.falSubmitSeconds = typeof timings.submitSeconds === 'number' ? Math.round(timings.submitSeconds * 10) / 10 : null;
+      record.falQueueSeconds = typeof timings.queueSeconds === 'number' ? Math.round(timings.queueSeconds * 10) / 10 : null;
+      record.falTotalSeconds = typeof timings.totalSeconds === 'number' ? Math.round(timings.totalSeconds * 10) / 10 : null;
+      record.falMaxQueuePosition = typeof timings.maxQueuePosition === 'number' ? timings.maxQueuePosition : null;
+    }
     this.status.generationMsPercentiles = generationMsPercentiles(this.status.clips);
   }
 
@@ -1136,10 +1317,14 @@ class ExternalRendererRun {
     });
     // Registered at schedule time so it settles before any consumer's own await of the same result.
     void job.result.then(
-      generated => this.completeClip(record, generated.requestId),
+      generated => this.completeClip(record, generated.requestId, generated.timings ?? null),
       // A future shot can fail while an earlier clip is playing. Fence the whole run
       // immediately, before another scheduler slot submits additional paid work.
-      error => { if (!this.stopped) this.fail(error); },
+      error => {
+        if (this.stopped) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.fail(new Error(`shot ${shot.id} (seq ${frame.sequence}, clip ${position}) failed: ${message}`, { cause: error }));
+      },
     );
     return { job, record };
   }
@@ -1159,17 +1344,24 @@ class ExternalRendererRun {
   }
 
   private async enqueuePlannedFrame({ frame, groups }: PreparedFrame): Promise<void> {
-    for (const { plan, shots, completed } of groups) {
+    for (const { plan, shots } of groups) {
       for (const { shot, job, position, enqueued } of shots) {
         const generated = await job.result;
         this.assertCurrentAssignment(frame);
-        this.playout!.enqueue({ position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds });
+        // A timed control that preceded this shot is owed to the audience as a pause; the playout
+        // holds the previous clip's last frame for it. Handing the clip over now, instead of after
+        // that pause has played, keeps normalization and the startup buffer ahead of playback.
+        const leadInSeconds = this.pendingLeadInSeconds;
+        this.pendingLeadInSeconds = 0;
+        this.playout!.enqueue({
+          position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds,
+          ...(leadInSeconds > 0 ? { leadInSeconds } : {}),
+        });
         this.status.clipsRendered += 1;
         enqueued.resolve();
       }
-      // A timed control follows its group's video and precedes the next group.
-      // Ordinary cuts can prefeed normalization without advancing any kernel ACK.
-      if (plan.delaySeconds > 0) await abortable(completed.promise, this.abortController.signal);
+      // A timed control follows its group's video and precedes the next group's clip.
+      if (plan.delaySeconds > 0) this.pendingLeadInSeconds += plan.delaySeconds;
     }
   }
 
@@ -1178,10 +1370,19 @@ class ExternalRendererRun {
       this.assertCurrentAssignment(frame);
       let seconds = 0;
       // Only actual playback advances the kernel high-water mark and frees paid-work budget.
+      let announced = false;
       for (const { shot, job, position, enqueued, record } of shots) {
         await abortable(enqueued.promise, this.abortController.signal);
+        if (!announced) {
+          // The kernel derives "playing" (and the admin dashboard its inter-line gap marker) from
+          // this progress report; group_finished alone only says when a line ended.
+          await this.waitForPlaybackStart(position);
+          this.assertCurrentAssignment(frame);
+          this.sendRendererEvent(this.progressEvent(frame, group, 0, group.commands.length), frame);
+          announced = true;
+        }
         await this.waitForPlayback(position, frame, group);
-        record.playedAt ??= new Date().toISOString();
+        this.markPlayed(record);
         this.assertCurrentAssignment(frame);
         job.release();
         seconds += shot.durationSeconds;
@@ -1189,7 +1390,7 @@ class ExternalRendererRun {
       const delay = plan.delaySeconds;
       if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
       this.assertCurrentAssignment(frame);
-      this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay), frame);
+      this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay, shots.map(({ record }) => record)), frame);
       this.status.dssCommandsRendered += group.commands.length;
       completed.resolve();
     }
@@ -1265,18 +1466,18 @@ class ExternalRendererRun {
               baseUrl: process.env.MINIMAX_API_BASE_URL,
               textModel: process.env.MINIMAX_VIDEO_MODEL_ID,
               referenceModel: process.env.MINIMAX_REFERENCE_VIDEO_MODEL_ID,
-              timeoutMs: 300_000,
+              timeoutMs: defaultRequestTimeoutMs(),
               signal: this.abortController.signal,
             })
           : await generateVideo(input, {
               apiKey: this.provider.apiKey,
               modelId: process.env.FAL_VIDEO_MODEL_ID,
               queueBaseUrl: process.env.FAL_QUEUE_BASE_URL,
-              timeoutMs: 300_000,
+              timeoutMs: defaultRequestTimeoutMs(),
               signal: this.abortController.signal,
             });
         if (this.stopped) throw this.abortController.signal.reason;
-        this.completeClip(record, generated.requestId);
+        this.completeClip(record, generated.requestId, generated.timings ?? null);
         const position = this.clipPosition;
         this.playout!.enqueue({
           position,
@@ -1287,7 +1488,7 @@ class ExternalRendererRun {
         this.clipPosition += 1;
         this.status.clipsRendered += 1;
         await this.waitForPlayback(position, frame, group);
-        record.playedAt = new Date().toISOString();
+        this.markPlayed(record);
         playedSeconds += clip.durationSeconds;
       }
       this.sendRendererEvent(this.completedEvent(frame, group, playedSeconds), frame);
@@ -1368,7 +1569,9 @@ class ExternalRendererRun {
 
   async start(): Promise<void> {
     try {
-      const playout = await this.playoutManager.start({ startupBufferClips: 1 });
+      // Hold the stream until the first two clips are rendered: with the first two shots generating
+      // independently they land together, and the audience never sees a freeze after line one.
+      const playout = await this.playoutManager.start({ startupBufferClips: STARTUP_BUFFER_CLIPS, startupWaitMs: STARTUP_WAIT_MS });
       if (this.stopped) { await this.playoutManager.stop(playout.sessionId); return; }
       this.playout = playout;
       this.status.hlsUrl = this.playout.hlsUrl;
@@ -1403,8 +1606,10 @@ class ExternalRendererRun {
       }
       this.status.sessionId = requiredString(welcome.session_id, 'session_id');
       this.status.sessionEpoch = Number(welcome.session_epoch);
-      this.socket.on('close', (code) => {
-        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code})`));
+      this.socket.on('close', (code, reason) => {
+        // The platform puts its protocol-error text in the close reason; without it a 4400 is undiagnosable.
+        const detail = reason?.length ? `: ${reason.toString()}` : '';
+        if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code}${detail})`));
       });
       const leaseSeconds = Number(welcome.lease_seconds ?? 30);
       this.heartbeat = setInterval(() => {

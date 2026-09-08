@@ -168,8 +168,8 @@ concurrency, and generation lookahead remain separate:
   "rendererConfig": {
     "model": "fal-max-ref2v",
     "continuity": "camera-anchors",
-    "concurrency": 2,
-    "maxBufferedSeconds": 30
+    "concurrency": 4,
+    "maxBufferedSeconds": 45
   },
   "shotPlanner": {
     "sets": {
@@ -207,8 +207,8 @@ an approved opening frame before start; an empty-set reference alone does not co
 The compiler carries blocking, strips spoken TTS tags into acting directions, and anchors style to
 a set/style image. Ordinary `talking` animations preserve camera anchors; movement invalidates them.
 
-The concurrency ceiling defaults to 2 (range 1–8). Last-frame dependencies serialize Turbo
-regardless of that ceiling. `maxBufferedSeconds` defaults to 30 (range 5–120) and counts all reserved,
+The concurrency ceiling defaults to 4 (range 1–16). Last-frame dependencies serialize Turbo
+regardless of that ceiling. `maxBufferedSeconds` defaults to 45 (range 5–150) and counts all reserved,
 unplayed work, including pending and generating clips. Eight eight-second jobs need at least 64
 seconds of budget. One oversized shot may occupy an otherwise empty budget to make progress.
 This setting is not a startup buffer or permission to submit a batch.
@@ -218,6 +218,11 @@ persist across chunks of the same scene, including repeated setup commands. A ch
 resets staging and continuity even when the set is reused. Media and completion acknowledgements remain in story order. The kernel
 must supply enough lookahead. Playback begins with one ready clip to support short and ACK-gated
 stories. Offline overlap does not prove sustained live realtime performance or visual quality.
+
+`FAL_REQUEST_TIMEOUT_MS` (default 300000) caps one fal job from submit to completion. Under
+account-level queueing a clip can wait several minutes, and a timeout fences the whole run, so
+raise it when measuring rather than letting one slow job end a story. Each clip's run-status
+record carries `falQueueSeconds` and `falMaxQueuePosition` so queueing on fal's side is visible.
 
 Environment onboarding supports `STORY_RENDERER_CONFIG_JSON`, `STORY_SHOT_PLANNER_JSON`, and
 `STORY_INITIAL_IMAGE_URL` for the same options. Existing handoffs with top-level `renderMode`,

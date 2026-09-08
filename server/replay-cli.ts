@@ -15,7 +15,7 @@ const USAGE = `Usage: npm run replay -- --dss <file> [options]
   --from <n> --to <n>     Inclusive payload sequence range; earlier payloads still replay staging
   --model <m>             fal-max-ref2v (default) | fal-turbo-i2v
   --continuity <c>        camera-anchors | none | last-frame-chain (default: model default)
-  --concurrency <n>       1-8 (default 2)         --budget <s>   unplayed-video budget, 5-120 (default 30)
+  --concurrency <n>       1-16 (default 4)        --budget <s>   unplayed-video budget, 5-150 (default 45)
   --resolution <r>        480P (default) | 768P   --clip-seconds <s>  default shot length, 5-15 (default 5)
   --handoff <file>        Read rendererConfig/shotPlanner/initialImageUrl/resolution/clipDurationSeconds from a handoff
   --shot-planner <file>   JSON shotPlanner settings (cast/set images, style, marks); overrides the handoff's

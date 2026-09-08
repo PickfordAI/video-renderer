@@ -163,7 +163,7 @@ describe('rolling DSS generation and ordered playout', () => {
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1']));
       fixture.play(2);
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1-0', 'group-2-0', 'group-3-0', 'group-3-1', 'group-4-0']));
-      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 6, refused: 0 }));
+      await vi.waitFor(() => expect(fixture.run.eventVerdicts).toMatchObject({ pending: 0, acknowledged: 9, refused: 0 }));
     } finally { await fixture.close(); }
   });
 
@@ -279,6 +279,30 @@ describe('rolling DSS generation and ordered playout', () => {
     } finally { await fixture.close(); }
   });
 
+  it('hands a clip to the playout with the preceding timed control as its lead-in instead of waiting for that pause to play', async () => {
+    const fixture = await bridge();
+    try {
+      fixture.send(fixture.frame(1));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      fixture.pending[0].resolve(result('first'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(1));
+      expect(fixture.enqueue.mock.calls[0][0]).not.toHaveProperty('leadInSeconds');
+      // The kernel's scene intro: a two-second fade group ahead of the second line, in one frame.
+      fixture.send(fixture.chunk(2, 0, [[{ command: 'fade', args: { duration: 2, wait: true } }], [talk()]]));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
+      fixture.pending[1].resolve(result('second'));
+      // Nothing has played yet; the second clip still reaches the playout, carrying the pause.
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(2));
+      expect(fixture.enqueue.mock.calls[1][0]).toMatchObject({ position: 1, leadInSeconds: 2 });
+      expect(fixture.completed()).toEqual([]);
+      fixture.play(0);
+      // The fade group is acknowledged only after its two seconds have elapsed past line one.
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1', 'group-2-0']), { timeout: 4_000 });
+      fixture.play(1);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1', 'group-2-0', 'group-2-1']));
+    } finally { await fixture.close(); }
+  });
+
   it('generates later received payloads and prefeeds clips while the first is playing, without early ACKs', async () => {
     const fixture = await bridge();
     const compile = vi.spyOn(DssShotPlanner.prototype, 'planGroup');
@@ -348,19 +372,23 @@ describe('rolling DSS generation and ordered playout', () => {
     } finally { await fixture.close(); }
   });
 
-  it.each([false, true])('preserves a timed group barrier (control-only=%s) while generating future video', async controlOnly => {
+  it.each([false, true])('carries a timed group (control-only=%s) into the next clip as lead-in while keeping ACKs ordered', async controlOnly => {
     const fixture = await bridge();
     try {
       fixture.send(fixture.frame(1, [...(controlOnly ? [] : [talk()]), { command: 'delay', args: { seconds: 0.2 } }]));
       fixture.send(fixture.frame(2));
       await vi.waitFor(() => expect(fixture.pending).toHaveLength(controlOnly ? 1 : 2));
       fixture.pending.forEach((pending, index) => pending.resolve(result(String(index))));
+      // The pause never blocks the hand-off: the next clip reaches the playout at once, owing 0.2 s.
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(controlOnly ? 1 : 2));
+      expect(fixture.enqueue.mock.calls.at(-1)?.[0]).toMatchObject({ position: controlOnly ? 0 : 1, leadInSeconds: 0.2 });
+      if (!controlOnly) expect(fixture.enqueue.mock.calls[0][0]).not.toHaveProperty('leadInSeconds');
       await sleep(50);
-      expect(fixture.enqueue).toHaveBeenCalledTimes(controlOnly ? 0 : 1);
       expect(fixture.completed()).toEqual([]);
       if (!controlOnly) fixture.play(0);
-      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(controlOnly ? 1 : 2));
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1']));
+      fixture.play(controlOnly ? 0 : 1);
+      await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1', 'group-2']));
     } finally { await fixture.close(); }
   });
 
@@ -382,7 +410,7 @@ describe('rolling DSS generation and ordered playout', () => {
   it('starts one delivered clip and lets its real completion unlock an ACK-gated next payload', async () => {
     const fixture = await bridge();
     try {
-      expect(fixture.start).toHaveBeenCalledWith({ startupBufferClips: 1 });
+      expect(fixture.start).toHaveBeenCalledWith(expect.objectContaining({ startupBufferClips: 1 }));
       fixture.send(fixture.frame(0, [{ command: 'set story mode', args: {} }]));
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-0']));
       expect(fixture.pending).toHaveLength(0);

@@ -152,9 +152,21 @@ function httpsUrl(value: string, label: string): string {
   if (url.protocol !== 'https:' || url.username || url.password) throw new Error(`${label} must be an absolute HTTPS URL without credentials`);
   return value;
 }
+/** A certified scene image is usable once its bytes are pinned: inline as a data URL, or uploaded to fal storage. */
+export function isResolvedSceneImage(value: string): boolean {
+  if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]+={0,2}$/i.test(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password
+      && (url.hostname === 'fal.media' || url.hostname.endsWith('.fal.media'));
+  } catch {
+    return false;
+  }
+}
+
 function resolvedSceneImage(value: string, label: string): string {
-  if (!/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]+={0,2}$/i.test(value)) {
-    throw new Error(`${label} must be a resolved image data URL`);
+  if (!isResolvedSceneImage(value)) {
+    throw new Error(`${label} must be a resolved image data URL or fal storage URL`);
   }
   return value;
 }

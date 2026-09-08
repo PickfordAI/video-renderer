@@ -35,7 +35,7 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
 | `rendererVersion` | Optional four-component version; default `h3.opensource.v1.0`. Change it when the model/manifest changes |
 | `resolution`, `clipDurationSeconds` | Optional `480P`/`768P` and integer 5–15; defaults `480P` and 6 |
-| `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–8), and `maxBufferedSeconds` (5–120); see README generation choices |
+| `rendererConfig` | Independent `model`, `continuity`, `concurrency` (1–16), and `maxBufferedSeconds` (5–150); see README generation choices |
 | `initialImageUrl` | Authorized HTTPS starting frame, required for Turbo i2v |
 | `shotPlanner` | Named cast/set references when Kernel does not supply images, style, readable marks, and optional 2–15-second voice samples |
 
