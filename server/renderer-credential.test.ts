@@ -174,9 +174,13 @@ describe('mint and rotate', () => {
 describe('fence detection', () => {
   it('recognises the failures that mean the credential must be rotated', () => {
     expect(credentialFenced(['renderer bridge closed: 401 unauthorized'])).toBe(true);
+    expect(credentialFenced(['renderer login failed with HTTP 403 forbidden'])).toBe(true);
+    expect(credentialFenced(['renderer credential was revoked'])).toBe(true);
     expect(credentialFenced(['this renderer was fenced by a newer connection'])).toBe(true);
     expect(credentialFenced(['invalid_client'])).toBe(true);
     expect(credentialFenced(['fal generation failed after 3 attempts'])).toBe(false);
+    expect(credentialFenced(['fal queue submission failed (403): TOP_UP_REQUIRED'])).toBe(false);
+    expect(credentialFenced(['renderer story start failed with HTTP 403: story is not available'])).toBe(false);
     expect(credentialFenced([])).toBe(false);
   });
 });
