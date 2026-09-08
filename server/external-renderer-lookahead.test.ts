@@ -354,7 +354,7 @@ describe('rolling DSS generation and ordered playout', () => {
   it('starts one delivered clip and lets its real completion unlock an ACK-gated next payload', async () => {
     const fixture = await bridge();
     try {
-      expect(fixture.start).toHaveBeenCalledWith({ startupBufferClips: 1 });
+      expect(fixture.start).toHaveBeenCalledWith(expect.objectContaining({ startupBufferClips: 1 }));
       fixture.send(fixture.frame(0, [{ command: 'set story mode', args: {} }]));
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-0']));
       expect(fixture.pending).toHaveLength(0);

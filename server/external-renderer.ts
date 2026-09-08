@@ -285,6 +285,15 @@ const NATURAL_COMPLETION_DRAIN_MS = 5_000;
 const VERDICT_ACK_TIMEOUT_MS = 2_000;
 const DSS_IDLE_TIMEOUT_MS = 300_000;
 const MAX_CLIP_RECORDS = 1_000;
+/** Clips that must be rendered before the stream starts; the fallback timer starts a lone clip. */
+const STARTUP_BUFFER_CLIPS = positiveIntegerEnv('RENDERER_STARTUP_BUFFER_CLIPS', 2);
+/** Fallback so a one-clip or ACK-gated story still starts if the second clip never comes. */
+const STARTUP_WAIT_MS = positiveIntegerEnv('RENDERER_STARTUP_WAIT_MS', 45_000);
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
+}
 
 export function generationMsPercentiles(records: readonly RendererClipRecord[]): GenerationMsPercentiles | null {
   const samples = records.map(record => record.generationMs).filter((value): value is number => value !== null).sort((a, b) => a - b);
@@ -1447,7 +1456,9 @@ class ExternalRendererRun {
 
   async start(): Promise<void> {
     try {
-      const playout = await this.playoutManager.start({ startupBufferClips: 1 });
+      // Hold the stream until the first two clips are rendered: with the first two shots generating
+      // independently they land together, and the audience never sees a freeze after line one.
+      const playout = await this.playoutManager.start({ startupBufferClips: STARTUP_BUFFER_CLIPS, startupWaitMs: STARTUP_WAIT_MS });
       if (this.stopped) { await this.playoutManager.stop(playout.sessionId); return; }
       this.playout = playout;
       this.status.hlsUrl = this.playout.hlsUrl;

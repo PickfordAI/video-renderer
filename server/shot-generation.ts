@@ -1,6 +1,11 @@
 import { generateVideo } from './fal.js';
 import { type ReferenceUploader, uploadDataUrl } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
+
+const DEFAULT_INDEPENDENT_STARTUP_SHOTS = (() => {
+  const parsed = Number.parseInt(process.env.RENDERER_INDEPENDENT_STARTUP_SHOTS ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 2;
+})();
 import type { ContinuityStrategy, RenderMode } from './render-mode.js';
 import type { PlannedShot } from './shot-planner.js';
 import type { ScheduledShot, ShotScheduler } from './shot-scheduler.js';
@@ -37,6 +42,12 @@ export interface ShotGeneratorOptions {
   signal: AbortSignal;
   /** Uploads an extracted continuity frame once so later shots reference a URL, not inline bytes. */
   frameUploader?: ReferenceUploader;
+  /**
+   * How many shots at the start of a run generate without waiting on an anchor. A story's first
+   * line must not trail its opening shot by a whole generation, so these establish independently
+   * and later shots reuse whichever anchor landed first.
+   */
+  independentStartupShots?: number;
   /** Runs before and after each provider call; throw to fence the shot (assignment change, verdict health). */
   guard?: () => void;
   queueBaseUrl?: string;
@@ -49,7 +60,13 @@ export class ShotGenerator {
   private readonly anchors = new Map<string, Source>();
   private readonly sceneTails = new Map<string, Source>();
 
+  private shotsSeen = 0;
+
   constructor(private readonly options: ShotGeneratorOptions) {}
+
+  private get startupIndependent(): boolean {
+    return this.shotsSeen < (this.options.independentStartupShots ?? DEFAULT_INDEPENDENT_STARTUP_SHOTS);
+  }
 
   /** Reference-slot rules that must hold before any paid submission for the shot's payload. */
   validate(shot: PlannedShot): void {
@@ -72,7 +89,7 @@ export class ShotGenerator {
       return tail ? { kind: 'chain', sceneKey: shot.sceneKey, sourceShotId: tail.shotId } : { kind: 'chain-start', sceneKey: shot.sceneKey };
     }
     if (continuity === 'camera-anchors') {
-      const anchor = this.anchors.get(shot.anchorKey);
+      const anchor = this.startupIndependent ? undefined : this.anchors.get(shot.anchorKey);
       return anchor
         ? { kind: 'anchor-reuse', anchorKey: shot.anchorKey, sourceShotId: anchor.shotId }
         : { kind: 'anchor-establish', anchorKey: shot.anchorKey };
@@ -138,7 +155,9 @@ export class ShotGenerator {
   }
 
   private register(shot: PlannedShot, dependency: ShotDependency, job: ScheduledShot<GeneratedShot> | null): void {
+    this.shotsSeen += 1;
     if (dependency.kind === 'chain' || dependency.kind === 'chain-start') this.sceneTails.set(shot.sceneKey, { shotId: shot.id, job });
-    else if (dependency.kind === 'anchor-establish') this.anchors.set(shot.anchorKey, { shotId: shot.id, job });
+    // Two independent startup shots may establish the same key; the first to register wins.
+    else if (dependency.kind === 'anchor-establish' && !this.anchors.has(shot.anchorKey)) this.anchors.set(shot.anchorKey, { shotId: shot.id, job });
   }
 }

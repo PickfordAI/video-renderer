@@ -684,7 +684,7 @@ export class PlayoutManager {
     this.options = options;
   }
 
-  async start(options: Pick<PlayoutOptions, 'startupBufferClips'> = {}): Promise<PlayoutSession> {
+  async start(options: Pick<PlayoutOptions, 'startupBufferClips' | 'startupWaitMs'> = {}): Promise<PlayoutSession> {
     const session = new PlayoutSession({ ...this.options, ...options });
     await session.initialize();
     this.sessions.set(session.sessionId, session);
