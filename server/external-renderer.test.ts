@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  groupRenderMetrics,
+  type RendererClipRecord,
   controlGroupDurationSeconds,
   createCommandProgressEvent,
   createGroupFinishedEvent,
@@ -365,5 +367,39 @@ describe('generation latency percentiles', () => {
     expect(generationMsPercentiles([record(9), record(null), record(3), record(6)])).toEqual({ min: 3, median: 6, max: 9 });
     expect(generationMsPercentiles([record(9), record(3), record(6), record(12)])).toEqual({ min: 3, median: 8, max: 12 });
     expect(generationMsPercentiles([record(5)])).toEqual({ min: 5, median: 5, max: 5 });
+  });
+});
+
+describe('groupRenderMetrics', () => {
+  const record = (over: Partial<RendererClipRecord>): RendererClipRecord => ({
+    shotId: 's', groupId: 'g', storyBlockId: 'b', sequence: 1, position: 0, durationSeconds: 6,
+    submittedAt: '2026-09-07T23:00:10.000Z', readyAt: '2026-09-07T23:00:19.000Z', generationMs: 9_000, playedAt: '2026-09-07T23:00:40.000Z',
+    providerRequestId: 'r', continuity: 'camera-anchors', anchor: 'reuse', anchorKey: null,
+    streamStartSeconds: 30, streamEndSeconds: 36, gapBeforeSeconds: 2, gapKind: 'line',
+    falSubmitSeconds: 0.2, falQueueSeconds: 8.1, falTotalSeconds: 8.4, falMaxQueuePosition: 0,
+    ...over,
+  });
+
+  it('sums provider timings across a split line and keeps the outer submit/ready/played bounds', () => {
+    const metrics = groupRenderMetrics([
+      record({}),
+      record({ position: 1, submittedAt: '2026-09-07T23:00:12.000Z', readyAt: '2026-09-07T23:00:25.000Z', playedAt: '2026-09-07T23:00:46.000Z', generationMs: 13_000, falSubmitSeconds: 0.4, falQueueSeconds: 12.2, falTotalSeconds: 12.7, gapBeforeSeconds: 0 }),
+    ]);
+    expect(metrics).toEqual({
+      provider: 'fal', clips: 2,
+      submitted_at: '2026-09-07T23:00:10.000Z', ready_at: '2026-09-07T23:00:25.000Z', played_at: '2026-09-07T23:00:46.000Z',
+      generation_ms: 22_000, fal_submit_seconds: 0.6, fal_queue_seconds: 20.3, fal_total_seconds: 21.1, gap_before_seconds: 2,
+    });
+  });
+
+  it('is absent for control-only groups and rides on the group_finished event with the episode id', () => {
+    expect(groupRenderMetrics([])).toBeNull();
+    const event = createGroupFinishedEvent({
+      streamId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', assignmentId: 'lease', assignmentGeneration: 1, sequence: 3,
+      groupId: 'group-3', storyBlockId: 'block', durationSeconds: 6, episodeId: 42, renderMetrics: groupRenderMetrics([record({})]),
+    });
+    expect(event.episode_id).toBe(42);
+    expect((event.render_metrics as Record<string, unknown>).fal_queue_seconds).toBe(8.1);
+    expect(event.status).toBe(10);
   });
 });

@@ -114,6 +114,46 @@ export interface PlaybackGapSummary {
   clipsPlaced: number;
 }
 
+/**
+ * Per-group provider timing reported to the kernel on group_finished, so the admin Per-Line
+ * Timeline can draw a `fal` bar next to parse/tts/upload. One DSS group is one line (a split
+ * line yields several clips, which are summed).
+ */
+export interface GroupRenderMetrics {
+  provider: 'fal' | 'minimax-direct';
+  clips: number;
+  submitted_at: string | null;
+  ready_at: string | null;
+  played_at: string | null;
+  generation_ms: number | null;
+  fal_submit_seconds: number | null;
+  fal_queue_seconds: number | null;
+  fal_total_seconds: number | null;
+  gap_before_seconds: number | null;
+}
+
+export function groupRenderMetrics(records: readonly RendererClipRecord[], provider: GroupRenderMetrics['provider'] = 'fal'): GroupRenderMetrics | null {
+  if (records.length === 0) return null;
+  const isoMin = (values: Array<string | null>) => values.filter((v): v is string => v !== null).sort()[0] ?? null;
+  const isoMax = (values: Array<string | null>) => values.filter((v): v is string => v !== null).sort().at(-1) ?? null;
+  const sum = (values: Array<number | null>) => {
+    const present = values.filter((v): v is number => typeof v === 'number');
+    return present.length ? Math.round(present.reduce((a, b) => a + b, 0) * 10) / 10 : null;
+  };
+  return {
+    provider,
+    clips: records.length,
+    submitted_at: isoMin(records.map(r => r.submittedAt)),
+    ready_at: isoMax(records.map(r => r.readyAt)),
+    played_at: isoMax(records.map(r => r.playedAt)),
+    generation_ms: sum(records.map(r => r.generationMs)),
+    fal_submit_seconds: sum(records.map(r => r.falSubmitSeconds)),
+    fal_queue_seconds: sum(records.map(r => r.falQueueSeconds)),
+    fal_total_seconds: sum(records.map(r => r.falTotalSeconds)),
+    gap_before_seconds: records[0]?.gapBeforeSeconds ?? null,
+  };
+}
+
 export function emptyPlaybackGapSummary(): PlaybackGapSummary {
   return { lineGapCount: 0, lineGapSeconds: 0, maxLineGapSeconds: 0, blockGapCount: 0, blockGapSeconds: 0, maxBlockGapSeconds: 0, clipsPlaced: 0 };
 }
@@ -778,9 +818,14 @@ export function createGroupFinishedEvent(input: {
   groupId: string;
   storyBlockId: string;
   durationSeconds: number;
+  /** Story Kernel episode id; lets the kernel attribute render metrics without a lookup. */
+  episodeId?: number;
+  renderMetrics?: GroupRenderMetrics | null;
 }): JsonObject {
   return {
     type: 'renderer.event',
+    ...(input.episodeId !== undefined ? { episode_id: input.episodeId } : {}),
+    ...(input.renderMetrics ? { render_metrics: input.renderMetrics as unknown as JsonObject } : {}),
     client_event_id: rendererEventId([input.streamId, input.assignmentId, input.assignmentGeneration, input.sequence, input.storyBlockId, input.groupId, 'group_finished']),
     event: 'completed',
     id: SCRIPT_STATUS_MESSAGE_ID,
@@ -1022,7 +1067,7 @@ class ExternalRendererRun {
     });
   }
 
-  private completedEvent(frame: DssFrame, group: DssGroup, durationSeconds: number): JsonObject {
+  private completedEvent(frame: DssFrame, group: DssGroup, durationSeconds: number, records: readonly RendererClipRecord[] = []): JsonObject {
     return createGroupFinishedEvent({
       streamId: this.config.rendererId,
       assignmentId: frame.assignmentId,
@@ -1031,6 +1076,8 @@ class ExternalRendererRun {
       groupId: group.id,
       storyBlockId: frame.storyBlockId,
       durationSeconds,
+      episodeId: frame.episodeId,
+      renderMetrics: groupRenderMetrics(records, this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
     });
   }
 
@@ -1279,7 +1326,7 @@ class ExternalRendererRun {
       const delay = plan.delaySeconds;
       if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
       this.assertCurrentAssignment(frame);
-      this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay), frame);
+      this.sendRendererEvent(this.completedEvent(frame, group, seconds + delay, shots.map(({ record }) => record)), frame);
       this.status.dssCommandsRendered += group.commands.length;
       completed.resolve();
     }
