@@ -87,7 +87,7 @@ try {
         // An explicit bridge URL beats the platform's advertised one, which a local stack
         // publishes as its self-signed TLS port rather than its plain WebSocket port.
         ...(endpoints.rendererWebsocketUrl ? { websocketUrl: endpoints.rendererWebsocketUrl } : {}),
-        rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.1',
+        rendererVersion: handoff.rendererVersion || 'h3.opensource.v1.2',
         resolution: handoff.resolution || '480P', clipDurationSeconds: handoff.clipDurationSeconds || 6,
       };
       let recovery;
