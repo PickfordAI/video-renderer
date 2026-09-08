@@ -255,5 +255,11 @@ export async function rotateRendererCredential(options: {
  * the cue to rotate rather than to ask the creator to do anything.
  */
 export function credentialFenced(failures: readonly string[]): boolean {
-  return failures.some(failure => /fenced|invalid[_ ]client|unauthori[sz]ed|forbidden|revoked|\b40[13]\b/i.test(failure));
+  return failures.some((failure) => {
+    if (/\bfenced\b|\binvalid[_ ]client\b/i.test(failure)) return true;
+
+    const rendererAuthContext = /\b(?:renderer (?:bridge|login|credential)|client secret|oauth|authentication|authorization)\b/i;
+    const authenticationFailure = /\b(?:unauthori[sz]ed|forbidden|revoked|invalid|expired|40[13])\b/i;
+    return rendererAuthContext.test(failure) && authenticationFailure.test(failure);
+  });
 }

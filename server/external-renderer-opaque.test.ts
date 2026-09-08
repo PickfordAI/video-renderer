@@ -22,23 +22,27 @@ afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.clearAllMocks();
 describe('opaque run configuration', () => {
   it('needs only the EVD in opaque mode and keeps the legacy story requirement otherwise', () => {
     const parsed = parseExternalRendererRunConfig(config());
-    expect(parsed).toMatchObject({ startMode: 'opaque', evdId, storyId: null, audienceExchangeUrl: null });
+    expect(parsed).toMatchObject({ startMode: 'opaque', evdId, storyId: null, audienceExchangeUrl: null, supersedeExistingStory: false });
     expect(parseExternalRendererRunConfig({ ...config(), audienceExchangeUrl: 'http://127.0.0.1:8080/api/v1/external-audience/exchange' }).audienceExchangeUrl).toBe('http://127.0.0.1:8080/api/v1/external-audience/exchange');
+    expect(parseExternalRendererRunConfig({ ...config(), supersedeExistingStory: true }).supersedeExistingStory).toBe(true);
+    expect(() => parseExternalRendererRunConfig({ ...config(), supersedeExistingStory: 'yes' })).toThrow('supersedeExistingStory must be boolean');
     expect(() => parseExternalRendererRunConfig({ ...config(), evdId: undefined })).toThrow('evdId is required');
     expect(() => parseExternalRendererRunConfig({ ...config(), startMode: 'magic' })).toThrow('startMode must be legacy or opaque');
     const legacy = { ...config(), startMode: undefined, evdId: undefined };
     expect(parseExternalRendererRunConfig(legacy)).toMatchObject({ startMode: 'legacy', storyId: 1, evdId: null });
+    expect(() => parseExternalRendererRunConfig({ ...legacy, supersedeExistingStory: true })).toThrow('supersedeExistingStory requires opaque start mode');
     expect(() => parseExternalRendererRunConfig({ ...legacy, storyId: 0 })).toThrow('storyId must be a positive integer');
   });
 });
 
 describe('opaque renderer-initiated story start', () => {
   it.each([
-    { exchange: 'kernel origin', explicitExchange: false, recoverStart: false, recoverExchange: false },
-    { exchange: 'configured chat service', explicitExchange: true, recoverStart: false, recoverExchange: false },
-    { exchange: 'kernel origin after gateway timeout', explicitExchange: false, recoverStart: true, recoverExchange: false },
-    { exchange: 'kernel origin after transient exchange failure', explicitExchange: false, recoverStart: false, recoverExchange: true },
-  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange, recoverStart, recoverExchange }) => {
+    { exchange: 'kernel origin', explicitExchange: false, recoverStart: false, recoverExchange: false, supersedeExisting: false },
+    { exchange: 'configured chat service', explicitExchange: true, recoverStart: false, recoverExchange: false, supersedeExisting: false },
+    { exchange: 'kernel origin after gateway timeout', explicitExchange: false, recoverStart: true, recoverExchange: false, supersedeExisting: false },
+    { exchange: 'kernel origin after transient exchange failure', explicitExchange: false, recoverStart: false, recoverExchange: true, supersedeExisting: false },
+    { exchange: 'kernel origin while superseding the prior renderer story', explicitExchange: false, recoverStart: false, recoverExchange: false, supersedeExisting: true },
+  ])('starts from the EVD, resolves the story through the audience exchange at the $exchange, and relays audience chat to it', async ({ explicitExchange, recoverStart, recoverExchange, supersedeExisting }) => {
     vi.stubEnv('FAL_KEY', 'test-fal');
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const http = createServer();
@@ -78,11 +82,19 @@ describe('opaque renderer-initiated story start', () => {
     vi.stubGlobal('fetch', fetchMock);
     const media = playout();
     const manager = new ExternalRendererRunManager(media.manager);
-    const run = manager.start({ ...config(`http://127.0.0.1:${port}`), ...(explicitExchange ? { audienceExchangeUrl: exchangeUrl } : {}) });
+    const run = manager.start({
+      ...config(`http://127.0.0.1:${port}`),
+      ...(explicitExchange ? { audienceExchangeUrl: exchangeUrl } : {}),
+      ...(supersedeExisting ? { supersedeExistingStory: true } : {}),
+    });
     expect(run).toMatchObject({ startMode: 'opaque', storyId: null, storyRunId: null, audienceJoinUrl: null });
     try {
       await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(1), { timeout: 3_000 });
-      const expectedStart = { evd_id: evdId, idempotency_key: `video-renderer:${rendererId}:${evdId}:${run.runId}` };
+      const expectedStart = {
+        evd_id: evdId,
+        idempotency_key: `video-renderer:${rendererId}:${evdId}:${run.runId}`,
+        ...(supersedeExisting ? { supersede_existing: true } : {}),
+      };
       expect(startBodies).toEqual(recoverStart ? [expectedStart, expectedStart] : [expectedStart]);
       if (recoverStart || recoverExchange) {
         expect(frames.filter(f => f.type === 'renderer.hello')).toHaveLength(1);
