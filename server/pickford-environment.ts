@@ -2,8 +2,9 @@
  * Where a signed-in creator's Pickford environment lives.
  *
  * On deployed environments the API origin (`api.<env>.pickford.ai`) serves Identity, its OAuth
- * authorization server and the hosted MCP, while the frontend origin (`<env>.pickford.ai`) serves
- * `/bff/v1/*` and `/api/v1/renderers/*`. Those are different hosts, so they are separate fields.
+ * authorization server and the hosted MCP, the frontend origin (`<env>.pickford.ai`) serves
+ * `/bff/v1/*` and `/api/v1/renderers/*`, and the chat origin (`chat.<env>.pickford.ai`) serves the
+ * public audience exchange. Those are different hosts, so they are separate fields.
  */
 
 export type PickfordEnvironmentName = 'local' | 'test' | 'dev' | 'edge' | 'staging' | 'creator' | 'prod' | 'demo';
@@ -22,6 +23,8 @@ export interface PickfordEnvironment {
   apiBaseUrl: string;
   /** Browser origin that serves `/bff/v1/*` and `/api/v1/renderers/*`. */
   webBaseUrl: string;
+  /** Chat origin that serves `/api/v1/external-audience/exchange`. */
+  chatBaseUrl: string;
   /** OAuth resource (audience) the renderer requests tokens for. */
   oauthResource: string;
   /** The scope that belongs to that resource. Identity rejects any other pairing. */
@@ -67,26 +70,41 @@ export function environmentName(value: string | undefined): PickfordEnvironmentN
   return name as PickfordEnvironmentName;
 }
 
-function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webBaseUrl: string } {
+function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webBaseUrl: string; chatBaseUrl: string } {
   if (name === 'local' || name === 'test') {
-    return { apiBaseUrl: 'http://127.0.0.1:8081', webBaseUrl: 'http://127.0.0.1:5173' };
+    return {
+      apiBaseUrl: 'http://127.0.0.1:8081',
+      webBaseUrl: 'http://127.0.0.1:5173',
+      chatBaseUrl: 'http://127.0.0.1:8080',
+    };
   }
-  if (name === 'prod') return { apiBaseUrl: 'https://api.pickford.ai', webBaseUrl: 'https://pickford.ai' };
-  return { apiBaseUrl: `https://api.${name}.pickford.ai`, webBaseUrl: `https://${name}.pickford.ai` };
+  if (name === 'prod') {
+    return {
+      apiBaseUrl: 'https://api.pickford.ai',
+      webBaseUrl: 'https://pickford.ai',
+      chatBaseUrl: 'https://chat.pickford.ai',
+    };
+  }
+  return {
+    apiBaseUrl: `https://api.${name}.pickford.ai`,
+    webBaseUrl: `https://${name}.pickford.ai`,
+    chatBaseUrl: `https://chat.${name}.pickford.ai`,
+  };
 }
 
 /**
  * `STORY_ENVIRONMENT` selects the environment. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
- * `PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual values for one-off or
- * self-hosted kernels.
+ * `CHAT_BACKEND_URL`, `PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual
+ * values for one-off or self-hosted kernels.
  */
 export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): PickfordEnvironment {
   const name = environmentName(env.STORY_ENVIRONMENT);
   const defaults = defaultHosts(name);
   const apiBaseUrl = origin(env.PICKFORD_API_URL || defaults.apiBaseUrl, 'PICKFORD_API_URL');
   const webBaseUrl = origin(env.PICKFORD_WEB_URL || defaults.webBaseUrl, 'PICKFORD_WEB_URL');
+  const chatBaseUrl = origin(env.CHAT_BACKEND_URL || defaults.chatBaseUrl, 'CHAT_BACKEND_URL');
   // The renderer has its own resource (PIC-1739), separate from the hosted MCP's.
   const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || `${apiBaseUrl}/renderer`, 'PICKFORD_OAUTH_RESOURCE');
   const oauthScope = env.PICKFORD_OAUTH_SCOPE?.trim() || scopeForResource(oauthResource);
-  return { name, apiBaseUrl, webBaseUrl, oauthResource, oauthScope };
+  return { name, apiBaseUrl, webBaseUrl, chatBaseUrl, oauthResource, oauthScope };
 }

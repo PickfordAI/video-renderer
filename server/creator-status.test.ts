@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { creatorStatus, firstClipEtaSeconds, NOMINAL_FIRST_CLIP_SECONDS, playbackStatus } from './creator-status.js';
-import type { ExternalRendererRunStatus } from './external-renderer.js';
+import { emptyPlaybackGapSummary, type ExternalRendererRunStatus } from './external-renderer.js';
 
 const START = Date.parse('2026-09-07T12:00:00Z');
 
@@ -23,6 +23,7 @@ function run(overrides: Partial<ExternalRendererRunStatus> = {}): ExternalRender
     storyEndedAt: null, firstAssignmentAt: null, firstDssAcknowledgedAt: null,
     dssSequences: [], dssCommandsRendered: 0, clipsRendered: 0, clips: [],
     anchorsEstablished: 0, anchorsReused: 0, generationMsPercentiles: null,
+    playbackGaps: emptyPlaybackGapSummary(),
     mediaDir: null, finalMp4: null, hlsUrl: 'http://127.0.0.1:4174/hls/h3-x/index.m3u8',
     lastHeartbeatAt: null,
     eventVerdicts: {} as ExternalRendererRunStatus['eventVerdicts'],
