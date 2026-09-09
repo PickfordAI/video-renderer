@@ -33,7 +33,23 @@ export function audienceDisplayName(creatorStatus) {
   return email || 'Audience';
 }
 
+export function audienceDisplayLabel(displayName) {
+  const separator = typeof displayName === 'string' ? displayName.indexOf('@') : -1;
+  return separator > 0 ? displayName.slice(0, separator) : displayName;
+}
+
 export function fitTextareaToContent(textarea) {
   textarea.style.height = 'auto';
   textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+export function shouldSubmitAudienceMessage(event) {
+  return event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+}
+
+export function handleAudienceMessageKeydown(event, { submitting, submit }) {
+  if (!shouldSubmitAudienceMessage(event)) return false;
+  event.preventDefault();
+  if (!submitting) submit();
+  return true;
 }
