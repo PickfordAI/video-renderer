@@ -41,6 +41,7 @@ describe('CreatorApi playback routing', () => {
   afterEach(() => {
     if (directory) rmSync(directory, { recursive: true, force: true });
     directory = null;
+    vi.unstubAllGlobals();
   });
 
   it('starts the audience exchange against the environment chat backend', async () => {
@@ -82,5 +83,54 @@ describe('CreatorApi playback routing', () => {
       rendererVersion: 'h3.opensource.v1.2',
       supersedeExistingStory: true,
     }));
+  });
+
+  it('mints a credential instead of reusing one from another environment', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'renderer-creator-api-'));
+    const env: NodeJS.ProcessEnv = {
+      RENDERER_STATE_DIR: join(directory, '.renderer'),
+      STORY_ENVIRONMENT: 'prod',
+      FAL_KEY: 'fixture-private-fal-key',
+    };
+    writeStoredCredential({
+      environment: 'dev',
+      rendererId: RENDERER_ID,
+      credentialId: 'dddddddd-0000-4000-8000-000000000001',
+      clientSecret: 'fixture-private-client-secret',
+      installationName: 'Fixture renderer',
+      adapter: 'bearer',
+      createdAt: new Date(0).toISOString(),
+      rotatedAt: null,
+      expiresAt: null,
+    }, env);
+    const prodRendererId = 'eeeeeeee-0000-4000-8000-000000000001';
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
+      credential: {
+        renderer_id: prodRendererId,
+        credential_id: 'ffffffff-0000-4000-8000-000000000001',
+        installation_name: 'Fixture renderer',
+        created_at: new Date(0).toISOString(),
+      },
+      client_secret: 'fixture-private-prod-secret',
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const start = vi.fn(() => run());
+    const runs = {
+      latest: () => null,
+      start,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    const api = new CreatorApi(runs, { env, auth });
+
+    await (api as unknown as { play(evdId: string): Promise<ExternalRendererRunStatus> }).play(EVD_ID);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://pickford.ai/bff/v1/developer/renderers');
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ rendererId: prodRendererId }));
   });
 });
