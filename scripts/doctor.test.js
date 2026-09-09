@@ -27,12 +27,14 @@ describe('doctor model credential checks', () => {
     const origin = `http://127.0.0.1:${port}`;
     const path = join(root, 'handoff.json');
     const ffmpeg = join(root, 'ffmpeg-fixture');
+    const ffprobe = join(root, 'ffprobe-fixture');
     const handoff = { evdId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', rendererId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', credentialId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', setupToken: 'fixture-private-setup', clientSecret: 'fixture-private-installation', rendererConfig: { model }, initialImageUrl: 'https://images.example/scene.jpg' };
     await writeFile(path, JSON.stringify(handoff));
     await writeFile(ffmpeg, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(ffprobe, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith('STORY_')) delete env[key];
-    Object.assign(env, { STORY_HANDOFF_PATH: path, PORT: port, NARRATIVE_ENGINE_URL: origin, RENDERER_PLATFORM_URL: origin, NARRATIVE_AUTHORING_URL: '', REALTIME_GATEWAY_URL: '', CHAT_BACKEND_URL: '', MEDIA_RELAY_HLS_BASE_URL: origin, FFMPEG_PATH: ffmpeg, FAL_KEY: localFal ? 'fixture-private-fal' : '', FAL_API_KEY: '', MINIMAX_API_KEY: '', PICKFORD_FAKE_CLIPS: localFake ? '1' : '' });
+    Object.assign(env, { STORY_HANDOFF_PATH: path, PORT: port, NARRATIVE_ENGINE_URL: origin, RENDERER_PLATFORM_URL: origin, NARRATIVE_AUTHORING_URL: '', REALTIME_GATEWAY_URL: '', CHAT_BACKEND_URL: '', MEDIA_RELAY_HLS_BASE_URL: origin, FFMPEG_PATH: ffmpeg, FFPROBE_PATH: ffprobe, FAL_KEY: localFal ? 'fixture-private-fal' : '', FAL_API_KEY: '', MINIMAX_API_KEY: '', PICKFORD_FAKE_CLIPS: localFake ? '1' : '' });
     try {
       const run = async () => {
         const result = await exec(process.execPath, [cli], { cwd: root, env }).catch(error => ({ stdout: error.stdout }));
@@ -43,7 +45,20 @@ describe('doctor model credential checks', () => {
       expect(result.ok).toBe(expected);
       expect(result.checks.find(check => check.name.includes('credential')).ok).toBe(expected);
       expect(result.checks.find(check => check.name === 'agent-managed story access').ok).toBe(true);
+      expect(result.checks.find(check => check.name === 'FFmpeg').ok).toBe(true);
+      expect(result.checks.find(check => check.name === 'FFprobe').ok).toBe(true);
       expect(result.checks.find(check => check.name === 'worker')).toMatchObject({ ok: true, check: 'HTTP reachability' });
+      if (model === 'auto' && workerMinimax && !localFake) {
+        env.FFPROBE_PATH = join(root, 'missing-ffprobe');
+        const missingFfprobe = await run();
+        expect(missingFfprobe.ok).toBe(false);
+        expect(missingFfprobe.checks.find(check => check.name === 'FFmpeg').ok).toBe(true);
+        expect(missingFfprobe.checks.find(check => check.name === 'FFprobe')).toMatchObject({
+          ok: false,
+          fix: 'Install the FFmpeg package (which includes ffprobe) or use the full Docker profile.',
+        });
+        env.FFPROBE_PATH = ffprobe;
+      }
       if (model === 'auto') {
         await writeFile(path, JSON.stringify({ ...handoff, setupToken: '' }));
         const missingStory = await run();

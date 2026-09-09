@@ -3,7 +3,9 @@
 Read README.md and docs/agents.md before onboarding or deployment work. The renderer is standalone;
 the Story Kernel is an external service, not a local package dependency.
 
-- Use Node 22+ and npm ci. Validate with npm run check and docker compose config --quiet.
+- Use Node 22+ and npm ci. A host-run worker requires both `ffmpeg` and `ffprobe` on `PATH`; the
+  full Docker profile supplies them inside the renderer image. Validate with npm run check and
+  docker compose config --quiet.
 - Preserve existing user changes. Do not start paid video generation or live story/audience actions
   merely to run tests. Tests use fixtures/mocks and require no keys.
 - Treat .env, handoff JSON, and .renderer files as secrets. Never print credentials or include them

@@ -11,7 +11,11 @@ user for a fal key, and never place one in the agent's context, a command line, 
 behalf.** The renderer performs its own OAuth sign-in as the creator and mints its own renderer
 credential, so this path has no developer page, no setup token, and no handoff file.
 
-1. Clone the repository, select Node 22+, then run `npm ci` and `npm run build`.
+1. Clone the repository, select Node 22+, and install FFmpeg so both `ffmpeg` and `ffprobe` are on
+   `PATH` (`brew install ffmpeg` on macOS). Verify both with `ffmpeg -version` and
+   `ffprobe -version`, then run `npm ci` and `npm run build`. The default workflow runs only
+   MediaMTX in Docker, so its container does not provide these binaries to the host worker. The
+   full Docker profile includes both binaries inside the renderer image.
 2. Start the media relay and the worker as a managed persistent process:
    `docker compose up -d media-relay`, then `npm start`. Read the startup output for a port
    conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
@@ -198,7 +202,10 @@ goal is only to prove restartability; a control-only first DSS acknowledgement i
 Do not wait for the full episode. Neither setting belongs in hosted or shared dev, edge, staging,
 or prod configuration.
 
-1. Clone the repository. Select Node 22+ and run `npm ci`.
+1. Clone the repository. Select Node 22+, install FFmpeg so both `ffmpeg` and `ffprobe` are on
+   `PATH` (`brew install ffmpeg` on macOS), and verify both with `ffmpeg -version` and
+   `ffprobe -version`. Then run `npm ci`. The default workflow runs the worker on the host; only
+   the full Docker profile supplies these binaries inside the renderer container.
 2. Obtain `MINIMAX_API_KEY` (configured direct adapter) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
    environment or `.env` with mode `0600`. Never use a `VITE_` prefix for secrets.
 3. Start the existing Story Kernel stack. Run `npm run setup`. It reads only Compose labels and
