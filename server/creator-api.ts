@@ -237,31 +237,23 @@ export class CreatorApi {
     if (!active || !['connecting', 'running', 'failed'].includes(active.state)) {
       throw new Error('No StoryBundle is playing.');
     }
-    const shortlink = active.roomShortlink.trim();
-    if (!shortlink) {
+    const storyId = active.storyId;
+    if (!Number.isSafeInteger(storyId) || (storyId ?? 0) <= 0) {
       throw new Error('Your StoryBundle is still starting. Try Stop again in a moment.');
     }
 
     const cancelled = await fetch(
-      `${this.environment.apiBaseUrl}/story/cancel?room_shortlink=${encodeURIComponent(shortlink)}`,
+      `${this.environment.webBaseUrl}/bff/v1/stories/${storyId}/cancel`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${await this.auth.accessToken()}` },
       },
     );
     if (!cancelled.ok) {
-      let alreadyStopped = false;
-      if (cancelled.status === 400) {
-        const value = await cancelled.clone().json().catch(() => null) as { detail?: unknown } | null;
-        alreadyStopped = value?.detail === 'No active story found';
-      }
-      if (!alreadyStopped) {
-        await cancelled.body?.cancel();
-        throw new Error(`Pickford could not stop your StoryBundle (HTTP ${cancelled.status}).`);
-      }
-    } else {
       await cancelled.body?.cancel();
+      throw new Error(`Pickford could not stop your StoryBundle (HTTP ${cancelled.status}).`);
     }
+    await cancelled.body?.cancel();
 
     // Fence the local stop by run id: a concurrent fresh Play must never be stopped here.
     const stopped = await this.runs.stopActive(active.runId);

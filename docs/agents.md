@@ -28,9 +28,10 @@ credential, so this path has no developer page, no setup token, and no handoff f
    a clip has actually played and the page is showing video.
 6. `npm run auth -- logout` clears the stored sign-in; the page's **Sign out** button does the same.
 
-The page's **Stop** button calls Pickford's authenticated story cancellation endpoint for the
-active story, then stops that exact local renderer run. If cancellation fails, the local run stays
-active and the page keeps Stop available so the creator can retry without abandoning cleanup.
+The page's **Stop** button calls Pickford's creator-authenticated
+`POST /bff/v1/stories/{story_id}/cancel` endpoint with the exact assigned story id, then stops that
+exact local renderer run. If cancellation fails, the local run stays active and the page keeps Stop
+available so the creator can retry without abandoning cleanup.
 
 What the agent must not do in this path: ask for or handle the fal key, read `.renderer/`, mint or
 rotate a credential by hand, or send the user to a Pickford developer page.
@@ -72,11 +73,11 @@ retries with the same value — a rejected refresh discards the sign-in and the 
 again. Do not script a refresh retry around it.
 
 The BFF accepts these bearers directly, with no CSRF, on `POST /bff/v1/session` (the whoami:
-`{user_id, role, csrf_token: null}`, no cookie set), `GET /bff/v1/story-bundles`, and the
-`GET`/`POST /bff/v1/developer/renderers` family including `/{id}/rotate` and `/{id}/revoke`. All of
-them require the `creator` or `admin` role; a 403 means the role is missing, which is an admin
-action, not something to retry. The developer mutation budget is 20 a day, which a creator signing
-in and playing stories will not reach.
+`{user_id, role, csrf_token: null}`, no cookie set), `GET /bff/v1/story-bundles`,
+`POST /bff/v1/stories/{story_id}/cancel`, and the `GET`/`POST /bff/v1/developer/renderers` family
+including `/{id}/rotate` and `/{id}/revoke`. All of them require the `creator` or `admin` role; a
+403 means the role is missing, which is an admin action, not something to retry. The developer
+mutation budget is 20 a day, which a creator signing in and playing stories will not reach.
 
 ## User-facing choice
 
