@@ -150,6 +150,7 @@ export function normalizeClipArgs(input: PlayoutClipInput, outputPath: string, o
     '-map', '0:v:0', '-map', '0:a:0?',
     // durationSeconds is the measured maximum stream length, rounded up to a
     // video frame. Pad the shorter stream to that slot; never trim to the request.
+    // Reset source timestamps first so duration is measured from the first frame/sample.
     '-vf', `setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=24,format=yuv420p,tpad=stop_mode=clone:stop_duration=${input.durationSeconds},trim=duration=${input.durationSeconds},setpts=PTS-STARTPTS+${offsetSeconds}/TB`,
     '-af', `asetpts=PTS-STARTPTS,aresample=48000,apad=pad_dur=${input.durationSeconds},atrim=duration=${input.durationSeconds},asetpts=PTS-STARTPTS+${offsetSeconds}/TB`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
