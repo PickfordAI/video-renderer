@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
+import { audienceMessageInput, audienceReceiptMessage, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
 import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
@@ -99,7 +99,7 @@ chatForm.addEventListener('submit', async (event) => {
     }
     showSentMessage(input, value.messageId);
     chatMessage.value = '';
-    chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
+    chatStatus.textContent = audienceReceiptMessage(value);
   } catch (error) {
     chatStatus.textContent = error instanceof Error ? error.message : 'The message could not be sent.';
   } finally {

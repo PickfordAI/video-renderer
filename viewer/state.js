@@ -21,3 +21,7 @@ export function audienceMessageInput(displayName, content) {
   if (message.length > 2000) throw new Error('Your message must be 2000 characters or fewer.');
   return { displayName: name, content: message };
 }
+
+export function audienceReceiptMessage(response) {
+  return response?.duplicate ? 'That message was already received.' : '';
+}

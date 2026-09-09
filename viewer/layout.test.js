@@ -11,5 +11,7 @@ describe('player layout', () => {
     expect(creator).toBeGreaterThan(chat);
     expect(html).toContain('<details id="creator-details" open>');
     expect(html).toContain('<details id="bundles-details" open>');
+    expect(html).toContain('<textarea id="chat-message"');
+    expect(html).not.toContain('<input id="chat-message"');
   });
 });
