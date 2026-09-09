@@ -40,9 +40,11 @@ Open [the local player](http://localhost:4174) and:
    to a loopback address it serves itself;
 2. paste your **fal API key** and save it. It is written to `.renderer/fal.json` with mode `0600`,
    sent only to fal, and never shown again — the page only says whether a key is present;
-3. pick a **StoryBundle** and press **Play**. Bundles whose images are still generating appear as
-   *Preparing images…* and become playable on their own. Each click starts a new story; Pickford
-   first cancels and releases any previous Story Run still assigned to this renderer installation.
+3. pick a **StoryBundle** and press **Play**. Press **Stop** to cancel its exact assigned Pickford
+   story through your OAuth connection, then stop local generation and playback. Bundles whose
+   images are still generating appear as *Preparing images…* and become playable on their own.
+   Each click starts a new story; Pickford first cancels and releases any previous Story Run still
+   assigned to this renderer installation.
 
 The first scene can take a few minutes; the page shows an estimate. Playing a StoryBundle submits
 paid video jobs to fal. The renderer targets Pickford production at `pickford.ai` by default.

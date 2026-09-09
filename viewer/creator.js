@@ -1,6 +1,7 @@
 import {
   bundleAction,
   bundleTitle,
+  canStopPlayback,
   environmentLabel,
   falKeyLabel,
   playbackLabel,
@@ -23,6 +24,7 @@ const playbackSupport = document.querySelector('#creator-playback-support');
 const identity = document.querySelector('#creator-identity');
 const signIn = document.querySelector('#creator-sign-in');
 const signOut = document.querySelector('#creator-sign-out');
+const stop = document.querySelector('#creator-stop');
 const notice = document.querySelector('#creator-notice');
 const falForm = document.querySelector('#fal-form');
 const falInput = document.querySelector('#fal-key');
@@ -37,6 +39,7 @@ let bundles = [];
 let statusTimer;
 let bundleTimer;
 let disposed = false;
+let stopPending = false;
 
 function setText(node, value) {
   if (node) node.textContent = value;
@@ -73,6 +76,8 @@ function renderStatus() {
   document.querySelector('#setup').hidden = true;
   signIn.hidden = Boolean(status.auth?.signedIn);
   signOut.hidden = !status.auth?.signedIn;
+  stop.hidden = !canStopPlayback(status.playback);
+  stop.disabled = stopPending;
   bundleSection.hidden = !status.auth?.signedIn;
   // A sign-in problem the creator has to act on (a missing role) outranks a bundle-list caveat.
   if (status.authNotice) setText(notice, status.authNotice);
@@ -177,6 +182,22 @@ signOut?.addEventListener('click', async () => {
     setText(notice, error.message);
   } finally {
     signOut.disabled = false;
+  }
+});
+
+stop?.addEventListener('click', async () => {
+  stopPending = true;
+  stop.disabled = true;
+  setText(notice, 'Stopping your StoryBundle…');
+  try {
+    await call('/api/creator/stop', { method: 'POST', body: '{}' });
+    setText(notice, 'Your StoryBundle has stopped.');
+    await refreshStatus();
+  } catch (error) {
+    setText(notice, error.message);
+  } finally {
+    stopPending = false;
+    renderStatus();
   }
 });
 

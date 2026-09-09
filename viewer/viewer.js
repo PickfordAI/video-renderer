@@ -23,8 +23,6 @@ const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
 const chatHistory = document.querySelector('#chat-history');
 const chatMessages = document.querySelector('#chat-messages');
-const creatorDetails = document.querySelector('#creator-details');
-const bundlesDetails = document.querySelector('#bundles-details');
 const sentMessageIds = new Set();
 let playbackStarted = false;
 
@@ -37,8 +35,6 @@ function updatePlaybackUi() {
     playbackStarted,
     chatReady: Boolean(chatCsrfToken),
     chat,
-    creatorDetails,
-    bundlesDetails,
   });
 }
 

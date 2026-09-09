@@ -132,4 +132,96 @@ describe('CreatorApi playback routing', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://pickford.ai/bff/v1/developer/renderers');
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ rendererId: prodRendererId }));
   });
+
+  it('cancels the exact Pickford story before stopping the same local renderer run', async () => {
+    const active = { ...run(), state: 'running' as const, storyId: 77, roomShortlink: 'untrusted-legacy-value' };
+    const stopActive = vi.fn(async () => ({ ...active, state: 'stopped' as const }));
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .resolves.toMatchObject({ state: 'stopped' });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://pickford.ai/bff/v1/stories/77/cancel',
+      { method: 'POST', headers: { Authorization: 'Bearer fixture-private-access-token' } },
+    );
+    expect(stopActive).toHaveBeenCalledWith(active.runId);
+  });
+
+  it('keeps the local run active when Pickford rejects cancellation so Stop can be retried', async () => {
+    const active = { ...run(), state: 'running' as const, storyId: 77, roomShortlink: 'night-shift-1' };
+    const stopActive = vi.fn();
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ detail: 'Failed to cancel story' }, { status: 500 })));
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .rejects.toThrow('Pickford could not stop your StoryBundle (HTTP 500).');
+    expect(stopActive).not.toHaveBeenCalled();
+  });
+
+  it('stops the local run after Pickford idempotently accepts an inactive story', async () => {
+    const active = { ...run(), state: 'failed' as const, storyId: 77, roomShortlink: 'night-shift-1' };
+    const stopActive = vi.fn(async () => ({ ...active, state: 'stopped' as const }));
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .resolves.toMatchObject({ state: 'stopped' });
+    expect(stopActive).toHaveBeenCalledWith(active.runId);
+  });
+
+  it('does not attempt cancellation or local stop until Pickford assigns the exact story id', async () => {
+    const active = { ...run(), state: 'connecting' as const, storyId: null, roomShortlink: 'legacy-shortlink' };
+    const stopActive = vi.fn();
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .rejects.toThrow('Your StoryBundle is still starting. Try Stop again in a moment.');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(stopActive).not.toHaveBeenCalled();
+  });
 });

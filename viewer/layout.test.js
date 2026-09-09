@@ -6,9 +6,14 @@ describe('player layout', () => {
     const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
     const chat = html.indexOf('<section id="audience-chat" hidden');
     const creator = html.indexOf('<section id="creator" hidden');
+    const stop = html.indexOf('<button id="creator-stop" type="button" hidden>Stop</button>');
+    const video = html.indexOf('<video id="video"');
 
     expect(chat).toBeGreaterThan(-1);
     expect(creator).toBeGreaterThan(chat);
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(video);
+    expect(stop).toBeLessThan(creator);
     expect(html).toContain('<details id="creator-details" open>');
     expect(html).toContain('<details id="bundles-details" open>');
     expect(html).toContain('<textarea id="chat-message" name="content" rows="1"');
@@ -16,5 +21,11 @@ describe('player layout', () => {
     expect(html).not.toContain('id="chat-name"');
     expect(html).not.toContain('Your name');
     expect(html).not.toContain('Send an audience suggestion to the story in progress.');
+  });
+
+  it('wires the creator Stop button to the local cancellation route', async () => {
+    const script = await readFile(new URL('./creator.js', import.meta.url), 'utf8');
+
+    expect(script).toContain("await call('/api/creator/stop', { method: 'POST', body: '{}' })");
   });
 });

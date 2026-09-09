@@ -43,7 +43,7 @@ describe('syncPlaybackUi', () => {
     expect(bundlesDetails.open).toBe(true);
   });
 
-  it('collapses the account and StoryBundles and reveals ready audience controls once playback begins', () => {
+  it('keeps the account and StoryBundles open while revealing ready audience controls', () => {
     const chat = { hidden: true };
     const creatorDetails = { open: true };
     const bundlesDetails = { open: true };
@@ -51,11 +51,11 @@ describe('syncPlaybackUi', () => {
     syncPlaybackUi({ playbackStarted: true, chatReady: true, chat, creatorDetails, bundlesDetails });
 
     expect(chat.hidden).toBe(false);
-    expect(creatorDetails.open).toBe(false);
-    expect(bundlesDetails.open).toBe(false);
+    expect(creatorDetails.open).toBe(true);
+    expect(bundlesDetails.open).toBe(true);
   });
 
-  it('keeps audience controls hidden when playback begins before chat is ready', () => {
+  it('keeps the creator panels open when playback begins before chat is ready', () => {
     const chat = { hidden: true };
     const creatorDetails = { open: true };
     const bundlesDetails = { open: true };
@@ -63,8 +63,8 @@ describe('syncPlaybackUi', () => {
     syncPlaybackUi({ playbackStarted: true, chatReady: false, chat, creatorDetails, bundlesDetails });
 
     expect(chat.hidden).toBe(true);
-    expect(creatorDetails.open).toBe(false);
-    expect(bundlesDetails.open).toBe(false);
+    expect(creatorDetails.open).toBe(true);
+    expect(bundlesDetails.open).toBe(true);
   });
 });
 

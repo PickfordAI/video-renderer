@@ -90,6 +90,11 @@ describe('playback status', () => {
       evdId: 'evd-1',
     });
   });
+
+  it('exposes whether the current run still has retryable Stop ownership', () => {
+    expect(playbackStatus(run({ state: 'failed' }), 'evd-1', START, true).canStop).toBe(true);
+    expect(playbackStatus(run({ state: 'failed' }), 'evd-1', START, false).canStop).toBe(false);
+  });
 });
 
 describe('creator status', () => {

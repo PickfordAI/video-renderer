@@ -127,6 +127,8 @@ export class CreatorApi {
   }
 
   status(includeCsrf: boolean): CreatorStatus & { bundleNotice: string | null; authNotice: string | null } {
+    const run = this.latestRun();
+    const active = this.runs.active();
     return {
       ...creatorStatus({
         environment: this.environment.name,
@@ -134,10 +136,11 @@ export class CreatorApi {
         credential: readStoredCredential(this.env),
         falKey: falKeyStatus(this.env),
         bundleAdapter: this.bundleAdapter,
-        run: this.latestRun(),
+        run,
         evdId: this.startedEvdId,
         nowMs: this.now(),
         csrfToken: includeCsrf ? this.csrfToken : null,
+        canStop: Boolean(active && active.runId === run?.runId && ['connecting', 'running', 'failed'].includes(active.state)),
       }),
       bundleNotice: this.bundleNotice,
       authNotice: this.auth.notice(),
@@ -229,6 +232,35 @@ export class CreatorApi {
     return run;
   }
 
+  private async stop(): Promise<ExternalRendererRunStatus> {
+    const active = this.runs.active();
+    if (!active || !['connecting', 'running', 'failed'].includes(active.state)) {
+      throw new Error('No StoryBundle is playing.');
+    }
+    const storyId = active.storyId;
+    if (!Number.isSafeInteger(storyId) || (storyId ?? 0) <= 0) {
+      throw new Error('Your StoryBundle is still starting. Try Stop again in a moment.');
+    }
+
+    const cancelled = await fetch(
+      `${this.environment.webBaseUrl}/bff/v1/stories/${storyId}/cancel`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${await this.auth.accessToken()}` },
+      },
+    );
+    if (!cancelled.ok) {
+      await cancelled.body?.cancel();
+      throw new Error(`Pickford could not stop your StoryBundle (HTTP ${cancelled.status}).`);
+    }
+    await cancelled.body?.cancel();
+
+    // Fence the local stop by run id: a concurrent fresh Play must never be stopped here.
+    const stopped = await this.runs.stopActive(active.runId);
+    if (!stopped) throw new Error('That StoryBundle is no longer the active renderer run.');
+    return stopped;
+  }
+
   async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
     const url = new URL(request.url ?? '/', 'http://local');
     const pathname = url.pathname;
@@ -315,8 +347,7 @@ export class CreatorApi {
       return;
     }
     if (pathname === '/api/creator/stop' && request.method === 'POST') {
-      const stopped = await this.runs.stopActive();
-      sendJson(response, stopped ? 200 : 404, stopped ?? { error: 'No StoryBundle is playing.' });
+      sendJson(response, 200, await this.stop());
       return;
     }
     sendJson(response, 404, { error: 'unknown creator route' });

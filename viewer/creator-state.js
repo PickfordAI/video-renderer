@@ -41,6 +41,11 @@ export function playbackLabel(playback) {
   return `${base} — first clip in about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
 }
 
+/** Stop is useful during startup/playback and after a failure that may still need kernel cleanup. */
+export function canStopPlayback(playback) {
+  return playback?.canStop === true;
+}
+
 /** Keep backend diagnostics out of the page while making them easy to attach to an opt-in email. */
 export function playbackSupportHref(playback) {
   if (playback?.state !== 'failed') return null;

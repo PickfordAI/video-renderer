@@ -127,7 +127,7 @@ applied, so nothing here is readable cross-origin.
 | `POST /api/creator/sign-out` | Revoke the refresh token and clear `.renderer/auth.json` |
 | `GET /api/creator/story-bundles` | The creator's StoryBundles with `ready`/`preparing`/`blocked` state |
 | `POST /api/creator/play` | Mint or rotate the renderer credential if needed, then start a new opaque run and request fenced supersession of this renderer's prior Story Run |
-| `POST /api/creator/stop` | Stop the active run |
+| `POST /api/creator/stop` | Cancel the active Pickford story, then stop that exact local renderer run |
 | `POST`/`DELETE /api/creator/fal-key` | Store or clear the creator's fal key in `.renderer/fal.json` (0600). Presence only is ever reported |
 
 The worker is a public OAuth 2.1 client: RFC 9728 resource-metadata discovery, RFC 8414
@@ -173,6 +173,12 @@ and that message is surfaced to the creator rather than collapsed into a status 
 also sends `supersede_existing: true`: the authenticated backend must quiesce and exact-fence only
 this renderer's previous Story Run before admitting the request's fresh idempotency identity. A
 replay of that same identity must recover the new run rather than cancel it.
+
+Creator Stop posts to `/bff/v1/stories/{story_id}/cancel` on the frontend origin with the creator's
+OAuth bearer and the exact story id returned by that start. The BFF derives the creator identity
+from that bearer, and Show/Admin accepts already-inactive owned stories idempotently. Only after
+Pickford accepts cancellation does the worker stop the same renderer run id, so a cancellation
+failure remains retryable and a concurrent new run cannot be stopped accidentally.
 
 ## Compatibility and recovery
 
