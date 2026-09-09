@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
+import { describe, expect, it, vi } from 'vitest';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, shouldSubmitAudienceMessage, setupMessage, validStreamUrl } from './state.js';
 describe('one story player', () => {
   it('explains setup, readiness, startup and terminal states without a credential form', () => {
     expect(setupMessage({ setup: { ready: false } })).toContain('setup left');
@@ -54,5 +54,46 @@ describe('audienceDisplayName', () => {
   it('uses a neutral name when the public viewer has no account identity', () => {
     expect(audienceDisplayName(null)).toBe('Audience');
     expect(audienceDisplayName({ auth: { signedIn: false, email: 'stale@example.com' } })).toBe('Audience');
+  });
+});
+
+describe('shouldSubmitAudienceMessage', () => {
+  it('submits on Enter without inserting a newline', () => {
+    expect(shouldSubmitAudienceMessage({ key: 'Enter', shiftKey: false, isComposing: false })).toBe(true);
+  });
+
+  it('keeps Shift+Enter for newlines and ignores IME confirmation', () => {
+    expect(shouldSubmitAudienceMessage({ key: 'Enter', shiftKey: true, isComposing: false })).toBe(false);
+    expect(shouldSubmitAudienceMessage({ key: 'Enter', shiftKey: false, isComposing: true })).toBe(false);
+    expect(shouldSubmitAudienceMessage({ key: 'a', shiftKey: false, isComposing: false })).toBe(false);
+  });
+});
+
+describe('handleAudienceMessageKeydown', () => {
+  it('prevents a newline and submits the form for plain Enter', () => {
+    const event = { key: 'Enter', shiftKey: false, isComposing: false, preventDefault: vi.fn() };
+    const submit = vi.fn();
+
+    expect(handleAudienceMessageKeydown(event, { submitting: false, submit })).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it('allows Shift+Enter to create a newline', () => {
+    const event = { key: 'Enter', shiftKey: true, isComposing: false, preventDefault: vi.fn() };
+    const submit = vi.fn();
+
+    expect(handleAudienceMessageKeydown(event, { submitting: false, submit })).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('prevents another newline without resubmitting while a send is in progress', () => {
+    const event = { key: 'Enter', shiftKey: false, isComposing: false, preventDefault: vi.fn() };
+    const submit = vi.fn();
+
+    expect(handleAudienceMessageKeydown(event, { submitting: true, submit })).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
   });
 });

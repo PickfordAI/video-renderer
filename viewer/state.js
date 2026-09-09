@@ -37,3 +37,14 @@ export function fitTextareaToContent(textarea) {
   textarea.style.height = 'auto';
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
+
+export function shouldSubmitAudienceMessage(event) {
+  return event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+}
+
+export function handleAudienceMessageKeydown(event, { submitting, submit }) {
+  if (!shouldSubmitAudienceMessage(event)) return false;
+  event.preventDefault();
+  if (!submitting) submit();
+  return true;
+}

@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
 import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
@@ -112,6 +112,12 @@ chatForm.addEventListener('submit', async (event) => {
 });
 
 chatMessage.addEventListener('input', resizeChatMessage);
+chatMessage.addEventListener('keydown', (event) => {
+  handleAudienceMessageKeydown(event, {
+    submitting: chatSend.disabled,
+    submit: () => chatForm.requestSubmit(),
+  });
+});
 window.addEventListener('resize', resizeChatMessage);
 
 function clearStream() {
