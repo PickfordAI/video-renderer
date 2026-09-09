@@ -38,7 +38,8 @@ function clip(playedAt: string | null) {
 }
 
 describe('first clip ETA', () => {
-  it('counts down from a nominal budget before any clip has played', () => {
+  it('counts down from two minutes before any clip has played', () => {
+    expect(NOMINAL_FIRST_CLIP_SECONDS).toBe(120);
     expect(firstClipEtaSeconds(run(), START)).toBe(NOMINAL_FIRST_CLIP_SECONDS);
     expect(firstClipEtaSeconds(run(), START + 60_000)).toBe(NOMINAL_FIRST_CLIP_SECONDS - 60);
   });
