@@ -22,7 +22,10 @@ live generation; you can build and test without keys.
 
 ## Quick start
 
-Requires **Node.js 22+**, FFmpeg, and Docker.
+Requires **Node.js 22+**, Docker, and an FFmpeg installation that provides both the `ffmpeg` and
+`ffprobe` executables. On macOS, install both with `brew install ffmpeg`. The full Docker profile
+already includes them; running only `media-relay` in Docker still requires them on the host where
+`npm start` runs.
 
 ```sh
 npm ci
