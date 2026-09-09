@@ -13,5 +13,7 @@ describe('player layout', () => {
     expect(html).toContain('<details id="bundles-details" open>');
     expect(html).toContain('<textarea id="chat-message" name="content" rows="1"');
     expect(html).not.toContain('<input id="chat-message"');
+    expect(html).not.toContain('id="chat-name"');
+    expect(html).not.toContain('Your name');
   });
 });

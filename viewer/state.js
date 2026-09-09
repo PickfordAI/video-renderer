@@ -26,6 +26,13 @@ export function audienceReceiptMessage(response) {
   return response?.duplicate ? 'That message was already received.' : '';
 }
 
+export function audienceDisplayName(creatorStatus) {
+  const email = creatorStatus?.auth?.signedIn && typeof creatorStatus.auth.email === 'string'
+    ? creatorStatus.auth.email.trim()
+    : '';
+  return email || 'Audience';
+}
+
 export function fitTextareaToContent(textarea) {
   textarea.style.height = 'auto';
   textarea.style.height = `${textarea.scrollHeight}px`;

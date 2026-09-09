@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
 import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
@@ -18,7 +18,6 @@ let chatPoll;
 
 const chat = document.querySelector('#audience-chat');
 const chatForm = document.querySelector('#chat-form');
-const chatName = document.querySelector('#chat-name');
 const chatMessage = document.querySelector('#chat-message');
 const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
@@ -84,7 +83,7 @@ chatForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
     if (!chatCsrfToken) throw new Error('Audience chat is reconnecting.');
-    const input = audienceMessageInput(chatName.value, chatMessage.value);
+    const input = audienceMessageInput(audienceDisplayName(creatorStatusSnapshot()), chatMessage.value);
     chatSend.disabled = true;
     chatStatus.textContent = 'Sending…';
     const response = await fetch('/api/audience-chat/messages', {

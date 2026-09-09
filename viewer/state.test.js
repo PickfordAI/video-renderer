@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 describe('one story player', () => {
   it('explains setup, readiness, startup and terminal states without a credential form', () => {
     expect(setupMessage({ setup: { ready: false } })).toContain('setup left');
@@ -43,5 +43,16 @@ describe('fitTextareaToContent', () => {
     fitTextareaToContent(textarea);
 
     expect(textarea.style.height).toBe('72px');
+  });
+});
+
+describe('audienceDisplayName', () => {
+  it('uses the signed-in creator email without asking for another name', () => {
+    expect(audienceDisplayName({ auth: { signedIn: true, email: ' creator@example.com ' } })).toBe('creator@example.com');
+  });
+
+  it('uses a neutral name when the public viewer has no account identity', () => {
+    expect(audienceDisplayName(null)).toBe('Audience');
+    expect(audienceDisplayName({ auth: { signedIn: false, email: 'stale@example.com' } })).toBe('Audience');
   });
 });

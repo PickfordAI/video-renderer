@@ -21,7 +21,7 @@
     input:focus, textarea:focus { outline: 2px solid #ff987b; outline-offset: 1px; }
     #audience-chat { margin-top: 20px; padding: 20px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
     #audience-chat h2 { margin: 0 0 6px; font-size: 18px; }
-    #audience-chat form { display: grid; grid-template-columns: minmax(120px, .35fr) minmax(220px, 1fr) auto; align-items: start; gap: 10px; }
+    #audience-chat form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: start; gap: 10px; }
     #audience-chat label { display: grid; gap: 6px; }
     #chat-message { min-height: 44px; line-height: 1.5; resize: none; overflow: hidden; }
     #chat-send { align-self: end; }
@@ -87,7 +87,6 @@
       <h2 id="audience-chat-title">Join the story</h2>
       <p>Send an audience suggestion to the story in progress.</p>
       <form id="chat-form">
-        <label>Your name<input id="chat-name" name="displayName" maxlength="80" autocomplete="nickname" required /></label>
         <label>Message<textarea id="chat-message" name="content" rows="1" maxlength="2000" autocomplete="off" required></textarea></label>
         <button id="chat-send" type="submit">Send</button>
       </form>
