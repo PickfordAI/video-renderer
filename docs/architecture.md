@@ -72,11 +72,8 @@ external subject; it is a pseudonym, not authentication. Possession of the watch
 participation for the active story.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
-hold frames while generation catches up. It probes each downloaded clip with FFprobe and uses the
-longer of its audio/video durations, rounded up to a 24-fps frame, for normalization and output
-placement. The shorter stream is padded to that measured slot; provider-requested seconds never
-cut off the returned performance. Playback completion and reported played seconds follow the
-measured boundaries. A kernel-commanded pause (a timed control such as `fade`
+hold frames while generation catches up. Playback uses the full returned clip's measured duration.
+A kernel-commanded pause (a timed control such as `fade`
 or `delay`) travels with the next clip as `leadInSeconds` and is fed as hold frames on the timeline,
 so clips keep normalizing ahead of playback; each clip boundary reports that lead-in separately from
 stall holds, and only stall holds count as playback gaps. MediaMTX exposes fMP4 HLS internally.
@@ -263,9 +260,7 @@ payloads are ignored before compilation, so they cannot mutate staging twice or 
 The configured-provider (`auto`) adapter retains its serial behavior.
 
 The video-duration budget counts work reserved for pending, in-flight, and ready-but-unplayed
-shots, initially using requested seconds and reconciling to measured media duration after download.
-A longer result can temporarily exceed the budget through work already submitted; subsequent
-admissions use the corrected reservation, which is released only after full playback.
+shots. Longer-than-requested clips can temporarily exceed the budget through already-submitted work.
 It is not a startup runway or a measure of contiguous playable footage. Playback starts
 with one clip; requiring multiple clips can deadlock a short story or a kernel waiting for the
 current completion acknowledgement. No synthetic progress or early GroupFinished events are sent
