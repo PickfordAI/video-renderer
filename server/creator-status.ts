@@ -36,7 +36,7 @@ export interface CreatorStatus {
 }
 
 /** Nominal wait before the first generated clip reaches playout, used until we have a measurement. */
-export const NOMINAL_FIRST_CLIP_SECONDS = 210;
+export const NOMINAL_FIRST_CLIP_SECONDS = 120;
 
 function playbackState(run: ExternalRendererRunStatus | null, played: boolean): PlaybackState {
   if (!run) return 'idle';

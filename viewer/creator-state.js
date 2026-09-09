@@ -38,7 +38,7 @@ export function playbackLabel(playback) {
   if (!['starting', 'preparing'].includes(playback?.state) || typeof eta !== 'number') return base;
   if (eta <= 0) return `${base} — any moment now`;
   const minutes = Math.ceil(eta / 60);
-  return `${base} — first clip in about ${minutes === 1 ? 'a minute' : `${minutes} minutes`}`;
+  return `${base} — first clip in about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
 }
 
 /** Keep backend diagnostics out of the page while making them easy to attach to an opt-in email. */

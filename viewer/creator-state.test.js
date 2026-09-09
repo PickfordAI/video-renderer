@@ -40,8 +40,8 @@ describe('labels', () => {
   });
 
   it('turns the first-clip ETA into a human wait', () => {
-    expect(playbackLabel({ state: 'preparing', firstClipEtaSeconds: 200 })).toMatch(/about 4 minutes/);
-    expect(playbackLabel({ state: 'preparing', firstClipEtaSeconds: 40 })).toMatch(/about a minute/);
+    expect(playbackLabel({ state: 'preparing', firstClipEtaSeconds: 120 })).toMatch(/about 2 minutes/);
+    expect(playbackLabel({ state: 'preparing', firstClipEtaSeconds: 60 })).toMatch(/about 1 minute/);
     expect(playbackLabel({ state: 'preparing', firstClipEtaSeconds: 0 })).toMatch(/any moment now/);
     expect(playbackLabel({ state: 'playing', firstClipEtaSeconds: null })).toBe('Playing');
     expect(playbackLabel(undefined)).toBe('No StoryBundle playing');
