@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { audienceMessageInput, audienceReceiptMessage, setupMessage, validStreamUrl } from './state.js';
+import { audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
 import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
@@ -28,6 +28,10 @@ const creatorDetails = document.querySelector('#creator-details');
 const bundlesDetails = document.querySelector('#bundles-details');
 const sentMessageIds = new Set();
 let playbackStarted = false;
+
+function resizeChatMessage() {
+  fitTextareaToContent(chatMessage);
+}
 
 function updatePlaybackUi() {
   syncPlaybackUi({
@@ -99,6 +103,7 @@ chatForm.addEventListener('submit', async (event) => {
     }
     showSentMessage(input, value.messageId);
     chatMessage.value = '';
+    resizeChatMessage();
     chatStatus.textContent = audienceReceiptMessage(value);
   } catch (error) {
     chatStatus.textContent = error instanceof Error ? error.message : 'The message could not be sent.';
@@ -106,6 +111,9 @@ chatForm.addEventListener('submit', async (event) => {
     chatSend.disabled = false;
   }
 });
+
+chatMessage.addEventListener('input', resizeChatMessage);
+window.addEventListener('resize', resizeChatMessage);
 
 function clearStream() {
   playbackStarted = false;
@@ -237,3 +245,4 @@ if (raw) {
   void followLocalStory();
 }
 void updateAudienceChat();
+resizeChatMessage();

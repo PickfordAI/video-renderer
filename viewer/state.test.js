@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { audienceMessageInput, audienceReceiptMessage, setupMessage, validStreamUrl } from './state.js';
+import { audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 describe('one story player', () => {
   it('explains setup, readiness, startup and terminal states without a credential form', () => {
     expect(setupMessage({ setup: { ready: false } })).toContain('setup left');
@@ -33,5 +33,15 @@ describe('audienceMessageInput', () => {
   it('stays quiet for successful delivery while retaining duplicate feedback', () => {
     expect(audienceReceiptMessage({ duplicate: false })).toBe('');
     expect(audienceReceiptMessage({ duplicate: true })).toBe('That message was already received.');
+  });
+});
+
+describe('fitTextareaToContent', () => {
+  it('shrinks or grows the textarea to its current wrapped content height', () => {
+    const textarea = { scrollHeight: 72, style: { height: '140px' } };
+
+    fitTextareaToContent(textarea);
+
+    expect(textarea.style.height).toBe('72px');
   });
 });

@@ -25,3 +25,8 @@ export function audienceMessageInput(displayName, content) {
 export function audienceReceiptMessage(response) {
   return response?.duplicate ? 'That message was already received.' : '';
 }
+
+export function fitTextareaToContent(textarea) {
+  textarea.style.height = 'auto';
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
