@@ -154,6 +154,15 @@ export class CreatorApi {
     const accessToken = await this.auth.accessToken();
     const existing = readStoredCredential(this.env);
     const run = this.latestRun();
+    if (existing && existing.environment !== this.environment.name) {
+      return await mintRendererCredential({
+        bffBaseUrl: this.environment.webBaseUrl,
+        accessToken,
+        environment: this.environment.name,
+        installationName: existing.installationName,
+        env: this.env,
+      });
+    }
     if (existing && run?.state === 'failed' && credentialFenced(run.failures)) {
       return await rotateRendererCredential({
         bffBaseUrl: this.environment.webBaseUrl,
