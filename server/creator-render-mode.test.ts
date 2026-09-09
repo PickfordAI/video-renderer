@@ -23,11 +23,10 @@ describe('CreatorApi rendering mode', () => {
     directory = mkdtempSync(join(tmpdir(), 'renderer-creator-mode-'));
     const env: NodeJS.ProcessEnv = {
       RENDERER_STATE_DIR: join(directory, '.renderer'),
-      STORY_ENVIRONMENT: 'dev',
       FAL_KEY: 'fixture-private-fal-key',
     };
     writeStoredCredential({
-      environment: 'dev',
+      environment: 'prod',
       rendererId: RENDERER_ID,
       credentialId: 'dddddddd-0000-4000-8000-000000000001',
       clientSecret: 'fixture-private-client-secret',

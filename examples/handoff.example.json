@@ -6,7 +6,7 @@
   "setupToken": "replace-with-user-session",
   "startMode": "legacy",
   "_startMode": "Set startMode to \"opaque\" to let Story Kernel allocate the story from evdId; setupToken then becomes optional (used only for kernel stop).",
-  "environment": "edge",
+  "environment": "prod",
   "storyType": "MINIMAX",
   "roomName": "My story",
   "resolution": "480P",

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { listStoryBundles, mapPublishedEvd, mapStoryBundle, storyBundleState, storyStartRefusalMessage } from './story-bundles.js';
 
-const BFF = 'https://dev.pickford.ai';
-const API = 'https://api.dev.pickford.ai';
+const BFF = 'https://pickford.ai';
+const API = 'https://api.pickford.ai';
 const OWNER = 'c0ffee00-0000-4000-8000-000000000001';
 
 function bundleRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {

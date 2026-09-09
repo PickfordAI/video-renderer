@@ -135,7 +135,8 @@ authorization-server discovery, RFC 7591 dynamic registration with `token_endpoi
 none`, authorization code + PKCE S256, RFC 8707 resource indicators, and refresh-token rotation.
 Tokens live in `.renderer/auth.json` (0600).
 
-The resource is `https://api.<env>.pickford.ai/renderer` and the scope is `storykernel:renderer`.
+The production resource is `https://api.pickford.ai/renderer` and the scope is
+`storykernel:renderer`. Other environments supply their resource through private URL overrides.
 Identity treats resource and scope as a fixed pair and answers `invalid_scope` for any other
 combination, so `scopeForResource` derives one from the other and the dynamic-client cache is keyed
 by scope as well as issuer and redirect URI — a changed pairing re-registers rather than reusing a

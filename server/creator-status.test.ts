@@ -14,7 +14,7 @@ function run(overrides: Partial<ExternalRendererRunStatus> = {}): ExternalRender
     fakeClips: false,
     startMode: 'opaque',
     storyRunId: 'cccccccc-0000-4000-8000-000000000001',
-    audienceJoinUrl: 'https://dev.pickford.ai/join/abc',
+    audienceJoinUrl: 'https://pickford.ai/join/abc',
     storyId: 4242,
     roomId: '', roomShortlink: '', storyMessageChannelId: '', roomMainMessageChannelId: '',
     sessionId: null, sessionEpoch: null,
@@ -85,7 +85,7 @@ describe('playback status', () => {
     expect(playbackStatus(run(), 'evd-1', START)).toMatchObject({
       storyRunId: 'cccccccc-0000-4000-8000-000000000001',
       storyId: 4242,
-      audienceJoinUrl: 'https://dev.pickford.ai/join/abc',
+      audienceJoinUrl: 'https://pickford.ai/join/abc',
       evdId: 'evd-1',
     });
   });

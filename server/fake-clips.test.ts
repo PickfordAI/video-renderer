@@ -140,7 +140,7 @@ describe('local fake clips', () => {
 
   it('refuses fake clips outside a loopback local run', () => {
     const manager = new ExternalRendererRunManager(new FakeClipPlayoutManager(), { fakeClips: true });
-    expect(() => manager.start(config('https://dev.pickford.ai', 'dev'))).toThrow('restricted to a loopback local renderer run');
+    expect(() => manager.start(config('https://pickford.ai', 'prod'))).toThrow('restricted to a loopback local renderer run');
   });
 
   it('accepts a loopback unified stack whose platform environment is dev', async () => {

@@ -42,8 +42,9 @@ Open [the local player](http://localhost:4174) and:
    first cancels and releases any previous Story Run still assigned to this renderer installation.
 
 The first scene can take a few minutes; the page shows an estimate. Playing a StoryBundle submits
-paid video jobs to fal. `STORY_ENVIRONMENT` selects the Pickford environment (`dev` by default,
-`prod` for the gated creator group). `npm run auth -- status` prints the same status from a
+paid video jobs to fal. The renderer targets Pickford production at `pickford.ai` by default.
+Developers using another environment add `STORY_ENVIRONMENT` and matching API, web, and chat URL
+overrides to their private configuration. `npm run auth -- status` prints the same status from a
 terminal, and `npm run auth -- logout` signs out and clears the stored tokens.
 
 Your Pickford account needs the **creator** role for the renderer to list and play your
