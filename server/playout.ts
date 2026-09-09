@@ -1,3 +1,4 @@
+import { probeClipDurationSeconds } from './clip-duration.js';
 import { publicMediaBaseUrl } from './public-origin.js';
 import { createReadStream } from 'node:fs';
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -10,6 +11,7 @@ export interface PlayoutClipInput {
   position: number;
   storyBlockId: string;
   videoUrl: string;
+  /** Requested provider duration; measured media duration replaces it internally before playout. */
   durationSeconds: number;
   /** Kernel-commanded pause (a timed control such as `fade` or `delay`) the audience must see
    *  before this clip starts. Fed as hold frames on the timeline, so it is never a stall. */
@@ -146,11 +148,11 @@ export function normalizeClipArgs(input: PlayoutClipInput, outputPath: string, o
     '-hide_banner', '-loglevel', 'error', '-y',
     '-i', input.videoUrl,
     '-map', '0:v:0', '-map', '0:a:0?',
-    // Fal clips can end a few frames—or an audio tail—before their requested
-    // duration. Fill both streams before trimming so every clip occupies its
-    // complete timeline slot and concatenation never introduces a PTS hole.
-    '-vf', `scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=24,format=yuv420p,tpad=stop_mode=clone:stop_duration=${input.durationSeconds},trim=duration=${input.durationSeconds},setpts=PTS-STARTPTS+${offsetSeconds}/TB`,
-    '-af', `aresample=48000,apad=pad_dur=${input.durationSeconds},atrim=duration=${input.durationSeconds},asetpts=PTS-STARTPTS+${offsetSeconds}/TB`,
+    // durationSeconds is the measured maximum stream length, rounded up to a
+    // video frame. Pad the shorter stream to that slot; never trim to the request.
+    // Reset source timestamps first so duration is measured from the first frame/sample.
+    '-vf', `setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=24,format=yuv420p,tpad=stop_mode=clone:stop_duration=${input.durationSeconds},trim=duration=${input.durationSeconds},setpts=PTS-STARTPTS+${offsetSeconds}/TB`,
+    '-af', `asetpts=PTS-STARTPTS,aresample=48000,apad=pad_dur=${input.durationSeconds},atrim=duration=${input.durationSeconds},asetpts=PTS-STARTPTS+${offsetSeconds}/TB`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
     '-profile:v', 'main', '-level:v', '3.1', '-g', '24', '-keyint_min', '24', '-sc_threshold', '0',
     '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2',
@@ -341,7 +343,7 @@ export class PlayoutSession {
   private readonly keepMedia: boolean;
   private readonly retainedFilePaths: string[] = [];
   private finalMp4: string | null = null;
-  private readonly pending = new Map<number, PlayoutClipInput>();
+  private readonly pending = new Map<number, { input: PlayoutClipInput; onDuration?: (seconds: number) => void }>();
   private readonly normalized = new Map<number, NormalizedClip>();
   private readonly skipped = new Set<number>();
   private readonly boundaries: PublishedBoundary[] = [];
@@ -398,13 +400,13 @@ export class PlayoutSession {
     await mkdir(this.tempRoot, { recursive: true });
   }
 
-  enqueue(value: unknown): PlayoutClipInput {
+  enqueue(value: unknown, onDuration?: (seconds: number) => void): PlayoutClipInput {
     if (this.stopped) throw new Error('playout session is stopped');
     const clip = requiredClip(value);
     if (clip.position < this.nextNormalizePosition || this.pending.has(clip.position) || this.normalized.has(clip.position)) {
       return clip;
     }
-    this.pending.set(clip.position, clip);
+    this.pending.set(clip.position, { input: clip, onDuration });
     void this.normalizeAvailable();
     return clip;
   }
@@ -469,25 +471,33 @@ export class PlayoutSession {
           this.nextNormalizePosition += 1;
           continue;
         }
-        const input = this.pending.get(this.nextNormalizePosition);
-        if (!input) break;
+        const pending = this.pending.get(this.nextNormalizePosition);
+        if (!pending) break;
+        const { input, onDuration } = pending;
         this.pending.delete(input.position);
         const filePath = join(this.tempRoot, `${String(input.position).padStart(6, '0')}.ts`);
         const holdFilePath = join(this.tempRoot, `${String(input.position).padStart(6, '0')}.hold.ts`);
         const sourcePath = join(this.tempRoot, `${String(input.position).padStart(6, '0')}.source.mp4`);
+        let durationSeconds: number;
         try {
           await downloadClip(input.videoUrl, sourcePath, this.fetchImpl, this.downloadTimeoutMs);
+          if (this.stopped) return;
+          durationSeconds = await probeClipDurationSeconds(sourcePath);
+          if (this.stopped) return;
+          onDuration?.(durationSeconds);
           await runProcess(
             this.ffmpegPath,
-            normalizeClipArgs({ ...input, videoUrl: sourcePath }, filePath, 0),
+            normalizeClipArgs({ ...input, videoUrl: sourcePath, durationSeconds }, filePath, 0),
             this.spawnImpl,
           );
           await runProcess(this.ffmpegPath, holdFrameArgs(filePath, holdFilePath), this.spawnImpl);
         } finally {
           await rm(sourcePath, { force: true });
         }
+        if (this.stopped) return;
         const normalized = {
           ...input,
+          durationSeconds,
           filePath,
           holdFilePath,
         };

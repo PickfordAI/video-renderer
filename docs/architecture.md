@@ -72,7 +72,8 @@ external subject; it is a pseudonym, not authentication. Possession of the watch
 participation for the active story.
 
 `server/playout.ts` downloads clips, normalizes H.264/AAC, publishes an RTSP timeline, and supplies
-hold frames while generation catches up. A kernel-commanded pause (a timed control such as `fade`
+hold frames while generation catches up. Playback uses the full returned clip's measured duration.
+A kernel-commanded pause (a timed control such as `fade`
 or `delay`) travels with the next clip as `leadInSeconds` and is fed as hold frames on the timeline,
 so clips keep normalizing ahead of playback; each clip boundary reports that lead-in separately from
 stall holds, and only stall holds count as playback gaps. MediaMTX exposes fMP4 HLS internally.
@@ -259,7 +260,8 @@ payloads are ignored before compilation, so they cannot mutate staging twice or 
 The configured-provider (`auto`) adapter retains its serial behavior.
 
 The video-duration budget counts work reserved for pending, in-flight, and ready-but-unplayed
-shots. It is not a startup runway or a measure of contiguous playable footage. Playback starts
+shots. Longer-than-requested clips can temporarily exceed the budget through already-submitted work.
+It is not a startup runway or a measure of contiguous playable footage. Playback starts
 with one clip; requiring multiple clips can deadlock a short story or a kernel waiting for the
 current completion acknowledgement. No synthetic progress or early GroupFinished events are sent
 to obtain more lookahead. If the kernel has not delivered later DSS, the renderer cannot generate
