@@ -6,6 +6,10 @@ import dotenv from 'dotenv';
 import { formatReplaySummary, loadDssRecording, replayDss, type ReplayOptions } from './dss-replay.js';
 import type { ContinuityStrategy, RenderMode } from './render-mode.js';
 import type { ShotPlannerSettings } from './shot-planner.js';
+import {
+  formatWhispmaxSummary, planWhispmax, replayWhispmaxDss, writeWhispmaxPrompts,
+  type WhispmaxReplayOptions,
+} from './whispmax-replay.js';
 
 /** PIC-1410: `npm run replay -- --dss recording.jsonl [--from N --to M] [--render]`. */
 const USAGE = `Usage: npm run replay -- --dss <file> [options]
@@ -13,7 +17,7 @@ const USAGE = `Usage: npm run replay -- --dss <file> [options]
   --dss <file>            DSS recording: JSON array, JSONL, or {received_at,event} capture rows
   --episode <id>          Only this episode_id (default: all)
   --from <n> --to <n>     Inclusive payload sequence range; earlier payloads still replay staging
-  --model <m>             fal-max-ref2v (default) | fal-turbo-i2v
+  --model <m>             fal-max-ref2v (default) | fal-turbo-i2v | whispmax-t2v
   --continuity <c>        camera-anchors | none | last-frame-chain (default: model default)
   --concurrency <n>       1-16 (default 4)        --budget <s>   unplayed-video budget, 5-150 (default 45)
   --resolution <r>        480P (default) | 768P   --clip-seconds <s>  default shot length, 5-15 (default 5)
@@ -23,6 +27,12 @@ const USAGE = `Usage: npm run replay -- --dss <file> [options]
   --render                Submit paid fal jobs (FAL_KEY), download clips, assemble story.mp4
   --out <dir>             Output directory (default .renderer/replay/<timestamp>)
   --json                  Print the full result as JSON instead of the summary
+
+WhispMax LoRA mode (--model whispmax-t2v):
+  --base-seed <n>              Fixed base seed; clip N uses base-seed + N (default 4242)
+  --max-clips <n>              Refuse to submit when the plan has more clips than this
+  --whispmax-reference-audio   Also send the beats' dialogue audio as reference_audio_urls
+  --lora <url>                 LoRA weights URL (default WhispMax-v4)
 `;
 
 function option(name: string): string | undefined {
@@ -32,10 +42,48 @@ function option(name: string): string | undefined {
 const flag = (name: string) => process.argv.includes(`--${name}`);
 const integer = (name: string) => { const raw = option(name); if (raw === undefined) return undefined; const value = Number(raw); if (!Number.isInteger(value)) throw new Error(`--${name} must be an integer`); return value; };
 
+async function whispmax(recording: Record<string, unknown>[], outDir: string): Promise<void> {
+  const options: WhispmaxReplayOptions = {
+    resolution: (option('resolution') ?? '768P') as '480P' | '768P',
+    baseSeed: integer('base-seed') ?? 4242,
+    episodeId: integer('episode'),
+    from: integer('from'),
+    to: integer('to'),
+    concurrency: integer('concurrency') ?? 4,
+    maxBufferedSeconds: integer('budget') ?? 45,
+    maxClips: integer('max-clips'),
+    referenceAudio: flag('whispmax-reference-audio'),
+    ...(option('lora') ? { loraUrl: option('lora')! } : {}),
+  };
+  if (flag('render')) {
+    const apiKey = process.env.FAL_KEY;
+    if (!apiKey) throw new Error('--render requires FAL_KEY in the environment or .env');
+    const plan = planWhispmax(recording, options);
+    if (options.maxClips !== undefined && plan.clips.length > options.maxClips) {
+      throw new Error(`The plan has ${plan.clips.length} clips, above the --max-clips cap of ${options.maxClips}; narrow --from/--to`);
+    }
+    process.stderr.write(`Submitting ${plan.clips.length} paid video job(s), ${plan.totals.videoSeconds}s of video, to fal.\n`);
+    options.render = { apiKey, outDir };
+  }
+  await mkdir(outDir, { recursive: true, mode: 0o700 });
+  const result = await replayWhispmaxDss(recording, options);
+  const promptsDir = await writeWhispmaxPrompts(result, outDir);
+  const reportPath = join(outDir, flag('render') ? 'run.json' : 'plan.json');
+  await writeFile(reportPath, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+  process.stdout.write(flag('json')
+    ? JSON.stringify(result, null, 2) + '\n'
+    : `${formatWhispmaxSummary(result)}\nprompts: ${promptsDir}\nreport: ${reportPath}\n`);
+  if (result.output?.failures) process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   dotenv.config({ quiet: true });
   if (flag('help') || !option('dss')) { process.stdout.write(USAGE); process.exitCode = option('dss') ? 0 : 2; return; }
   const recording = loadDssRecording(await readFile(resolve(option('dss')!), 'utf8'));
+  if (option('model') === 'whispmax-t2v') {
+    await whispmax(recording, resolve(option('out') ?? join('.renderer', 'replay', new Date().toISOString().replace(/[:.]/g, '-'))));
+    return;
+  }
   const handoff = option('handoff') ? JSON.parse(await readFile(resolve(option('handoff')!), 'utf8')) as Record<string, unknown> : {};
   const shotPlanner = option('shot-planner')
     ? JSON.parse(await readFile(resolve(option('shot-planner')!), 'utf8')) as ShotPlannerSettings

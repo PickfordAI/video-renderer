@@ -203,12 +203,39 @@ next run; changing configuration does not start generation.
 | `auto` | Uses the configured direct MiniMax/fal adapter with `none`; retains serial generation. |
 | `fal-turbo-i2v` | HTTPS `initialImageUrl`; `last-frame-chain` uses each clip's ending frame for the next. |
 | `fal-max-ref2v` | Kernel-supplied scene images when available, or images in `shotPlanner` / `initialImageUrl`; choose `camera-anchors` or `none`. |
+| `whispmax-t2v` | No image or audio inputs: a trained WhispMax LoRA carries the cast, sets and style. Continuity is `none`. Replays through the WhispMax planner, not the reference-shot planner. |
 
 Explicit fal models require `FAL_KEY` and never switch providers after a failure. Unsupported
 model/strategy combinations fail before story provisioning. Turbo cannot use voice references;
 no ElevenLabs mixing or lip-sync correction is added. Max can use the beat's raw 2–15-second
 DSS audio URL, with an optional voice sample as fallback. Reference conditioning does not guarantee
 an exact voice or performance.
+
+### The WhispMax LoRA mode
+
+`whispmax-t2v` is a text-to-video path for one specific show. The LoRA was trained on captions
+with a fixed five-part structure — trigger word, `[characters]`, `[Location]`, `[style]`,
+`[prompt]` — so `server/whispmax/` compiles DSS into exactly that structure from a checked-in
+bible (`server/whispmax/bible.json`: 7 characters, 4 sets, 10 zone entries and one style
+paragraph). Nothing is generated from images: the model speaks the lines itself, and the clip's
+own audio is what plays.
+
+One prompt is one clip, so consecutive talk beats are packed into a single generation while the
+same set and zone hold and the running duration stays inside the endpoint's 5–15-second integer
+range. A clip therefore covers several DSS groups; progress accounting attributes it to all of
+them. Seeds are a fixed base plus the clip index, so a run reproduces.
+
+```bash
+npm run replay -- --dss whispers_1338.jsonl --model whispmax-t2v
+npm run replay -- --dss whispers_1338.jsonl --model whispmax-t2v --from 18 --to 24 \
+  --resolution 480P --max-clips 6 --render
+```
+
+Plan-only output prints the clip count, total video seconds, a per-clip duration histogram, the
+set and zone per clip, and every bible warning, and writes each compiled prompt to
+`<out>/prompts/NNN.txt`. `--max-clips` refuses to submit a plan larger than the cap, and
+`--whispmax-reference-audio` additionally sends the beats' dialogue audio as
+`reference_audio_urls` to test whether the LoRA endpoint accepts it.
 
 `shotPlanner` also accepts named `characters`, `sets`, `styleImageUrl`, `styleDescription`,
 `markNames`, and `initialImageUrl`. Character entries may contain `name`, `aliases`, `description`,

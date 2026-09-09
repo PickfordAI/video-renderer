@@ -1,0 +1,61 @@
+{
+  "trigger": "WhispMax",
+  "style": "Stylized 3D game-engine animation with matte toon shading: smooth simplified faces, large expressive eyes, painterly hair with visible strand highlights, soft flat ambient lighting, muted desaturated palette and subtle soft shadows; not photorealistic, no film grain, no glossy skin.",
+  "characters": {
+    "Marcus Kent": "Marcus Kent, a young adult detective with medium-length dark brown wavy hair swept back and messy, thick dark eyebrows, dark eyes, a defined jawline and light stubble, slender build. He wears a dark green suit jacket over a white button-up shirt with a dark red tie hanging loose and crooked at the collar.",
+    "June Morrison": "June Morrison, an adult woman with red hair pulled back into a short bun, wearing round thin-rimmed glasses and a dark green v-neck long-sleeved top; slender build.",
+    "Lily Song": "Lily Song, a young adult woman with long dark brown hair styled in a high bun with loose strands framing her face, almond-shaped dark brown eyes, light brown skin, slender build. She wears an olive green blazer open over a dark brown v-neck top.",
+    "Richard Cho": "Richard Cho, a man in his fifties or sixties with short white hair slicked back with a wave at the front, thick dark eyebrows, dark eyes, tan skin with visible age lines around the eyes and mouth. He wears a dark suit jacket over a white collared shirt, open at the top.",
+    "Cassandra Vexon": "Cassandra Vexon, a young adult woman with a short light blonde bob with bangs, blue eyes, light brown skin, a small nose and full lips. She wears a royal blue sleeveless top with a wide scoop neckline.",
+    "Autumn Tate": "Autumn Tate, a young adult woman with long wavy light blonde hair parted slightly off-center, large bright teal-green eyes with long lashes, dark eyebrows, rosy cheeks and light pink lips, faint moles on her nose and under her right eye. She wears a brown ribbed knit crewneck sweater.",
+    "Nathan Paulson": "Nathan Paulson, a young adult man with short messy black hair, large brown eyes, light skin and a slight build, wearing a silver rectangular pendant on a thin chain over a white crew-neck t-shirt under a light brown button-up shirt worn open."
+  },
+  "sets": {
+    "black room": "A featureless black void with no visible walls, furniture or props; the speaker is isolated by a single soft frontal spotlight against pure darkness.",
+    "interrogation room": "A dim police interrogation room with dark teal-green walls with horizontal paneling, red pipes running across the ceiling under long fluorescent light fixtures, and a doorway opening to a brighter hallway. A large white evidence board on a stand holds pinned photographs of suspects, a dark sofa sits along the wall, and dark-clothed figures sometimes stand silhouetted in the doorway.",
+    "hotel lobby": "A dim, moody vintage hotel lobby that is an active crime scene: dark wood-paneled and olive green walls, tall wooden bookshelves filled with books and boxes, ornate gold-framed pictures, glowing wall sconces, brown leather armchairs, a wooden table with a floral vase, a dark red patterned rug, and a wooden staircase with a red-brown railing. Yellow 'DO NOT CROSS' crime-scene tape stretches across parts of the room, with a uniformed police officer and a forensic technician in a white full-body suit standing behind it in the background.",
+    "coroner": "A dim clinical coroner's examination room with aged light teal tiled walls with dark grout, a row of white porcelain sinks with dark metal faucets along one wall, a gurney covered with a white sheet, a dark cabinet against the back wall, and exposed pipes and fluorescent fixtures on the ceiling; a figure in a white lab coat sometimes works in the blurred background."
+  },
+  "zones": {
+    "hotel lobby|balcony": {
+      "label": "balcony",
+      "description": "The upstairs balcony landing of the vintage hotel: dark olive green walls with white decorative molding, a wooden railing with dark metal spindles overlooking the lobby, glowing wall sconces and an ornate lit gold chandelier hanging nearby; dim warm light."
+    },
+    "hotel lobby|crime scene": {
+      "label": "crime scene",
+      "description": "The crime-scene end of the vintage hotel lobby: dark green wood-paneled walls, a dark wooden bar counter and staircase banister in the background, a brown leather armchair, a red-and-gold patterned rug, and yellow 'DO NOT CROSS' police tape stretched across the room; dim warm lamplight."
+    },
+    "hotel lobby|front desk": {
+      "label": "front desk",
+      "description": "The front-desk end of the vintage hotel lobby, beside the wooden staircase with its dark red banister: olive green walls with dark wood paneling, dark leather benches with red cushions behind ornate gold railings in the blurred background, and a red patterned rug; dim warm light from above."
+    },
+    "hotel lobby|lobby entrance": {
+      "label": "lobby entrance",
+      "description": "The entrance area of the vintage hotel lobby: dark wood paneling on one side and light beige-green paneled walls on the other, a large dark wooden archway with dark curtains, framed pictures, dark wooden furniture and a red patterned carpet, with yellow crime-scene tape visible deeper in the room; dim warm light."
+    },
+    "hotel lobby|room.suite": {
+      "label": "suite",
+      "description": "A vintage hotel suite with mustard yellow and olive walls, dark green and white sheer curtains, framed floral pictures, glowing fabric-shaded wall sconces, cane-backed wooden chairs, a round dark wooden table with a blue-patterned vase of flowers, a dresser, an armoire and a dark wooden bed frame; dim warm light."
+    },
+    "interrogation room|interrogation room": {
+      "label": "interrogation room",
+      "description": "The interrogation room itself: bare dark teal-green walls with horizontal paneling and faint scuffs, no furniture in frame, a single hard light isolating the speaker in the dim room."
+    },
+    "interrogation room|office": {
+      "label": "office",
+      "description": "The detective office adjoining the interrogation room: dark teal-green walls with a red pipe along the ceiling, pale cubicle dividers with desks, office chairs, desk lamps and a computer monitor, a whiteboard with photographs pinned to it, and a black-and-white checkered floor; dim mixed fluorescent and lamp light."
+    },
+    "interrogation room|waiting room": {
+      "label": "waiting room",
+      "description": "The waiting area of the police station: dark teal-green walls, a dark doorway opening to a brighter hallway, and the edge of a red-and-white striped flag on the wall; dim greenish overhead light."
+    },
+    "interrogation room|hallway.1": {
+      "label": "hallway",
+      "description": "A police-station hallway with scuffed light gray-blue walls, a dark wooden door frame, and a framed United States map patterned like the American flag on the wall; dim, with a bright white overhead light."
+    },
+    "interrogation room|hallway.2": {
+      "label": "hallway",
+      "description": "A darker stretch of the police-station hallway: bare dark gray textured walls with a blue-green section and white trim, no furniture, a strong diagonal beam of light across the wall behind the speaker; dim."
+    }
+  }
+}

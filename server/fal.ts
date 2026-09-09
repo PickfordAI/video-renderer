@@ -16,13 +16,17 @@ export interface GenerateVideoInput {
   renderMode?: RenderMode;
   /** Explicit first frame, including an internally extracted continuity frame. */
   initialImageUrl?: string;
+  /** PIC-1832: LoRA weights applied by the WhispMax text-to-video endpoint. */
+  loras?: ReadonlyArray<{ path: string; scale: number }>;
+  /** Fixed seed for reproducible takes; the WhispMax mode records one per clip in its plan. */
+  seed?: number;
 }
 
 export interface GenerateVideoResult {
   requestId: string;
   videoUrl: string;
   expandedPrompt: string | null;
-  generationMode: 'text' | 'reference' | 'image';
+  generationMode: 'text' | 'reference' | 'image' | 'lora';
   timings: {
     submitSeconds: number;
     queueSeconds: number;
@@ -213,22 +217,33 @@ export async function generateVideo(
   if (renderMode === 'fal-max-ref2v' && imageUrls.length === 0) {
     throw new FalVideoError('H3 Max reference-to-video requires a character, scene, or camera reference image');
   }
-  if (renderMode !== 'fal-turbo-i2v' && imageUrls.length + audioUrls.length > 12) {
+  if (renderMode === 'whispmax-t2v') {
+    if (!input.loras?.length) throw new FalVideoError('whispmax-t2v requires the WhispMax LoRA weights');
+    if (imageUrls.length) throw new FalVideoError('whispmax-t2v is text-to-video; it takes no image references');
+    if (!Number.isInteger(input.duration) || input.duration < 5 || input.duration > 15) {
+      throw new FalVideoError('whispmax-t2v duration must be an integer from 5 to 15 seconds');
+    }
+  }
+  if (renderMode !== 'fal-turbo-i2v' && renderMode !== 'whispmax-t2v' && imageUrls.length + audioUrls.length > 12) {
     throw new FalVideoError('Reference inputs exceed the image/audio limits');
   }
-  if (renderMode !== 'fal-turbo-i2v' && audioUrls.length && !imageUrls.length) {
+  if (renderMode !== 'fal-turbo-i2v' && renderMode !== 'whispmax-t2v' && audioUrls.length && !imageUrls.length) {
     throw new FalVideoError('Audio references require at least one image reference');
   }
   const generationMode: GenerateVideoResult['generationMode'] = renderMode === 'fal-turbo-i2v'
     ? 'image'
-    : renderMode === 'fal-max-ref2v' || imageUrls.length || audioUrls.length ? 'reference' : 'text';
+    : renderMode === 'whispmax-t2v'
+      ? 'lora'
+      : renderMode === 'fal-max-ref2v' || imageUrls.length || audioUrls.length ? 'reference' : 'text';
   const modelId = renderMode === 'fal-turbo-i2v'
     ? 'minimax/h3-max-turbo/image-to-video'
-    : renderMode === 'fal-max-ref2v'
-      ? 'minimax/h3-max/reference-to-video'
-      : generationMode === 'reference'
-        ? options.referenceModelId ?? 'minimax/h3-max/reference-to-video'
-        : options.modelId ?? 'minimax/h3-max-turbo/text-to-video';
+    : renderMode === 'whispmax-t2v'
+      ? 'minimax/h3-max/text-to-video/lora'
+      : renderMode === 'fal-max-ref2v'
+        ? 'minimax/h3-max/reference-to-video'
+        : generationMode === 'reference'
+          ? options.referenceModelId ?? 'minimax/h3-max/reference-to-video'
+          : options.modelId ?? 'minimax/h3-max-turbo/text-to-video';
   const queueBaseUrl = (options.queueBaseUrl ?? 'https://queue.fal.run').replace(/\/$/, '');
   const headers = {
     Authorization: `Key ${options.apiKey}`,
@@ -243,20 +258,32 @@ export async function generateVideo(
       method: 'POST',
       headers,
       signal: options.signal,
-      body: JSON.stringify({
-        prompt: input.prompt,
-        duration: input.duration,
-        resolution: input.resolution,
-        ...(generationMode !== 'image' ? { aspect_ratio: input.aspectRatio } : {}),
-        prompt_expansion_mode: 'balanced',
-        enable_safety_checker: true,
-        ...(generationMode === 'image'
-          ? { image_url: input.initialImageUrl }
-          : {
-              ...(imageUrls.length ? { reference_image_urls: imageUrls } : {}),
-              ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
-            }),
-      }),
+      body: JSON.stringify(generationMode === 'lora'
+        // The LoRA endpoint takes the WhispMax prompt as written; prompt expansion would
+        // rewrite the trained caption structure the weights depend on.
+        ? {
+            prompt: input.prompt,
+            loras: input.loras,
+            duration: input.duration,
+            aspect_ratio: input.aspectRatio,
+            resolution: input.resolution,
+            ...(input.seed === undefined ? {} : { seed: input.seed }),
+            ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
+          }
+        : {
+            prompt: input.prompt,
+            duration: input.duration,
+            resolution: input.resolution,
+            ...(generationMode !== 'image' ? { aspect_ratio: input.aspectRatio } : {}),
+            prompt_expansion_mode: 'balanced',
+            enable_safety_checker: true,
+            ...(generationMode === 'image'
+              ? { image_url: input.initialImageUrl }
+              : {
+                  ...(imageUrls.length ? { reference_image_urls: imageUrls } : {}),
+                  ...(audioUrls.length ? { reference_audio_urls: audioUrls } : {}),
+                }),
+          }),
     }, 'fal submit', options.signal);
     const handle = await readFalJson<FalQueueHandle>(submit, 'fal submit');
     const submitSeconds = elapsedSeconds(submitStartedAt);

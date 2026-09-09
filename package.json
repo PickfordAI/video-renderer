@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build:viewer && node scripts/copy-viewer.mjs && tsx watch server/index.ts",
-    "build": "tsc -p tsconfig.server.build.json && npm run build:viewer && node scripts/copy-viewer.mjs",
+    "build": "tsc -p tsconfig.server.build.json && node scripts/copy-server-assets.mjs && npm run build:viewer && node scripts/copy-viewer.mjs",
     "start": "node server-dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.server.json --noEmit",

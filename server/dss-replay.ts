@@ -142,6 +142,8 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
   const initialImageUrl = options.initialImageUrl ?? options.shotPlanner?.initialImageUrl;
   if (rendererConfig.model === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('fal-turbo-i2v requires an initialImageUrl');
   if (rendererConfig.model === 'auto') throw new Error('Replay compiles explicit fal modes; choose fal-max-ref2v or fal-turbo-i2v');
+  // PIC-1832: WhispMax packs several talk beats per clip, so it has its own planner and replay.
+  if (rendererConfig.model === 'whispmax-t2v') throw new Error('whispmax-t2v replays through replayWhispmaxDss, not the reference-shot planner');
   const controller = new AbortController();
   options.signal?.addEventListener('abort', () => controller.abort(options.signal?.reason), { once: true });
   const planner = new DssShotPlanner({
