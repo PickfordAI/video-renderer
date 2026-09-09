@@ -2,7 +2,7 @@ import Hls from 'hls.js';
 import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
-import { startLivePlayback } from './playback.js';
+import { startLivePlayback, syncPlaybackUi } from './playback.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
@@ -24,7 +24,20 @@ const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
 const chatHistory = document.querySelector('#chat-history');
 const chatMessages = document.querySelector('#chat-messages');
+const creatorDetails = document.querySelector('#creator-details');
+const bundlesDetails = document.querySelector('#bundles-details');
 const sentMessageIds = new Set();
+let playbackStarted = false;
+
+function updatePlaybackUi() {
+  syncPlaybackUi({
+    playbackStarted,
+    chatReady: Boolean(chatCsrfToken),
+    chat,
+    creatorDetails,
+    bundlesDetails,
+  });
+}
 
 function showSentMessage(input, messageId) {
   if (typeof messageId === 'string' && sentMessageIds.has(messageId)) return;
@@ -55,10 +68,10 @@ async function updateAudienceChat() {
     if (!response.ok) throw new Error('Audience chat is unavailable.');
     const value = await response.json();
     chatCsrfToken = value.ready && typeof value.csrfToken === 'string' ? value.csrfToken : undefined;
-    chat.hidden = !chatCsrfToken;
+    updatePlaybackUi();
   } catch {
     chatCsrfToken = undefined;
-    chat.hidden = true;
+    updatePlaybackUi();
   }
   if (!disposed) chatPoll = setTimeout(updateAudienceChat, 3000);
 }
@@ -95,6 +108,8 @@ chatForm.addEventListener('submit', async (event) => {
 });
 
 function clearStream() {
+  playbackStarted = false;
+  updatePlaybackUi();
   generation++;
   clearTimeout(retry);
   hls?.destroy();
@@ -210,7 +225,11 @@ async function followLocalStory() {
   if (!disposed) poll = setTimeout(followLocalStory, 2000);
 }
 
-video.addEventListener('playing', () => { status.textContent = 'Now playing'; });
+video.addEventListener('playing', () => {
+  playbackStarted = true;
+  updatePlaybackUi();
+  status.textContent = 'Now playing';
+});
 window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearTimeout(chatPoll); clearStream(); });
 
 const raw = location.hash.slice(1) || import.meta.env.VITE_STREAM_URL;

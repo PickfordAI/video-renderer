@@ -19,3 +19,12 @@ export async function startLivePlayback(video) {
     }
   }
 }
+
+/** Keep the pre-play layout intact, then reveal the audience surface at actual playback. */
+export function syncPlaybackUi({ playbackStarted, chatReady, chat, creatorDetails, bundlesDetails }) {
+  chat.hidden = !(playbackStarted && chatReady);
+  if (playbackStarted) {
+    creatorDetails.open = false;
+    bundlesDetails.open = false;
+  }
+}
