@@ -13,6 +13,7 @@ export type PlaybackState = 'idle' | 'starting' | 'preparing' | 'playing' | 'end
 
 export interface PlaybackStatus {
   state: PlaybackState;
+  canStop: boolean;
   runId: string | null;
   evdId: string | null;
   storyRunId: string | null;
@@ -69,11 +70,17 @@ export function playbackError(run: ExternalRendererRunStatus | null): string | n
   return failure ? failure.trim().slice(0, 300) : 'This StoryBundle stopped unexpectedly.';
 }
 
-export function playbackStatus(run: ExternalRendererRunStatus | null, evdId: string | null, nowMs: number): PlaybackStatus {
+export function playbackStatus(
+  run: ExternalRendererRunStatus | null,
+  evdId: string | null,
+  nowMs: number,
+  canStop = Boolean(run && ['connecting', 'running', 'failed'].includes(run.state)),
+): PlaybackStatus {
   const played = run?.clips?.some(clip => clip.playedAt !== null) ?? false;
   const state = playbackState(run, played);
   return {
     state,
+    canStop,
     runId: run?.runId ?? null,
     evdId,
     storyRunId: run?.storyRunId ?? null,
@@ -97,6 +104,7 @@ export function creatorStatus(input: {
   evdId: string | null;
   nowMs: number;
   csrfToken: string | null;
+  canStop?: boolean;
 }): CreatorStatus {
   return {
     environment: input.environment,
@@ -107,7 +115,7 @@ export function creatorStatus(input: {
     },
     falKey: input.falKey,
     bundleAdapter: input.bundleAdapter,
-    playback: playbackStatus(input.run, input.evdId, input.nowMs),
+    playback: playbackStatus(input.run, input.evdId, input.nowMs, input.canStop),
     csrfToken: input.csrfToken,
   };
 }

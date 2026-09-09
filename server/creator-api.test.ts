@@ -132,4 +132,73 @@ describe('CreatorApi playback routing', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://pickford.ai/bff/v1/developer/renderers');
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ rendererId: prodRendererId }));
   });
+
+  it('cancels the exact Pickford story before stopping the same local renderer run', async () => {
+    const active = { ...run(), state: 'running' as const, storyId: 77, roomShortlink: 'night shift/1' };
+    const stopActive = vi.fn(async () => ({ ...active, state: 'stopped' as const }));
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    const fetchImpl = vi.fn(async () => Response.json({ message: 'Story job cancelled; aborted script' }));
+    vi.stubGlobal('fetch', fetchImpl);
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .resolves.toMatchObject({ state: 'stopped' });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.pickford.ai/story/cancel?room_shortlink=night%20shift%2F1',
+      { method: 'POST', headers: { Authorization: 'Bearer fixture-private-access-token' } },
+    );
+    expect(stopActive).toHaveBeenCalledWith(active.runId);
+  });
+
+  it('keeps the local run active when Pickford rejects cancellation so Stop can be retried', async () => {
+    const active = { ...run(), state: 'running' as const, storyId: 77, roomShortlink: 'night-shift-1' };
+    const stopActive = vi.fn();
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ detail: 'Failed to cancel story' }, { status: 500 })));
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .rejects.toThrow('Pickford could not stop your StoryBundle (HTTP 500).');
+    expect(stopActive).not.toHaveBeenCalled();
+  });
+
+  it('stops the local run when Pickford says the story is already inactive', async () => {
+    const active = { ...run(), state: 'failed' as const, storyId: 77, roomShortlink: 'night-shift-1' };
+    const stopActive = vi.fn(async () => ({ ...active, state: 'stopped' as const }));
+    const runs = {
+      latest: () => active,
+      active: () => active,
+      stopActive,
+    } as unknown as ExternalRendererRunManager;
+    const auth = {
+      accessToken: async () => 'fixture-private-access-token',
+      status: () => ({ signedIn: true }),
+      notice: () => null,
+    } as unknown as PickfordAuth;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ detail: 'No active story found' }, { status: 400 })));
+    const api = new CreatorApi(runs, { auth });
+
+    await expect((api as unknown as { stop(): Promise<ExternalRendererRunStatus> }).stop())
+      .resolves.toMatchObject({ state: 'stopped' });
+    expect(stopActive).toHaveBeenCalledWith(active.runId);
+  });
 });

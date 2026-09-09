@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bundleAction,
   bundleTitle,
+  canStopPlayback,
   environmentLabel,
   falKeyLabel,
   homeStatusMessage,
@@ -51,6 +52,16 @@ describe('labels', () => {
     expect(playbackLabel({ state: 'failed', error: 'Images are still generating for this StoryBundle.' }))
       .toBe('This StoryBundle stopped unexpectedly');
     expect(playbackLabel({ state: 'failed', error: null })).toBe('This StoryBundle stopped unexpectedly');
+  });
+
+  it('offers Stop while a story is active or needs failed-run cleanup', () => {
+    for (const state of ['starting', 'preparing', 'playing', 'failed']) {
+      expect(canStopPlayback({ state, canStop: true })).toBe(true);
+    }
+    for (const state of ['idle', 'ended', 'stopped']) {
+      expect(canStopPlayback({ state, canStop: false })).toBe(false);
+    }
+    expect(canStopPlayback({ state: 'failed', canStop: false })).toBe(false);
   });
 
   it('puts detailed failure context only in an opt-in support email', () => {

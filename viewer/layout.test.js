@@ -11,10 +11,17 @@ describe('player layout', () => {
     expect(creator).toBeGreaterThan(chat);
     expect(html).toContain('<details id="creator-details" open>');
     expect(html).toContain('<details id="bundles-details" open>');
+    expect(html).toContain('<button id="creator-stop" type="button" hidden>Stop</button>');
     expect(html).toContain('<textarea id="chat-message" name="content" rows="1"');
     expect(html).not.toContain('<input id="chat-message"');
     expect(html).not.toContain('id="chat-name"');
     expect(html).not.toContain('Your name');
     expect(html).not.toContain('Send an audience suggestion to the story in progress.');
+  });
+
+  it('wires the creator Stop button to the local cancellation route', async () => {
+    const script = await readFile(new URL('./creator.js', import.meta.url), 'utf8');
+
+    expect(script).toContain("await call('/api/creator/stop', { method: 'POST', body: '{}' })");
   });
 });

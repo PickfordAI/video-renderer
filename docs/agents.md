@@ -28,6 +28,10 @@ credential, so this path has no developer page, no setup token, and no handoff f
    a clip has actually played and the page is showing video.
 6. `npm run auth -- logout` clears the stored sign-in; the page's **Sign out** button does the same.
 
+The page's **Stop** button calls Pickford's authenticated story cancellation endpoint for the
+active story, then stops that exact local renderer run. If cancellation fails, the local run stays
+active and the page keeps Stop available so the creator can retry without abandoning cleanup.
+
 What the agent must not do in this path: ask for or handle the fal key, read `.renderer/`, mint or
 rotate a credential by hand, or send the user to a Pickford developer page.
 
@@ -282,8 +286,8 @@ and handoff registration on the agent's machine; the CLI sends only runtime cred
 worker. Host preparation/deployment scripts transfer fal/operator keys, not setup user tokens.
 The bare local player on a loopback-bound port 4174 polls `/api/viewer-status` for allowlisted
 readiness and playback, then attaches only after a generated clip enters playout. The same route
-remains unavailable on a hosted/public listener. The player cannot start paid jobs or stop a story;
-the agent owns start/stop and reports any cleanup failure.
+remains unavailable on a hosted/public listener. The signed-in creator surface can start paid jobs
+and cancel its active story; the legacy agent-managed path still owns its own start/stop cleanup.
 
 ## Hosted workflow
 
