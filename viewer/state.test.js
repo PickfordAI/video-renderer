@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, shouldSubmitAudienceMessage, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayLabel, audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, shouldSubmitAudienceMessage, setupMessage, validStreamUrl } from './state.js';
 describe('one story player', () => {
   it('explains setup, readiness, startup and terminal states without a credential form', () => {
     expect(setupMessage({ setup: { ready: false } })).toContain('setup left');
@@ -54,6 +54,13 @@ describe('audienceDisplayName', () => {
   it('uses a neutral name when the public viewer has no account identity', () => {
     expect(audienceDisplayName(null)).toBe('Audience');
     expect(audienceDisplayName({ auth: { signedIn: false, email: 'stale@example.com' } })).toBe('Audience');
+  });
+});
+
+describe('audienceDisplayLabel', () => {
+  it('shows only the local part of an email while leaving non-email names intact', () => {
+    expect(audienceDisplayLabel('creator@example.com')).toBe('creator');
+    expect(audienceDisplayLabel('Audience')).toBe('Audience');
   });
 });
 

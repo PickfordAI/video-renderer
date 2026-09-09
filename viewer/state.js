@@ -33,6 +33,11 @@ export function audienceDisplayName(creatorStatus) {
   return email || 'Audience';
 }
 
+export function audienceDisplayLabel(displayName) {
+  const separator = typeof displayName === 'string' ? displayName.indexOf('@') : -1;
+  return separator > 0 ? displayName.slice(0, separator) : displayName;
+}
+
 export function fitTextareaToContent(textarea) {
   textarea.style.height = 'auto';
   textarea.style.height = `${textarea.scrollHeight}px`;

@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayLabel, audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, handleAudienceMessageKeydown, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
 import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
@@ -47,7 +47,7 @@ function showSentMessage(input, messageId) {
   if (typeof messageId === 'string') sentMessageIds.add(messageId);
   const item = document.createElement('li');
   const author = document.createElement('strong');
-  author.textContent = `${input.displayName}: `;
+  author.textContent = `${audienceDisplayLabel(input.displayName)}: `;
   item.append(author, document.createTextNode(input.content));
   chatMessages.append(item);
   chatHistory.hidden = false;
