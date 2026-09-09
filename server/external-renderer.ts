@@ -385,7 +385,7 @@ const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', 'host.docker.internal'];
 // A local unified stack runs renderer-platform as ENV=dev behind plain loopback ports.
 const LOOPBACK_PLAINTEXT_ENVIRONMENTS = new Set(['local', 'test', 'dev']);
 
-function requiredUrl(value: unknown, label: string, environment = 'edge'): string {
+function requiredUrl(value: unknown, label: string, environment = 'prod'): string {
   const raw = requiredString(value, label).replace(/\/$/, '');
   const parsed = new URL(raw);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
@@ -427,7 +427,7 @@ function uuid(value: unknown, label: string): string {
 
 export function parseExternalRendererRunConfig(value: unknown): ExternalRendererRunConfig {
   const body = asObject(value, 'run config');
-  const environment = requiredString(body.environment ?? 'edge', 'environment');
+  const environment = requiredString(body.environment ?? 'prod', 'environment');
   const rendererConfig = parseRendererConfig(body.rendererConfig, body);
   const renderMode = rendererConfig.model;
   const continuityStrategy = rendererConfig.continuity;
@@ -479,7 +479,7 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     throw new Error('rendererVersion must contain exactly four dot-separated components');
   }
   return {
-    baseUrl: requiredUrl(body.baseUrl ?? 'https://edge.pickford.ai', 'baseUrl', environment),
+    baseUrl: requiredUrl(body.baseUrl ?? 'https://pickford.ai', 'baseUrl', environment),
     environment,
     tier,
     renderMode, rendererConfig, continuityStrategy, initialImageUrl, generationConcurrency, maxBufferedSeconds, shotPlanner,

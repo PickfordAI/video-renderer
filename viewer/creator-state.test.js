@@ -121,8 +121,8 @@ describe('headline and identities', () => {
   });
 
   it('shows the opaque start identities once Pickford resolves them', () => {
-    expect(runIdentityLines({ storyRunId: 'run-1', storyId: 42, audienceJoinUrl: 'https://dev.pickford.ai/join/x' }))
-      .toEqual(['Story run run-1', 'Story 42', 'Audience link https://dev.pickford.ai/join/x']);
+    expect(runIdentityLines({ storyRunId: 'run-1', storyId: 42, audienceJoinUrl: 'https://pickford.ai/join/x' }))
+      .toEqual(['Story run run-1', 'Story 42', 'Audience link https://pickford.ai/join/x']);
     expect(runIdentityLines({ storyRunId: null, storyId: null, audienceJoinUrl: null })).toEqual([]);
   });
 });

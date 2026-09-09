@@ -23,8 +23,8 @@ import {
 } from './oauth-discovery.js';
 import { pickfordEnvironment, scopeForResource } from './pickford-environment.js';
 
-const ISSUER = 'https://api.dev.pickford.ai/auth/storykernel';
-const RESOURCE = 'https://api.dev.pickford.ai/renderer';
+const ISSUER = 'https://api.pickford.ai/auth/storykernel';
+const RESOURCE = 'https://api.pickford.ai/renderer';
 const SCOPE = 'storykernel:renderer';
 
 const metadata: AuthorizationServerMetadata = {
@@ -143,21 +143,15 @@ describe('authorization request', () => {
 
 describe('scope pairing', () => {
   it('pairs each resource with the only scope Identity accepts for it', () => {
-    expect(scopeForResource('https://api.dev.pickford.ai/renderer')).toBe('storykernel:renderer');
     expect(scopeForResource('https://api.pickford.ai/renderer')).toBe('storykernel:renderer');
-    expect(scopeForResource('https://api.dev.pickford.ai/storykernel/mcp')).toBe('storykernel:onboarding');
+    expect(scopeForResource('https://api.pickford.ai/storykernel/mcp')).toBe('storykernel:onboarding');
   });
 
-  it('defaults the renderer to its own resource and scope, per environment', () => {
-    expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'dev' })).toMatchObject({
-      apiBaseUrl: 'https://api.dev.pickford.ai',
-      webBaseUrl: 'https://dev.pickford.ai',
-      chatBaseUrl: 'https://chat.dev.pickford.ai',
-      oauthResource: 'https://api.dev.pickford.ai/renderer',
-      oauthScope: 'storykernel:renderer',
-    });
-    expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'prod' })).toMatchObject({
+  it('defaults the renderer to the production resource and scope', () => {
+    expect(pickfordEnvironment({})).toMatchObject({
+      name: 'prod',
       apiBaseUrl: 'https://api.pickford.ai',
+      webBaseUrl: 'https://pickford.ai',
       chatBaseUrl: 'https://chat.pickford.ai',
       oauthResource: 'https://api.pickford.ai/renderer',
       oauthScope: 'storykernel:renderer',
@@ -171,15 +165,31 @@ describe('scope pairing', () => {
     });
   });
 
-  it('uses the configured chat backend for the public audience exchange', () => {
+  it('requires explicit origins for a non-production hosted environment', () => {
+    expect(() => pickfordEnvironment({ STORY_ENVIRONMENT: 'dev' }))
+      .toThrow('PICKFORD_API_URL is required when STORY_ENVIRONMENT=dev.');
     expect(pickfordEnvironment({
       STORY_ENVIRONMENT: 'dev',
+      PICKFORD_API_URL: 'https://identity.developer.example',
+      PICKFORD_WEB_URL: 'https://web.developer.example',
+      CHAT_BACKEND_URL: 'https://chat.developer.example',
+    })).toMatchObject({
+      name: 'dev',
+      apiBaseUrl: 'https://identity.developer.example',
+      webBaseUrl: 'https://web.developer.example',
+      chatBaseUrl: 'https://chat.developer.example',
+      oauthResource: 'https://identity.developer.example/renderer',
+    });
+  });
+
+  it('uses the configured chat backend for the public audience exchange', () => {
+    expect(pickfordEnvironment({
       CHAT_BACKEND_URL: 'https://chat.preview.example/api',
     })).toMatchObject({ chatBaseUrl: 'https://chat.preview.example/api' });
   });
 
   it('keeps an overridden resource paired with the right scope', () => {
-    expect(pickfordEnvironment({ PICKFORD_OAUTH_RESOURCE: 'https://api.dev.pickford.ai/storykernel/mcp' }))
+    expect(pickfordEnvironment({ PICKFORD_OAUTH_RESOURCE: 'https://api.pickford.ai/storykernel/mcp' }))
       .toMatchObject({ oauthScope: 'storykernel:onboarding' });
     expect(pickfordEnvironment({ PICKFORD_OAUTH_SCOPE: 'storykernel:something-else' }))
       .toMatchObject({ oauthScope: 'storykernel:something-else' });
@@ -188,14 +198,14 @@ describe('scope pairing', () => {
 
 describe('discovery', () => {
   it('probes the RFC 9728 locations Pickford serves', () => {
-    expect(resourceMetadataUrls(RESOURCE)).toContain('https://api.dev.pickford.ai/.well-known/oauth-protected-resource/renderer');
-    expect(resourceMetadataUrls(RESOURCE)).toContain('https://api.dev.pickford.ai/renderer/.well-known/oauth-protected-resource');
-    expect(authorizationServerMetadataUrls(ISSUER)).toContain('https://api.dev.pickford.ai/.well-known/oauth-authorization-server/auth/storykernel');
+    expect(resourceMetadataUrls(RESOURCE)).toContain('https://api.pickford.ai/.well-known/oauth-protected-resource/renderer');
+    expect(resourceMetadataUrls(RESOURCE)).toContain('https://api.pickford.ai/renderer/.well-known/oauth-protected-resource');
+    expect(authorizationServerMetadataUrls(ISSUER)).toContain('https://api.pickford.ai/.well-known/oauth-authorization-server/auth/storykernel');
   });
 
   it('reads resource_metadata out of a WWW-Authenticate challenge', () => {
-    expect(resourceMetadataFromChallenge('Bearer error="invalid_token", resource_metadata="https://api.dev.pickford.ai/storykernel/mcp/.well-known/oauth-protected-resource"'))
-      .toBe('https://api.dev.pickford.ai/storykernel/mcp/.well-known/oauth-protected-resource');
+    expect(resourceMetadataFromChallenge('Bearer error="invalid_token", resource_metadata="https://api.pickford.ai/storykernel/mcp/.well-known/oauth-protected-resource"'))
+      .toBe('https://api.pickford.ai/storykernel/mcp/.well-known/oauth-protected-resource');
     expect(resourceMetadataFromChallenge('Bearer error="invalid_token"')).toBeNull();
     expect(resourceMetadataFromChallenge('Bearer resource_metadata="http://evil.example/x"')).toBeNull();
   });
@@ -215,12 +225,12 @@ describe('discovery', () => {
     const impl = async (url: string): Promise<Response> => {
       seen.push(url);
       return json({
-        resource: 'https://api.dev.pickford.ai/storykernel/mcp',
+        resource: 'https://api.pickford.ai/storykernel/mcp',
         authorization_servers: [ISSUER],
         scopes_supported: ['storykernel:onboarding'],
       });
     };
-    await expect(discoverProtectedResource(RESOURCE, impl)).rejects.toThrow(/describes https:\/\/api\.dev\.pickford\.ai\/storykernel\/mcp, not the requested resource/);
+    await expect(discoverProtectedResource(RESOURCE, impl)).rejects.toThrow(/describes https:\/\/api\.pickford\.ai\/storykernel\/mcp, not the requested resource/);
     // It kept trying the remaining candidates rather than stopping at the first mismatch.
     expect(seen.length).toBeGreaterThan(1);
   });
@@ -229,7 +239,7 @@ describe('discovery', () => {
     const impl = async (): Promise<Response> => json({ resource: `${RESOURCE}/`, authorization_servers: [ISSUER] });
     await expect(discoverProtectedResource(RESOURCE, impl)).resolves.toMatchObject({ authorizationServers: [ISSUER] });
     expect(sameResource(`${RESOURCE}/`, RESOURCE)).toBe(true);
-    expect(sameResource('https://api.dev.pickford.ai/renderer', 'https://api.dev.pickford.ai/storykernel/mcp')).toBe(false);
+    expect(sameResource('https://api.pickford.ai/renderer', 'https://api.pickford.ai/storykernel/mcp')).toBe(false);
   });
 
   it('refuses an authorization server that is not on the issuer origin', async () => {

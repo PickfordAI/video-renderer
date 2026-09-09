@@ -48,11 +48,10 @@ describe('CreatorApi playback routing', () => {
     directory = mkdtempSync(join(tmpdir(), 'renderer-creator-api-'));
     const env: NodeJS.ProcessEnv = {
       RENDERER_STATE_DIR: join(directory, '.renderer'),
-      STORY_ENVIRONMENT: 'dev',
       FAL_KEY: 'fixture-private-fal-key',
     };
     writeStoredCredential({
-      environment: 'dev',
+      environment: 'prod',
       rendererId: RENDERER_ID,
       credentialId: 'dddddddd-0000-4000-8000-000000000001',
       clientSecret: 'fixture-private-client-secret',
@@ -78,8 +77,8 @@ describe('CreatorApi playback routing', () => {
     await (api as unknown as { play(evdId: string): Promise<ExternalRendererRunStatus> }).play(EVD_ID);
 
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
-      baseUrl: 'https://dev.pickford.ai',
-      audienceExchangeUrl: 'https://chat.dev.pickford.ai/api/v1/external-audience/exchange',
+      baseUrl: 'https://pickford.ai',
+      audienceExchangeUrl: 'https://chat.pickford.ai/api/v1/external-audience/exchange',
       rendererVersion: 'h3.opensource.v1.2',
       supersedeExistingStory: true,
     }));

@@ -8,10 +8,10 @@ import { accessTokenExpired, authStatus, readStoredAuth, type StoredAuth } from 
 import { pickfordEnvironment } from './pickford-environment.js';
 import { privatePath } from './private-store.js';
 
-const ISSUER = 'https://api.dev.pickford.ai/auth/storykernel';
-const RESOURCE = 'https://api.dev.pickford.ai/renderer';
+const ISSUER = 'https://api.pickford.ai/auth/storykernel';
+const RESOURCE = 'https://api.pickford.ai/renderer';
 const SCOPE = 'storykernel:renderer';
-const BFF = 'https://dev.pickford.ai';
+const BFF = 'https://pickford.ai';
 const REDIRECT = 'http://127.0.0.1:4174/auth/pickford/callback';
 
 function json(body: unknown, status = 200): Response {
@@ -86,7 +86,7 @@ describe('PickfordAuth', () => {
 
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'renderer-auth-'));
-    env = { RENDERER_STATE_DIR: join(directory, '.renderer'), STORY_ENVIRONMENT: 'dev' };
+    env = { RENDERER_STATE_DIR: join(directory, '.renderer') };
   });
 
   afterEach(() => rmSync(directory, { recursive: true, force: true }));
@@ -132,7 +132,7 @@ describe('PickfordAuth', () => {
     const { state } = await client.beginSignIn(REDIRECT);
     const status = await client.completeSignIn({ state, code: 'code-1' });
 
-    expect(status).toMatchObject({ signedIn: true, environment: 'dev', email: 'creator@example.com', role: 'creator' });
+    expect(status).toMatchObject({ signedIn: true, environment: 'prod', email: 'creator@example.com', role: 'creator' });
     expect(JSON.stringify(status)).not.toContain('access-1');
     expect(statSync(privatePath('auth.json', env)).mode & 0o777).toBe(0o600);
     expect(readStoredAuth(env)?.accessToken).toBe('access-1');
@@ -251,7 +251,7 @@ describe('PickfordAuth', () => {
 
 describe('token store', () => {
   const base: StoredAuth = {
-    environment: 'dev', resource: RESOURCE, issuer: ISSUER, clientId: 'c', redirectUri: REDIRECT,
+    environment: 'prod', resource: RESOURCE, issuer: ISSUER, clientId: 'c', redirectUri: REDIRECT,
     accessToken: 'a', refreshToken: 'r', scope: SCOPE, expiresAt: 10_000_000, signedInAt: 0,
   };
 

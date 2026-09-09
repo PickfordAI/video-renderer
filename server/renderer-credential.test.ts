@@ -14,7 +14,7 @@ import {
   rotateRendererCredential,
 } from './renderer-credential.js';
 
-const BFF = 'https://dev.pickford.ai';
+const BFF = 'https://pickford.ai';
 const RENDERER_ID = 'a1b2c3d4-0000-4000-8000-000000000001';
 const CREDENTIAL_ID = 'a1b2c3d4-0000-4000-8000-000000000002';
 

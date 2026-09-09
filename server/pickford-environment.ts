@@ -1,10 +1,10 @@
 /**
  * Where a signed-in creator's Pickford environment lives.
  *
- * On deployed environments the API origin (`api.<env>.pickford.ai`) serves Identity, its OAuth
- * authorization server and the hosted MCP, the frontend origin (`<env>.pickford.ai`) serves
- * `/bff/v1/*` and `/api/v1/renderers/*`, and the chat origin (`chat.<env>.pickford.ai`) serves the
- * public audience exchange. Those are different hosts, so they are separate fields.
+ * In production, the API origin (`api.pickford.ai`) serves Identity, its OAuth authorization
+ * server and the hosted MCP, the frontend origin (`pickford.ai`) serves `/bff/v1/*` and
+ * `/api/v1/renderers/*`, and the chat origin (`chat.pickford.ai`) serves the public audience
+ * exchange. Developers can explicitly override those separate origins for another environment.
  */
 
 export type PickfordEnvironmentName = 'local' | 'test' | 'dev' | 'edge' | 'staging' | 'creator' | 'prod' | 'demo';
@@ -13,8 +13,7 @@ export const PICKFORD_ENVIRONMENTS: readonly PickfordEnvironmentName[] = [
   'local', 'test', 'dev', 'edge', 'staging', 'creator', 'prod', 'demo',
 ];
 
-// Testing happens on dev; the gated creator group runs with STORY_ENVIRONMENT=prod.
-export const DEFAULT_PICKFORD_ENVIRONMENT: PickfordEnvironmentName = 'dev';
+export const DEFAULT_PICKFORD_ENVIRONMENT: PickfordEnvironmentName = 'prod';
 
 export interface PickfordEnvironment {
   /** Environment name, also sent to the renderer bridge as `environment`. */
@@ -78,17 +77,10 @@ function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webB
       chatBaseUrl: 'http://127.0.0.1:8080',
     };
   }
-  if (name === 'prod') {
-    return {
-      apiBaseUrl: 'https://api.pickford.ai',
-      webBaseUrl: 'https://pickford.ai',
-      chatBaseUrl: 'https://chat.pickford.ai',
-    };
-  }
   return {
-    apiBaseUrl: `https://api.${name}.pickford.ai`,
-    webBaseUrl: `https://${name}.pickford.ai`,
-    chatBaseUrl: `https://chat.${name}.pickford.ai`,
+    apiBaseUrl: 'https://api.pickford.ai',
+    webBaseUrl: 'https://pickford.ai',
+    chatBaseUrl: 'https://chat.pickford.ai',
   };
 }
 
@@ -100,6 +92,11 @@ function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webB
 export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): PickfordEnvironment {
   const name = environmentName(env.STORY_ENVIRONMENT);
   const defaults = defaultHosts(name);
+  if (name !== 'local' && name !== 'test' && name !== 'prod') {
+    for (const key of ['PICKFORD_API_URL', 'PICKFORD_WEB_URL', 'CHAT_BACKEND_URL'] as const) {
+      if (!env[key]?.trim()) throw new Error(`${key} is required when STORY_ENVIRONMENT=${name}.`);
+    }
+  }
   const apiBaseUrl = origin(env.PICKFORD_API_URL || defaults.apiBaseUrl, 'PICKFORD_API_URL');
   const webBaseUrl = origin(env.PICKFORD_WEB_URL || defaults.webBaseUrl, 'PICKFORD_WEB_URL');
   const chatBaseUrl = origin(env.CHAT_BACKEND_URL || defaults.chatBaseUrl, 'CHAT_BACKEND_URL');

@@ -47,7 +47,9 @@ describe('external renderer run configuration', () => {
   it('uses service defaults without generating synthetic audience traffic', () => {
     const parsed = parseExternalRendererRunConfig(config());
 
-    expect(parsed.baseUrl).toBe('https://edge.pickford.ai');
+    expect(parsed.baseUrl).toBe('https://pickford.ai');
+    expect(parsed.environment).toBe('prod');
+    expect(parsed.tier).toBe('renderer-prod');
     expect(parsed).not.toHaveProperty('audienceMessages');
     expect(parsed.resolution).toBe('480P');
     expect(parsed.roomShortlink).toBe(roomShortlink);
@@ -342,14 +344,14 @@ describe('renderer websocket URL resolution', () => {
   });
 
   it('leaves a non-loopback wss URL untouched, including from a loopback base URL', () => {
-    expect(rendererWebSocketUrl(loopback, 'wss://edge.pickford.ai/api/v1/renderer-bridge/ws'))
-      .toBe('wss://edge.pickford.ai/api/v1/renderer-bridge/ws');
-    expect(rendererWebSocketUrl({ baseUrl: 'https://edge.pickford.ai' }, 'wss://localhost:8294/ws'))
+    expect(rendererWebSocketUrl(loopback, 'wss://pickford.ai/api/v1/renderer-bridge/ws'))
+      .toBe('wss://pickford.ai/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl({ baseUrl: 'https://pickford.ai' }, 'wss://localhost:8294/ws'))
       .toBe('wss://localhost:8294/ws');
   });
 
   it('rejects plain ws from a non-loopback service and query strings from any', () => {
-    expect(() => rendererWebSocketUrl({ baseUrl: 'https://edge.pickford.ai' }, 'ws://localhost:8293/ws')).toThrow('must use WSS');
+    expect(() => rendererWebSocketUrl({ baseUrl: 'https://pickford.ai' }, 'ws://localhost:8293/ws')).toThrow('must use WSS');
     expect(() => rendererWebSocketUrl(loopback, 'wss://localhost:8294/ws?token=x')).toThrow('query-free');
   });
 

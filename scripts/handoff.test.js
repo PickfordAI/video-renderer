@@ -16,7 +16,7 @@ describe('handoff validation before provisioning', () => {
     const local = { ...valid(), environment: 'local', services: { rendererWebsocketUrl: 'ws://127.0.0.1:8293/api/v1/renderer-bridge/ws' } };
     expect(validateHandoff(local)).toEqual(local);
     expect(() => validateHandoff(local, true)).toThrow('must use WSS');
-    expect(validateHandoff({ ...valid(), services: { rendererWebsocketUrl: 'wss://edge.pickford.ai/api/v1/renderer-bridge/ws' } }, true)).toBeTruthy();
+    expect(validateHandoff({ ...valid(), services: { rendererWebsocketUrl: 'wss://pickford.ai/api/v1/renderer-bridge/ws' } }, true)).toBeTruthy();
     for (const url of ['https://127.0.0.1:8293/ws', 'ws://bridge.example/ws', 'wss://127.0.0.1:8293/ws?token=secret']) {
       expect(() => validateHandoff({ ...valid(), services: { rendererWebsocketUrl: url } })).toThrow();
     }

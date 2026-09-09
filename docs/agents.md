@@ -15,8 +15,9 @@ credential, so this path has no developer page, no setup token, and no handoff f
 2. Start the media relay and the worker as a managed persistent process:
    `docker compose up -d media-relay`, then `npm start`. Read the startup output for a port
    conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
-3. Select the environment. `STORY_ENVIRONMENT=dev` is the default while the flow is being tested;
-   the gated creator group uses `STORY_ENVIRONMENT=prod`. No other configuration is required.
+3. No environment configuration is required. The renderer targets Pickford production at
+   `pickford.ai` by default. Developers using another environment must set its name and matching
+   API, web, and chat URL overrides in their private configuration.
 4. Tell the user to open **http://localhost:4174** and, on that page:
    - press **Sign in with Pickford** and approve the connection in the tab that opens;
    - paste their **fal API key** into the key field and save it;
@@ -52,13 +53,14 @@ The worker is a public OAuth 2.1 client. It discovers the resource metadata Pick
 dynamically (RFC 7591, `token_endpoint_auth_method: none`), and runs authorization-code + PKCE S256
 with a loopback redirect it serves itself at `http://127.0.0.1:<media port>/auth/pickford/callback`.
 
-The renderer's own resource is `https://api.<env>.pickford.ai/renderer` (`https://api.pickford.ai/renderer`
-on prod) and its scope is `storykernel:renderer`. **Resource and scope are a fixed pair:** mixing
+The renderer's production resource is `https://api.pickford.ai/renderer` and its scope is
+`storykernel:renderer`. **Resource and scope are a fixed pair:** mixing
 the renderer resource with the MCP's `storykernel:onboarding` scope, or the reverse, fails with
 `invalid_scope`. The renderer derives the scope from the resource for that reason, so overriding
 one cannot silently break the other. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
 `PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual values for a self-hosted
-or one-off kernel; the defaults follow `STORY_ENVIRONMENT`.
+or one-off kernel. Production is the default; any other hosted environment requires explicit API,
+web, and chat origins alongside `STORY_ENVIRONMENT`.
 
 Access tokens last 12 hours, the grant 90 days, and refresh tokens are **single-use and rotating**:
 replaying one revokes the whole grant. The renderer refreshes a stored token exactly once and never
@@ -106,7 +108,7 @@ identifiers and will not authenticate. Register its path once with `npm run setu
 | `setupToken` | Verified user session from the kernel login; used only for room/story provisioning and stop. Optional in opaque mode |
 | `startMode` | `legacy` (default) provisions a room and story first; `opaque` sends only `evdId` to the kernel, which allocates the story and returns a shareable audience join URL |
 | `rendererId`, `credentialId`, `clientSecret` | The kernel's developer renderer installation creation response |
-| `environment` | Kernel environment: `local`, `test`, `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `edge` for the reference stack |
+| `environment` | Kernel environment: `local`, `test`, `dev`, `edge`, `staging`, `creator`, `prod`, or `demo`; defaults to `prod` |
 | `storyType` | Use `MINIMAX` for a MiniMax EVD; `CREATOR` (legacy default) and `WHISPERS` remain supported |
 | `storyConfig` | Episode configuration from kernel onboarding; EVD and story-channel IDs are pinned by the CLI |
 | `services` | Omit for local auto-discovery; required HTTPS kernel URLs for hosted rendering |
@@ -138,18 +140,21 @@ needs a `setupToken` and `narrativeEngineUrl` to cancel through the resolved sto
 
 ### Pickford-hosted environment mapping
 
-For a Pickford-hosted `dev`, `edge`, or `staging` run, use the public frontend origin for Renderer
-Platform/BFF routes, not a stale local `host.docker.internal` URL. The service variables follow this
-mapping (shown for `dev`; replace every `dev` segment consistently for `edge` or `staging`):
+Production is the checked-in default. Its service variables follow this mapping when the legacy
+agent-managed flow needs explicit endpoints:
 
 ```dotenv
-STORY_ENVIRONMENT=dev
 STORY_START_MODE=opaque
-RENDERER_PLATFORM_URL=https://dev.pickford.ai
-STORY_RENDERER_WEBSOCKET_URL=wss://dev.pickford.ai/api/v1/renderer-bridge/ws
-NARRATIVE_ENGINE_URL=https://api.dev.pickford.ai
-CHAT_BACKEND_URL=https://chat.dev.pickford.ai
+RENDERER_PLATFORM_URL=https://pickford.ai
+STORY_RENDERER_WEBSOCKET_URL=wss://pickford.ai/api/v1/renderer-bridge/ws
+NARRATIVE_ENGINE_URL=https://api.pickford.ai
+CHAT_BACKEND_URL=https://chat.pickford.ai
 ```
+
+Developers targeting another hosted environment must add `STORY_ENVIRONMENT` plus matching
+`PICKFORD_API_URL`, `PICKFORD_WEB_URL`, and `CHAT_BACKEND_URL` values to their uncommitted local
+configuration. For the legacy flow, set the four service variables above to the same private
+environment's origins as well. Do not commit non-production Pickford endpoints.
 
 `RENDERER_PLATFORM_URL` is the base for `POST /api/v1/renderers/start-story`. Do not substitute
 `RENDERER_PLATFORM_BASE_URL`: that variable belongs to the separate direct bridge configuration.
