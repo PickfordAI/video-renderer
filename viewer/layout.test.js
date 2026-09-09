@@ -15,5 +15,6 @@ describe('player layout', () => {
     expect(html).not.toContain('<input id="chat-message"');
     expect(html).not.toContain('id="chat-name"');
     expect(html).not.toContain('Your name');
+    expect(html).not.toContain('Send an audience suggestion to the story in progress.');
   });
 });
