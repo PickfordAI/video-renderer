@@ -2,6 +2,8 @@
 export interface ScheduledShot<T> {
   result: Promise<T>;
   release(): void;
+  /** Reconcile the estimate once the downloaded media has been measured. */
+  updateDuration(seconds: number): void;
 }
 interface Job<T> {
   seconds: number;
@@ -42,7 +44,14 @@ export class ShotScheduler<T> {
       if (!job.settled) { job.ready = true; this.pump(); }
     }, error => { if (!job.settled) { job.settled = true; job.reject(error); } });
     this.pump();
-    return { result, release: () => {
+    return { result, updateDuration: (measuredSeconds: number) => {
+      if (!Number.isFinite(measuredSeconds) || measuredSeconds <= 0) throw new Error('Shot duration must be positive');
+      if (job.released) return;
+      if (job.reserved) this.reservedSeconds += measuredSeconds - job.seconds;
+      job.seconds = measuredSeconds;
+      // Already submitted work cannot be undone; further admissions use the corrected budget.
+      this.pump();
+    }, release: () => {
       if (job.reserved && !job.released) { job.released = true; this.reservedSeconds -= job.seconds; this.pump(); }
     } };
   }

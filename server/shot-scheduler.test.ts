@@ -36,6 +36,21 @@ describe('shot scheduler', () => {
     b.release();
     await expect(c.result).resolves.toBe('c');
   });
+  it('reconciles measured durations before admitting more work and releases the corrected reservation', async () => {
+    const scheduler = new ShotScheduler<string>(2, 10, new AbortController().signal);
+    const a = scheduler.add(6, async () => 'a');
+    await a.result;
+    a.updateDuration(6.625);
+    const next = vi.fn(async () => 'b');
+    const b = scheduler.add(4, next);
+    await tick();
+    expect(next).not.toHaveBeenCalled();
+    a.updateDuration(5.5);
+    await expect(b.result).resolves.toBe('b');
+    a.release();
+    b.release();
+    await expect(scheduler.add(10, async () => 'full budget').result).resolves.toBe('full budget');
+  });
   it('fails anchor dependents without submitting them', async () => {
     const scheduler = new ShotScheduler<string>(2, 30, new AbortController().signal);
     const a = scheduler.add(5, async () => { throw new Error('anchor failed'); });

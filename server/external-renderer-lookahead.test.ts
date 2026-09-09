@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { ExternalRendererRunManager } from './external-renderer.js';
 import { DssShotPlanner } from './shot-planner.js';
-import type { PlayoutManager } from './playout.js';
+import type { PlayoutClipBoundary, PlayoutManager } from './playout.js';
 import { generateVideo } from './fal.js';
 import { extractVideoFrame } from './video-frame.js';
 
@@ -48,8 +48,9 @@ async function bridge(options: { model?: 'auto' | 'fal-max-ref2v' | 'fal-turbo-i
   let playedThroughPosition = -1;
   let currentPosition: number | null = null;
   const enqueue = vi.fn();
+  const clipBoundary = vi.fn<() => PlayoutClipBoundary | null>(() => null);
   const stop = vi.fn(async () => undefined);
-  const start = vi.fn(async () => ({ sessionId: 'fixture-media', hlsUrl: '/hls/fixture.m3u8', enqueue, status: () => ({ state: 'streaming', playedThroughPosition, currentPosition }) }));
+  const start = vi.fn(async () => ({ sessionId: 'fixture-media', hlsUrl: '/hls/fixture.m3u8', enqueue, clipBoundary, status: () => ({ state: 'streaming', playedThroughPosition, currentPosition }) }));
   const manager = new ExternalRendererRunManager({ start, stop } as unknown as PlayoutManager);
   const run = manager.start({
     baseUrl: `http://127.0.0.1:${port}`, environment: 'local', rendererId,
@@ -74,7 +75,8 @@ async function bridge(options: { model?: 'auto' | 'fal-max-ref2v' | 'fal-turbo-i
     },
   });
   return {
-    run, pending, enqueue, start, stop, send, frame, chunk, manager,
+    run, pending, enqueue, start, stop, send, frame, chunk, manager, clipBoundary,
+    completedEvents: () => events.filter(event => event.event === 'completed'),
     completed: () => events.filter(event => event.event === 'completed').map(event => event.dss_id),
     started: () => events.filter(event => event.event === 'script_started'),
     begin: (position: number) => { currentPosition = position; },
@@ -109,6 +111,24 @@ describe('rolling DSS generation and ordered playout', () => {
       fixture.play(1);
       await vi.waitFor(() => expect(fixture.completed()).toEqual(['group-1', 'group-2']));
       expect(fixture.started()).toHaveLength(1);
+    } finally { await fixture.close(); }
+  });
+
+  it.each(['auto', 'fal-max-ref2v'] as const)('reports measured played seconds to the kernel in %s', async model => {
+    const fixture = await bridge({ model, verdicts: true });
+    try {
+      fixture.send(fixture.frame(1));
+      await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
+      fixture.pending[0].resolve(result('longer-than-requested'));
+      await vi.waitFor(() => expect(fixture.enqueue).toHaveBeenCalledTimes(1));
+      fixture.clipBoundary.mockReturnValue({ position: 0, storyBlockId: 'fixture', startSeconds: 2,
+        endSeconds: 8.625, holdSecondsBefore: 2, leadInSecondsBefore: 0 });
+      fixture.begin(0);
+      await vi.waitFor(() => expect(fixture.started()).toHaveLength(1));
+      expect(fixture.completed()).toEqual([]);
+      fixture.play(0);
+      await vi.waitFor(() => expect(fixture.completedEvents()).toHaveLength(1));
+      expect(fixture.completedEvents()[0]).toMatchObject({ duration: 6.625 });
     } finally { await fixture.close(); }
   });
 

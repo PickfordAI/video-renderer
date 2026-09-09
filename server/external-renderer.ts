@@ -70,7 +70,7 @@ interface VideoProvider {
 export interface ExternalPlayoutSession {
   readonly sessionId: string;
   readonly hlsUrl: string;
-  enqueue(value: unknown): PlayoutClipInput;
+  enqueue(value: unknown, onDuration?: (seconds: number) => void): PlayoutClipInput;
   status(): PlayoutStatus;
   clipBoundary?(position: number): PlayoutClipBoundary | null;
 }
@@ -1329,6 +1329,11 @@ class ExternalRendererRun {
     return record;
   }
 
+  private playedDuration(record: RendererClipRecord): number {
+    return record.streamStartSeconds !== null && record.streamEndSeconds !== null
+      ? record.streamEndSeconds - record.streamStartSeconds : record.durationSeconds;
+  }
+
   /**
    * Stamp a clip as played and, when the playout can say where it landed, record the dead air
    * before it. The playout only knows hold seconds once the clip has been fed, which is always
@@ -1431,7 +1436,7 @@ class ExternalRendererRun {
         this.playout!.enqueue({
           position, storyBlockId: shot.id, videoUrl: generated.videoUrl, durationSeconds: shot.durationSeconds,
           ...(leadInSeconds > 0 ? { leadInSeconds } : {}),
-        });
+        }, seconds => job.updateDuration(seconds));
         this.status.clipsRendered += 1;
         enqueued.resolve();
       }
@@ -1460,7 +1465,7 @@ class ExternalRendererRun {
         this.markPlayed(record);
         this.assertCurrentAssignment(frame);
         job.release();
-        seconds += shot.durationSeconds;
+        seconds += this.playedDuration(record);
       }
       const delay = plan.delaySeconds;
       if (delay > 0) await waitWithAbort(delay * 1_000, this.abortController.signal);
@@ -1580,7 +1585,7 @@ class ExternalRendererRun {
         this.status.clipsRendered += 1;
         await this.waitForPlayback(position, frame, group);
         this.markPlayed(record);
-        playedSeconds += clip.durationSeconds;
+        playedSeconds += this.playedDuration(record);
       }
       this.sendRendererEvent(this.completedEvent(frame, group, playedSeconds), frame);
       this.status.dssCommandsRendered += group.commands.length;

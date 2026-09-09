@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { probeClipDurationSeconds } from './clip-duration.js';
 
 import {
   concatToMp4Args,
@@ -17,6 +18,9 @@ import {
   publisherArgs,
   rebaseTransportStreamArgs,
 } from './playout.js';
+
+// State-machine fixtures use synthetic bytes; real media duration is covered by local media checks.
+vi.mock('./clip-duration.js', () => ({ probeClipDurationSeconds: vi.fn(async () => 5) }));
 
 const clip = {
   position: 0,
@@ -368,6 +372,38 @@ describe('H3 continuous playout', () => {
     expect(second.endSeconds).toBe(second.startSeconds + 5);
     expect(session.status().holdSeconds).toBeGreaterThanOrEqual(second.holdSecondsBefore);
     await session.stop();
+  });
+
+  it('places whole returned clips consecutively and waits for their measured end', async () => {
+    vi.mocked(probeClipDurationSeconds).mockResolvedValueOnce(6.625).mockResolvedValueOnce(4);
+    let publisher!: ReturnType<typeof successfulSpawn>;
+    const spawnImpl = vi.fn((_executable: string, args: string[]) => {
+      if (!args.at(-1)?.startsWith('rtsp://')) {
+        writeFileSync(args.at(-1)!, new Uint8Array([1, 2, 3]));
+        return successfulSpawn();
+      }
+      publisher = Object.assign(new EventEmitter(), {
+        stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      publisher.stdin.resume();
+      return publisher;
+    });
+    const session = new PlayoutSession({ spawnImpl: spawnImpl as never, fetchImpl: successfulFetch as never,
+      startupBufferClips: 2, audienceDelaySeconds: 0 });
+    const measured = vi.fn();
+    await session.initialize();
+    try {
+      session.enqueue({ ...clip, durationSeconds: 6 }, measured);
+      session.enqueue({ ...clip, position: 1, durationSeconds: 6 }, measured);
+      await vi.waitFor(() => expect(session.clipBoundary(1)).not.toBeNull());
+      expect(measured.mock.calls).toEqual([[6.625], [4]]);
+      expect(session.clipBoundary(0)).toMatchObject({ startSeconds: 0, endSeconds: 6.625 });
+      expect(session.clipBoundary(1)).toMatchObject({ startSeconds: 6.625, endSeconds: 10.625 });
+      publisher.stderr.write('out_time_us=6100000\n');
+      expect(session.status().playedThroughPosition).toBe(-1);
+      publisher.stderr.write('out_time_us=6625000\n');
+      expect(session.status().playedThroughPosition).toBe(0);
+    } finally { await session.stop(); }
   });
 
   it('registers a clip placement as soon as feeding starts, before the publisher has drained its bytes', async () => {
