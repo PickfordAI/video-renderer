@@ -28,3 +28,9 @@ export function syncPlaybackUi({ playbackStarted, chatReady, chat, creatorDetail
     bundlesDetails.open = false;
   }
 }
+
+/** Hide the status row when there is nothing actionable to say during healthy playback. */
+export function setPlayerStatus(status, message) {
+  status.textContent = message ?? '';
+  status.hidden = !message;
+}

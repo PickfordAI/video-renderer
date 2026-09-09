@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { startLivePlayback, syncPlaybackUi } from './playback.js';
+import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
 
 describe('startLivePlayback', () => {
   it('starts with sound when the browser permits it', async () => {
@@ -65,5 +65,25 @@ describe('syncPlaybackUi', () => {
     expect(chat.hidden).toBe(true);
     expect(creatorDetails.open).toBe(false);
     expect(bundlesDetails.open).toBe(false);
+  });
+});
+
+describe('setPlayerStatus', () => {
+  it('removes the status row during healthy playback', () => {
+    const status = { hidden: false, textContent: 'Starting your story…' };
+
+    setPlayerStatus(status, null);
+
+    expect(status.hidden).toBe(true);
+    expect(status.textContent).toBe('');
+  });
+
+  it('shows useful preparation and recovery messages', () => {
+    const status = { hidden: true, textContent: '' };
+
+    setPlayerStatus(status, 'Reconnecting to your story…');
+
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toBe('Reconnecting to your story…');
   });
 });
