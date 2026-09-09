@@ -1,8 +1,8 @@
 import Hls from 'hls.js';
-import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 import { creatorPanelVisible, creatorStatusSnapshot, startCreatorPanel } from './creator.js';
 import { homeStatusMessage } from './creator-state.js';
-import { startLivePlayback } from './playback.js';
+import { setPlayerStatus, startLivePlayback, syncPlaybackUi } from './playback.js';
 
 const status = document.querySelector('#status');
 const video = document.querySelector('#video');
@@ -18,13 +18,29 @@ let chatPoll;
 
 const chat = document.querySelector('#audience-chat');
 const chatForm = document.querySelector('#chat-form');
-const chatName = document.querySelector('#chat-name');
 const chatMessage = document.querySelector('#chat-message');
 const chatSend = document.querySelector('#chat-send');
 const chatStatus = document.querySelector('#chat-status');
 const chatHistory = document.querySelector('#chat-history');
 const chatMessages = document.querySelector('#chat-messages');
+const creatorDetails = document.querySelector('#creator-details');
+const bundlesDetails = document.querySelector('#bundles-details');
 const sentMessageIds = new Set();
+let playbackStarted = false;
+
+function resizeChatMessage() {
+  fitTextareaToContent(chatMessage);
+}
+
+function updatePlaybackUi() {
+  syncPlaybackUi({
+    playbackStarted,
+    chatReady: Boolean(chatCsrfToken),
+    chat,
+    creatorDetails,
+    bundlesDetails,
+  });
+}
 
 function showSentMessage(input, messageId) {
   if (typeof messageId === 'string' && sentMessageIds.has(messageId)) return;
@@ -55,10 +71,10 @@ async function updateAudienceChat() {
     if (!response.ok) throw new Error('Audience chat is unavailable.');
     const value = await response.json();
     chatCsrfToken = value.ready && typeof value.csrfToken === 'string' ? value.csrfToken : undefined;
-    chat.hidden = !chatCsrfToken;
+    updatePlaybackUi();
   } catch {
     chatCsrfToken = undefined;
-    chat.hidden = true;
+    updatePlaybackUi();
   }
   if (!disposed) chatPoll = setTimeout(updateAudienceChat, 3000);
 }
@@ -67,7 +83,7 @@ chatForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
     if (!chatCsrfToken) throw new Error('Audience chat is reconnecting.');
-    const input = audienceMessageInput(chatName.value, chatMessage.value);
+    const input = audienceMessageInput(audienceDisplayName(creatorStatusSnapshot()), chatMessage.value);
     chatSend.disabled = true;
     chatStatus.textContent = 'Sending…';
     const response = await fetch('/api/audience-chat/messages', {
@@ -86,7 +102,8 @@ chatForm.addEventListener('submit', async (event) => {
     }
     showSentMessage(input, value.messageId);
     chatMessage.value = '';
-    chatStatus.textContent = value.duplicate ? 'That message was already received.' : 'Message received by the story.';
+    resizeChatMessage();
+    chatStatus.textContent = audienceReceiptMessage(value);
   } catch (error) {
     chatStatus.textContent = error instanceof Error ? error.message : 'The message could not be sent.';
   } finally {
@@ -94,7 +111,12 @@ chatForm.addEventListener('submit', async (event) => {
   }
 });
 
+chatMessage.addEventListener('input', resizeChatMessage);
+window.addEventListener('resize', resizeChatMessage);
+
 function clearStream() {
+  playbackStarted = false;
+  updatePlaybackUi();
   generation++;
   clearTimeout(retry);
   hls?.destroy();
@@ -114,16 +136,12 @@ function showStream(raw) {
   const version = generation;
   video.hidden = false;
   setup.hidden = true;
-  status.textContent = 'Preparing your first scene. This can take a few minutes.';
+  setPlayerStatus(status, 'Preparing your first scene. This can take a few minutes.');
   const startPlayback = async () => {
     if (disposed || version !== generation) return;
     const result = await startLivePlayback(video);
     if (disposed || version !== generation) return;
-    status.textContent = result === 'playing-muted'
-      ? 'Now playing muted. Use the player controls to turn on sound.'
-      : result === 'playing'
-        ? 'Now playing'
-        : 'Your story is ready. Press play to watch.';
+    setPlayerStatus(status, result === 'blocked' ? 'Your story is ready. Press play to watch.' : null);
   };
   const connect = async () => {
     if (disposed || version !== generation) return;
@@ -137,7 +155,7 @@ function showStream(raw) {
         hls = new Hls({ liveSyncDurationCount: 3 });
         hls.on(Hls.Events.ERROR, (_, data) => {
           if (!data.fatal || disposed || version !== generation) return;
-          status.textContent = 'Reconnecting to your story…';
+          setPlayerStatus(status, 'Reconnecting to your story…');
           hls?.destroy();
           clearTimeout(retry);
           retry = setTimeout(connect, 5000);
@@ -150,11 +168,11 @@ function showStream(raw) {
         video.src = streamUrl;
       }
       else throw new Error('This browser cannot play this video. Try another browser.');
-      status.textContent = 'Starting your story…';
+      setPlayerStatus(status, 'Starting your story…');
     } catch (error) {
       if (disposed || version !== generation) return;
       const unsupported = error.message.includes('browser');
-      status.textContent = unsupported ? error.message : 'Waiting for your story. If it has ended, ask your agent for a new watch link.';
+      setPlayerStatus(status, unsupported ? error.message : 'Waiting for your story. If it has ended, ask your agent for a new watch link.');
       if (!unsupported) retry = setTimeout(connect, 5000);
     }
   };
@@ -163,7 +181,7 @@ function showStream(raw) {
 
 function showSetup(value) {
   setup.hidden = false;
-  status.textContent = setupMessage(value);
+  setPlayerStatus(status, setupMessage(value));
   const labels = { videoAccount: 'Video account', storyAccess: 'Story access', storyConnection: 'Story connection' };
   const checks = document.querySelector('#checks');
   checks.replaceChildren(...Object.entries(labels).map(([key, label]) => {
@@ -183,7 +201,7 @@ async function followLocalStory() {
     const response = await fetch('/api/viewer-status', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
     if (disposed) return;
     if ([403, 404].includes(response.status)) {
-      status.textContent = 'Open the watch link shared by your agent or the story’s creator.';
+      setPlayerStatus(status, 'Open the watch link shared by your agent or the story’s creator.');
       return;
     }
     if (!response.ok) throw new Error('Disconnected');
@@ -194,31 +212,36 @@ async function followLocalStory() {
     } else if (value.story && ['connecting', 'running'].includes(value.story.state)) {
       if (currentStream) clearStream();
       setup.hidden = true;
-      status.textContent = 'Preparing your first scene. This can take a few minutes.';
+      setPlayerStatus(status, 'Preparing your first scene. This can take a few minutes.');
     } else if (creatorPanelVisible()) {
       // The creator signs in and picks a StoryBundle here; the agent-setup checklist is retired.
       if (currentStream) clearStream();
       setup.hidden = true;
-      status.textContent = homeStatusMessage(creatorStatusSnapshot());
+      setPlayerStatus(status, homeStatusMessage(creatorStatusSnapshot()));
     } else {
       if (currentStream) clearStream();
       showSetup(value);
     }
   } catch {
-    status.textContent = 'The renderer is reconnecting. Your agent can check the connection.';
+    setPlayerStatus(status, 'The renderer is reconnecting. Your agent can check the connection.');
   }
   if (!disposed) poll = setTimeout(followLocalStory, 2000);
 }
 
-video.addEventListener('playing', () => { status.textContent = 'Now playing'; });
+video.addEventListener('playing', () => {
+  playbackStarted = true;
+  updatePlaybackUi();
+  setPlayerStatus(status, null);
+});
 window.addEventListener('pagehide', () => { disposed = true; clearTimeout(poll); clearTimeout(chatPoll); clearStream(); });
 
 const raw = location.hash.slice(1) || import.meta.env.VITE_STREAM_URL;
 if (raw) {
   try { showStream(location.hash ? decodeURIComponent(raw) : raw); }
-  catch { status.textContent = 'This watch link is invalid. Ask your agent for a new link.'; }
+  catch { setPlayerStatus(status, 'This watch link is invalid. Ask your agent for a new link.'); }
 } else {
   startCreatorPanel();
   void followLocalStory();
 }
 void updateAudienceChat();
+resizeChatMessage();

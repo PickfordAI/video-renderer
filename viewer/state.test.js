@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { audienceMessageInput, setupMessage, validStreamUrl } from './state.js';
+import { audienceDisplayName, audienceMessageInput, audienceReceiptMessage, fitTextareaToContent, setupMessage, validStreamUrl } from './state.js';
 describe('one story player', () => {
   it('explains setup, readiness, startup and terminal states without a credential form', () => {
     expect(setupMessage({ setup: { ready: false } })).toContain('setup left');
@@ -21,5 +21,38 @@ describe('audienceMessageInput', () => {
     expect(() => audienceMessageInput('Ada', ' '.repeat(4))).toThrow('Write a message');
     expect(() => audienceMessageInput('x'.repeat(81), 'hello')).toThrow('80 characters');
     expect(() => audienceMessageInput('Ada', 'x'.repeat(2001))).toThrow('2000 characters');
+  });
+
+  it('preserves intentional line breaks in a multiline message', () => {
+    expect(audienceMessageInput('Ada', '  First thought\nSecond thought  ')).toEqual({
+      displayName: 'Ada',
+      content: 'First thought\nSecond thought',
+    });
+  });
+
+  it('stays quiet for successful delivery while retaining duplicate feedback', () => {
+    expect(audienceReceiptMessage({ duplicate: false })).toBe('');
+    expect(audienceReceiptMessage({ duplicate: true })).toBe('That message was already received.');
+  });
+});
+
+describe('fitTextareaToContent', () => {
+  it('shrinks or grows the textarea to its current wrapped content height', () => {
+    const textarea = { scrollHeight: 72, style: { height: '140px' } };
+
+    fitTextareaToContent(textarea);
+
+    expect(textarea.style.height).toBe('72px');
+  });
+});
+
+describe('audienceDisplayName', () => {
+  it('uses the signed-in creator email without asking for another name', () => {
+    expect(audienceDisplayName({ auth: { signedIn: true, email: ' creator@example.com ' } })).toBe('creator@example.com');
+  });
+
+  it('uses a neutral name when the public viewer has no account identity', () => {
+    expect(audienceDisplayName(null)).toBe('Audience');
+    expect(audienceDisplayName({ auth: { signedIn: false, email: 'stale@example.com' } })).toBe('Audience');
   });
 });

@@ -17,17 +17,20 @@
     button { background: #ff825e; color: #17110e; border: 0; border-radius: 8px; padding: 12px 18px; font: inherit; cursor: pointer; }
     button:disabled { cursor: wait; opacity: .6; }
     label { color: #d6d4d0; font-size: 14px; }
-    input { width: 100%; border: 1px solid #3c3d47; border-radius: 8px; padding: 11px 12px; background: #0d1016; color: #f4f1eb; font: inherit; }
-    input:focus { outline: 2px solid #ff987b; outline-offset: 1px; }
+    input, textarea { width: 100%; border: 1px solid #3c3d47; border-radius: 8px; padding: 11px 12px; background: #0d1016; color: #f4f1eb; font: inherit; }
+    input:focus, textarea:focus { outline: 2px solid #ff987b; outline-offset: 1px; }
     #audience-chat { margin-top: 20px; padding: 20px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
     #audience-chat h2 { margin: 0 0 6px; font-size: 18px; }
-    #audience-chat form { display: grid; grid-template-columns: minmax(120px, .35fr) minmax(220px, 1fr) auto; align-items: end; gap: 10px; }
+    #audience-chat form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: start; gap: 10px; margin-top: 16px; }
     #audience-chat label { display: grid; gap: 6px; }
-    #chat-status { min-height: 1.4em; margin: 10px 0 0; font-size: 14px; }
+    #chat-message { min-height: 44px; line-height: 1.5; resize: none; overflow: hidden; }
+    #chat-send { align-self: end; }
+    #chat-status { margin: 10px 0 0; font-size: 14px; }
+    #chat-status:empty { display: none; }
     #chat-history { margin-top: 20px; border-top: 1px solid #30313c; padding-top: 16px; }
     #chat-history h3 { margin: 0 0 10px; font-size: 16px; }
     #chat-messages { margin: 0; padding-left: 24px; display: grid; gap: 10px; }
-    #chat-messages li { color: #f4f1eb; line-height: 1.5; }
+    #chat-messages li { min-width: 0; color: #f4f1eb; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
     #chat-messages strong { color: #ffba9f; }
     @media (max-width: 680px) { #audience-chat form { grid-template-columns: 1fr; } }
     #setup { margin: 32px 0; padding: 24px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
@@ -56,7 +59,8 @@
     #fal label { display: grid; gap: 6px; }
     #fal p { margin: 10px 0 0; font-size: 13px; }
     #bundles { margin: 24px 0; padding: 24px; border: 1px solid #30313c; border-radius: 16px; background: #11141b; }
-    #bundles h2 { margin-top: 0; font-size: 18px; }
+    #bundles summary { font-size: 18px; font-weight: 600; cursor: pointer; margin-bottom: 18px; }
+    #bundles summary::marker { color: #ff987b; }
     #bundle-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
     .bundle { border: 1px solid #30313c; border-radius: 12px; padding: 16px; display: grid; gap: 8px; }
     .bundle h3 { margin: 0; font-size: 16px; }
@@ -78,6 +82,18 @@
       <h2 id="setup-title">Your agent handles setup.</h2>
       <ul id="checks"></ul>
       <p>No connection details to fill in here. Your agent connects your accounts and starts the story.</p>
+    </section>
+    <section id="audience-chat" hidden aria-labelledby="audience-chat-title">
+      <h2 id="audience-chat-title">Join the story</h2>
+      <form id="chat-form">
+        <label>Message<textarea id="chat-message" name="content" rows="1" maxlength="2000" autocomplete="off" required></textarea></label>
+        <button id="chat-send" type="submit">Send</button>
+      </form>
+      <p id="chat-status" role="status" aria-live="polite"></p>
+      <div id="chat-history" hidden>
+        <h3>Your messages</h3>
+        <ol id="chat-messages"></ol>
+      </div>
     </section>
     <section id="creator" hidden aria-labelledby="creator-title">
       <details id="creator-details" open>
@@ -105,23 +121,11 @@
       </details>
     </section>
     <section id="bundles" hidden aria-labelledby="bundles-title">
-      <h2 id="bundles-title">Your StoryBundles</h2>
-      <ul id="bundle-list"></ul>
-      <p id="bundle-status" role="status" aria-live="polite"></p>
-    </section>
-    <section id="audience-chat" hidden aria-labelledby="audience-chat-title">
-      <h2 id="audience-chat-title">Join the story</h2>
-      <p>Send an audience suggestion to the story in progress.</p>
-      <form id="chat-form">
-        <label>Your name<input id="chat-name" name="displayName" maxlength="80" autocomplete="nickname" required /></label>
-        <label>Message<input id="chat-message" name="content" maxlength="2000" autocomplete="off" required /></label>
-        <button id="chat-send" type="submit">Send</button>
-      </form>
-      <p id="chat-status" role="status" aria-live="polite"></p>
-      <div id="chat-history" hidden>
-        <h3>Your messages</h3>
-        <ol id="chat-messages"></ol>
-      </div>
+      <details id="bundles-details" open>
+        <summary id="bundles-title">Your StoryBundles</summary>
+        <ul id="bundle-list"></ul>
+        <p id="bundle-status" role="status" aria-live="polite"></p>
+      </details>
     </section>
     <footer>Made with Pickford. Playback appears here when your story is ready.
       Something not working? Email <a href="mailto:help@pickford.ai">help@pickford.ai</a>.</footer>
