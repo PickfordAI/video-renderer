@@ -295,3 +295,10 @@ command group per payload, including separate setup and dialogue chunks, and lim
 outstanding playback duration. The renderer compiles each group in order, carries state between
 chunks, and acknowledges each original group only after its content or control delay has played.
 It does not wait for a complete scene or acknowledge early to request more DSS.
+
+Prepared stationary StoryBundles may include version 1 `scene_context.prepared_coverage`.
+The explicit H3 Max reference-to-video adapter accepts the certified master and speaker
+closeups, checks their hashes and original portrait identities before generation, and keeps
+prepared framing independent of previous generated clips. This supports stable compositions;
+it does not promise continuous performance between clips. Other adapters reject these bundles.
+See [the prepared coverage contract](docs/architecture.md#prepared-stationary-coverage-pic-1920).

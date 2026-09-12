@@ -1,0 +1,106 @@
+{
+  "stream_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "assignment_id": "fixture-assignment",
+  "assignment_generation": 1,
+  "sequence": 1,
+  "story_block_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "script": {
+    "sequence": 1,
+    "story_type": 4,
+    "scene_index": 0,
+    "scene_context": {
+      "set_image": {
+        "asset_id": "44444444-4444-4444-8444-444444444444",
+        "set_id": "authored-set:hotel-lobby",
+        "image_url": "https://assets.example/hotel.png"
+      },
+      "character_images": [
+        {
+          "asset_id": "55555555-5555-4555-8555-555555555555",
+          "character_id": "11111111-1111-4111-8111-111111111111",
+          "character_name": "Maya",
+          "image_url": "https://assets.example/maya.png"
+        },
+        {
+          "asset_id": "66666666-6666-4666-8666-666666666666",
+          "character_id": "22222222-2222-4222-8222-222222222222",
+          "character_name": "Theo",
+          "image_url": "https://assets.example/theo.png"
+        }
+      ],
+      "character_positions": {
+        "11111111-1111-4111-8111-111111111111": "Maya sits camera-left by the window.",
+        "22222222-2222-4222-8222-222222222222": "Theo stands camera-right near the doorway."
+      },
+      "prepared_coverage": {
+        "version": 1,
+        "preparation_id": "99999999-9999-4999-8999-999999999999",
+        "source_fingerprint": "2dc815a9cf7b6bf38c7bc32d97feec1ebfbba6745fba363ff4058e4db6c5a22b",
+        "master": {
+          "asset_id": "77777777-7777-4777-8777-777777777777",
+          "image_url": "https://assets.example/master.png",
+          "content_sha256": "8aee9158f0d5a65638afde761499876e02913d022602cf16a0bb7161f23a73f5",
+          "visible_character_ids": [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222"
+          ]
+        },
+        "closeups": {
+          "11111111-1111-4111-8111-111111111111": {
+            "asset_id": "88888888-8888-4888-8888-888888888888",
+            "image_url": "https://assets.example/maya-close.png",
+            "content_sha256": "20580606b01000be2e053688ad4a575bf7f50fac47cf2d1a682b4b79218a500d",
+            "visible_character_ids": [
+              "11111111-1111-4111-8111-111111111111"
+            ]
+          },
+          "22222222-2222-4222-8222-222222222222": {
+            "asset_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "image_url": "https://assets.example/theo-close.png",
+            "content_sha256": "f12836465b87eb11f86437e15752645f38283cab2d44ee0b66cb0ab9d523ec26",
+            "visible_character_ids": [
+              "22222222-2222-4222-8222-222222222222"
+            ]
+          }
+        },
+        "body_orientations": {
+          "11111111-1111-4111-8111-111111111111": "Seated torso facing the doorway, unchanged from the master.",
+          "22222222-2222-4222-8222-222222222222": "Standing torso facing the window, unchanged from the master."
+        },
+        "character_content_sha256": {
+          "11111111-1111-4111-8111-111111111111": "001ff4cc01453d86f8656ef645f28ffa4ef344fa8ae32515069028092132e4cc",
+          "22222222-2222-4222-8222-222222222222": "b9160f8f6c84b82ef75132920aacad77b5f50ff984c5b477cb0b39b60d091f98"
+        }
+      }
+    },
+    "command_groups": [
+      {
+        "id": "master",
+        "commands": [
+          {
+            "command": "talk",
+            "args": {
+              "character": "Maya",
+              "respondent": "Theo",
+              "dialogue": "The last train already left."
+            }
+          }
+        ]
+      },
+      {
+        "id": "closeup",
+        "commands": [
+          {
+            "command": "talk",
+            "args": {
+              "character": "Theo",
+              "respondent": "Maya",
+              "dialogue": "Then we stay here.",
+              "camera_shot": "Character_CloseUp"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
