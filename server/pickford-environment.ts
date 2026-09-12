@@ -20,8 +20,10 @@ export interface PickfordEnvironment {
   name: PickfordEnvironmentName;
   /** Identity, OAuth and the hosted MCP. */
   apiBaseUrl: string;
-  /** Browser origin that serves `/bff/v1/*` and `/api/v1/renderers/*`. */
+  /** Browser origin that serves `/bff/v1/*`. */
   webBaseUrl: string;
+  /** Renderer login/start origin; defaults to the browser origin. */
+  rendererPlatformBaseUrl: string;
   /** Chat origin that serves `/api/v1/external-audience/exchange`. */
   chatBaseUrl: string;
   /** OAuth resource (audience) the renderer requests tokens for. */
@@ -86,8 +88,8 @@ function defaultHosts(name: PickfordEnvironmentName): { apiBaseUrl: string; webB
 
 /**
  * `STORY_ENVIRONMENT` selects the environment. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
- * `CHAT_BACKEND_URL`, `PICKFORD_OAUTH_RESOURCE` and `PICKFORD_OAUTH_SCOPE` override individual
- * values for one-off or self-hosted kernels.
+ * `CHAT_BACKEND_URL`, `RENDERER_PLATFORM_URL`, `PICKFORD_OAUTH_RESOURCE` and
+ * `PICKFORD_OAUTH_SCOPE` override individual values for one-off or self-hosted kernels.
  */
 export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): PickfordEnvironment {
   const name = environmentName(env.STORY_ENVIRONMENT);
@@ -99,6 +101,7 @@ export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): Pickf
   }
   const apiBaseUrl = origin(env.PICKFORD_API_URL || defaults.apiBaseUrl, 'PICKFORD_API_URL');
   const webBaseUrl = origin(env.PICKFORD_WEB_URL || defaults.webBaseUrl, 'PICKFORD_WEB_URL');
+  const rendererPlatformBaseUrl = origin(env.RENDERER_PLATFORM_URL || webBaseUrl, 'RENDERER_PLATFORM_URL');
   const chatBaseUrl = origin(env.CHAT_BACKEND_URL || defaults.chatBaseUrl, 'CHAT_BACKEND_URL');
   // The renderer has its own resource (PIC-1739), separate from the hosted MCP's.
   // Local web-endpoints proxies discovery on :8081, but Identity is the canonical resource
@@ -108,5 +111,5 @@ export function pickfordEnvironment(env: NodeJS.ProcessEnv = process.env): Pickf
     : `${apiBaseUrl}/renderer`;
   const oauthResource = origin(env.PICKFORD_OAUTH_RESOURCE || defaultOauthResource, 'PICKFORD_OAUTH_RESOURCE');
   const oauthScope = env.PICKFORD_OAUTH_SCOPE?.trim() || scopeForResource(oauthResource);
-  return { name, apiBaseUrl, webBaseUrl, chatBaseUrl, oauthResource, oauthScope };
+  return { name, apiBaseUrl, webBaseUrl, rendererPlatformBaseUrl, chatBaseUrl, oauthResource, oauthScope };
 }

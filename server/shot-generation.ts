@@ -70,9 +70,10 @@ export class ShotGenerator {
 
   /** Reference-slot rules that must hold before any paid submission for the shot's payload. */
   validate(shot: PlannedShot): void {
+    if (shot.preparedCoverage && this.options.renderMode !== 'fal-max-ref2v') throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
     if (this.options.renderMode !== 'fal-max-ref2v') return;
     if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
-    const anchors = this.options.continuity === 'camera-anchors';
+    const anchors = !shot.preparedCoverage && this.options.continuity === 'camera-anchors';
     const referenceLimit = anchors ? 11 : 12;
     if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
       throw new Error(anchors
@@ -83,6 +84,7 @@ export class ShotGenerator {
 
   /** The dependency `schedule` would create for this shot, given the shots registered so far. */
   describe(shot: PlannedShot): ShotDependency {
+    if (shot.preparedCoverage) return { kind: 'independent' };
     const { continuity } = this.options;
     if (continuity === 'last-frame-chain') {
       const tail = this.sceneTails.get(shot.sceneKey);
@@ -107,6 +109,7 @@ export class ShotGenerator {
   /** `shotGuard` fences this shot alone, e.g. against the assignment its payload arrived under. */
   schedule(shot: PlannedShot, shotGuard?: () => void): { dependency: ShotDependency; job: ScheduledShot<GeneratedShot> } {
     const { renderMode: mode, continuity, scheduler, signal } = this.options;
+    this.validate(shot);
     const guard = () => { this.options.guard?.(); shotGuard?.(); };
     const dependency = this.describe(shot);
     const source = dependency.kind === 'anchor-reuse' ? this.anchors.get(shot.anchorKey)
@@ -135,7 +138,7 @@ export class ShotGenerator {
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
       });
       guard();
-      let nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
+      let nextFrame = shot.preparedCoverage || continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
         ? await extractVideoFrame(generated.videoUrl, {
           position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal,
         })

@@ -16,7 +16,7 @@ import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
 import { storyStartRefusalMessage } from './story-bundles.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
-import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
+import { MinimaxSceneAssetCache, parseMinimaxSceneContext, preparedSceneIdentity, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import type { PlayoutClipBoundary, PlayoutClipInput, PlayoutStatus } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
@@ -974,15 +974,9 @@ export function rendererWebSocketUrl(config: Pick<ExternalRendererRunConfig, 'ba
   if (url.search) throw new Error('renderer websocket_url must be query-free');
   const service = new URL(config.baseUrl);
   const localService = service.protocol === 'http:' && LOOPBACK_HOSTS.includes(service.hostname);
-  if (localService && url.hostname.endsWith('.local')) {
-    url.protocol = 'ws:';
+  if (localService && url.protocol === 'ws:' && url.hostname.endsWith('.local')) {
     url.hostname = service.hostname;
     url.port = service.port;
-  } else if (localService && url.protocol === 'wss:' && LOOPBACK_HOSTS.includes(url.hostname)) {
-    // A local stack advertises its self-signed TLS front, whose cert no client trusts.
-    // Its plain bridge port is unknown here, so keep the advertised port and let an
-    // explicit handoff services.rendererWebsocketUrl override this best-effort guess.
-    url.protocol = 'ws:';
   }
   if (url.protocol !== 'wss:' && !(localService && url.protocol === 'ws:')) {
     throw new Error('renderer websocket_url must use WSS (or WS for a loopback service)');
@@ -1043,6 +1037,7 @@ class ExternalRendererRun {
   private readonly scheduler: ShotScheduler<GeneratedShot>;
   private readonly generator: ShotGenerator;
   private readonly scenePositions = new Map<number, string>();
+  private readonly sceneCoverage = new Map<number, string>();
   private readonly assetIdentities = new Map<string, string>();
   private readonly sceneAssets = new MinimaxSceneAssetCache({
     uploader: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? falReferenceUploader(process.env.FAL_KEY) : null,
@@ -1268,6 +1263,9 @@ class ExternalRendererRun {
   private validateSceneContext(frame: DssFrame): void {
     const context = frame.sceneContext;
     if (!context) return;
+    if (context.preparedCoverage && (this.provider.kind !== 'fal' || this.config.renderMode !== 'fal-max-ref2v')) {
+      throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
+    }
     for (const image of [context.setImage, ...context.characterImages]) {
       const previous = this.assetIdentities.get(image.assetId);
       const identity = JSON.stringify([image.sourceId, image.characterName ?? null]);
@@ -1276,6 +1274,10 @@ class ExternalRendererRun {
     }
     const positions = canonicalJson(context.characterPositions);
     const sceneIndex = frame.sceneIndex ?? -1;
+    const identity = context.preparedCoverage ? preparedSceneIdentity(context) : 'legacy';
+    const previousCoverage = this.sceneCoverage.get(sceneIndex);
+    if (previousCoverage && previousCoverage !== identity) throw new Error('Prepared coverage changed within a scene');
+    this.sceneCoverage.set(sceneIndex, identity);
     const previousPositions = this.scenePositions.get(sceneIndex);
     if (previousPositions && previousPositions !== positions) {
       throw new Error('Certified character_positions changed within a scene');
@@ -1387,7 +1389,7 @@ class ExternalRendererRun {
   private scheduleShot(frame: DssFrame, shot: PlannedShot, position: number): { job: ScheduledShot<GeneratedShot>; record: RendererClipRecord } {
     this.assertCurrentAssignment(frame);
     const dependency = this.generator.describe(shot);
-    const record = this.trackClip(frame, shot, position, this.config.continuityStrategy !== 'camera-anchors' ? 'none'
+    const record = this.trackClip(frame, shot, position, shot.preparedCoverage || this.config.continuityStrategy !== 'camera-anchors' ? 'none'
       : dependency.kind === 'anchor-reuse' ? 'reuse' : 'establish');
     let submitted = false;
     const { job } = this.generator.schedule(shot, () => {
@@ -1689,6 +1691,8 @@ class ExternalRendererRun {
         protocol_version: PROTOCOL_VERSION,
         stream_id: this.config.rendererId,
         renderer_kind: this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
+        ...(this.provider.kind === 'fal' && this.config.renderMode === 'fal-max-ref2v'
+          ? { prepared_coverage_versions: [1] } : {}),
         instance_id: `video-renderer-${this.runId}`,
         assignment_id: '',
       });

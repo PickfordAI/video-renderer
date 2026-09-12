@@ -71,6 +71,15 @@ one cannot silently break the other. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
 or one-off kernel. Production is the default; any other hosted environment requires explicit API,
 web, and chat origins alongside `STORY_ENVIRONMENT`.
 
+For a local stack whose frontend and Renderer Platform use separate origins, set
+`RENDERER_PLATFORM_URL` to the platform's HTTP origin. The creator workflow uses this for renderer
+login and story start; it defaults to `PICKFORD_WEB_URL` when omitted. For example, a slot 3 stack
+can use `PICKFORD_WEB_URL=http://localhost:3300` with
+`RENDERER_PLATFORM_URL=http://localhost:8393`. These are developer process settings; the creator
+page still requires only sign-in and the creator's own fal key. Configure certificate trust as
+described under [Local Story Kernel bridge](#local-story-kernel-bridge) for the advertised TLS
+WebSocket endpoint.
+
 Access tokens last 12 hours, the grant 90 days, and refresh tokens are **single-use and rotating**:
 replaying one revokes the whole grant. The renderer refreshes a stored token exactly once and never
 retries with the same value — a rejected refresh discards the sign-in and the creator signs in
@@ -247,11 +256,17 @@ then prints `mediaDir` and `finalMp4`. Never enable it for a user who did not as
 
 ## Local Story Kernel bridge
 
-A local unified stack advertises its WebSocket bridge behind a self-signed TLS port, which no client
-trusts. Put the stack's plain bridge URL in the handoff as `services.rendererWebsocketUrl`
-(for example `ws://127.0.0.1:8293/api/v1/renderer-bridge/ws`); the renderer prefers it over the
-advertised URL. Without it, a loopback `wss://` advertisement is downgraded to `ws://` on the same
-host and port, which only works when the stack serves both on that port.
+A local unified stack advertises its WebSocket bridge behind a TLS port. The renderer preserves
+the advertised `wss://` protocol, hostname, and port, including when login uses loopback HTTP.
+For a development certificate, supply its trusted CA certificate bundle through
+`NODE_EXTRA_CA_CERTS=/absolute/path/to/local-ca.pem` in the worker's process environment **before
+starting Node**, then restart the worker. Loading this variable later through the renderer's
+`.env` file does not configure Node's trust store. The certificate must cover the advertised
+hostname; keep certificate verification enabled.
+
+An advertised plain `ws://` endpoint remains supported with a loopback HTTP service. Legacy plain
+`ws://*.local` advertisements are rehosted onto that service's host and port; secure advertisements
+are never rehosted or downgraded.
 
 ## Environment and persistent configuration
 

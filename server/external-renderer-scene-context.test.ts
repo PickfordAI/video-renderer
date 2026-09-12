@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
@@ -329,5 +330,55 @@ describe('scene-context compatibility', () => {
     } finally {
       await fixture.close();
     }
+  });
+});
+
+
+describe('prepared coverage bridge contract', () => {
+  const preparedContext = (): Json => JSON.parse(readFileSync(new URL('./fixtures/prepared-coverage-dss.json', import.meta.url), 'utf8')).script.scene_context;
+  it('advertises typed version support only on the configured H3 ref2v adapter', async () => {
+    for (const provider of ['fal-max-ref2v', 'minimax-direct'] as const) {
+      const fixture = await bridge({ provider });
+      try {
+        const hello = fixture.sentEvents.find(event => event.type === 'renderer.hello');
+        expect(hello?.prepared_coverage_versions).toEqual(provider === 'fal-max-ref2v' ? [1] : undefined);
+      } finally { await fixture.close(); }
+    }
+  });
+  it('renders prepared references through existing groups and acknowledgements', async () => {
+    const fixture = await bridge();
+    try {
+      fixture.send(fixture.frame(1, { context: preparedContext() }));
+      await vi.waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(generateVideo).mock.calls[0][0].referenceImageUrls).toEqual(['master.png', 'maya.png', 'theo.png'].map(name => 'data:image/png;base64,' + Buffer.from(`downloaded:${name}`).toString('base64')));
+      await vi.waitFor(() => expect(fixture.sentEvents.some(event => event.event === 'completed' && event.dss_id === 'group-1')).toBe(true));
+      fixture.send(fixture.frame(2));
+      await vi.waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(generateVideo).mock.calls[1][0].referenceImageUrls).toEqual(vi.mocked(generateVideo).mock.calls[0][0].referenceImageUrls);
+    } finally { await fixture.close(); }
+  });
+  it.each(['hash', 'unsupported'])('blocks %s before any paid submission', async failure => {
+    const fixture = await bridge({ provider: failure === 'unsupported' ? 'minimax-direct' : 'fal-max-ref2v' });
+    try {
+      const context = preparedContext();
+      if (failure === 'hash') ((context.prepared_coverage as Json).master as Json).content_sha256 = '0'.repeat(64);
+      fixture.send(fixture.frame(1, { context }));
+      await vi.waitFor(() => expect(fixture.run.state).toBe('failed'));
+      expect(generateVideo).not.toHaveBeenCalled();
+      expect(generateMiniMaxVideo).not.toHaveBeenCalled();
+    } finally { await fixture.close(); }
+  });
+  it('rejects mutated catalog after accepting the original scene', async () => {
+    const fixture = await bridge();
+    try {
+      fixture.send(fixture.frame(1, { context: preparedContext() }));
+      await vi.waitFor(() => expect(generateVideo).toHaveBeenCalledTimes(1));
+      const changed = preparedContext();
+      (changed.prepared_coverage as Json).preparation_id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      fixture.send(fixture.frame(2, { context: changed }));
+      await vi.waitFor(() => expect(fixture.run.state).toBe('failed'));
+      expect(generateVideo).toHaveBeenCalledTimes(1);
+      expect(fixture.run.failures.join(' ')).toContain('changed within a scene');
+    } finally { await fixture.close(); }
   });
 });

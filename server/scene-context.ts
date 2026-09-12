@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { parsePreparedCoverage, preparedCoverageIdentity, type PreparedCoverage } from './prepared-coverage.js';
 import type { ReferenceUploader } from './fal-storage.js';
 import type { ReferenceDownscaler } from './image-downscale.js';
 
@@ -8,9 +10,11 @@ export interface MinimaxSceneImage {
   sourceId: string;
   characterName?: string;
   imageUrl: string;
+  contentSha256?: string;
 }
 
 export interface MinimaxSceneContext {
+  preparedCoverage?: PreparedCoverage;
   setImage: MinimaxSceneImage;
   characterImages: ReadonlyArray<MinimaxSceneImage>;
   characterPositions: Readonly<Record<string, string>>;
@@ -21,6 +25,9 @@ interface CachedSceneImage {
   sourceId: string;
   characterName?: string;
   dataUrl: string;
+  contentSha256: string;
+  originalDataUrl: string;
+  preservedOriginal: boolean;
 }
 
 const MAX_SCENE_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -95,11 +102,23 @@ export function parseMinimaxSceneContext(value: unknown): MinimaxSceneContext {
     || characterIds.some(characterId => !Object.hasOwn(characterPositions, characterId))) {
     throw new Error('scene_context character_positions must exactly cover character_images');
   }
+  const preparedCoverage = raw.prepared_coverage === undefined ? undefined : parsePreparedCoverage(raw.prepared_coverage, characterIds, assetIds);
   return Object.freeze({
+    ...(preparedCoverage ? { preparedCoverage } : {}),
     setImage: Object.freeze(setImage),
     characterImages: Object.freeze(characterImages.map(item => Object.freeze(item))),
     characterPositions: Object.freeze(characterPositions),
   });
+}
+
+
+/** Binds the catalog to the canonical original identities and fixed layout, excluding access URLs. */
+export function preparedSceneIdentity(context: MinimaxSceneContext): string {
+  return JSON.stringify([
+    context.preparedCoverage ? preparedCoverageIdentity(context.preparedCoverage) : null,
+    [context.setImage.assetId, context.setImage.sourceId],
+    context.characterImages.map(image => [image.sourceId, image.assetId, image.characterName, context.characterPositions[image.sourceId]]).sort((a, b) => a[0]!.localeCompare(b[0]!)),
+  ]);
 }
 
 export function sceneContextImageUrls(context: MinimaxSceneContext): string[] {
@@ -137,6 +156,7 @@ export function sceneContextPrompt(context: MinimaxSceneContext, references?: re
  */
 export class MinimaxSceneAssetCache {
   private readonly assets = new Map<string, Promise<CachedSceneImage>>();
+  private readonly preparations = new Map<string, string>();
   private readonly uploader: ReferenceUploader | null;
   private readonly downscale: ReferenceDownscaler | null;
 
@@ -163,13 +183,18 @@ export class MinimaxSceneAssetCache {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength === 0) throw new Error('Certified scene image response is empty');
     if (bytes.byteLength > MAX_SCENE_IMAGE_BYTES) throw new Error('Certified scene image exceeds the renderer size limit');
-    const prepared = this.uploader && this.downscale ? await this.downscale(bytes, contentType, signal) : { bytes, contentType };
+    const contentSha256 = createHash('sha256').update(bytes).digest('hex');
+    if (image.contentSha256 && image.contentSha256 !== contentSha256) throw new Error('Certified scene image content hash mismatch');
+    const prepared = !image.contentSha256 && this.uploader && this.downscale ? await this.downscale(bytes, contentType, signal) : { bytes, contentType };
     const extension = prepared.contentType.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'img';
     const resolvedUrl = this.uploader
       ? await this.uploader(prepared.bytes, prepared.contentType, `${image.assetId}.${extension}`, signal)
       : `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`;
     return {
       sourceId: image.sourceId,
+      contentSha256,
+      originalDataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`,
+      preservedOriginal: prepared.bytes === bytes,
       ...(image.characterName === undefined ? {} : { characterName: image.characterName }),
       dataUrl: resolvedUrl,
     };
@@ -185,18 +210,35 @@ export class MinimaxSceneAssetCache {
       });
     }
     const cached = await pending;
-    if (cached.sourceId !== image.sourceId || cached.characterName !== image.characterName) {
+    if (cached.sourceId !== image.sourceId || cached.characterName !== image.characterName || (image.contentSha256 && cached.contentSha256 !== image.contentSha256)) {
       throw new Error('Certified image asset identity changed');
     }
-    return Object.freeze({ ...image, imageUrl: cached.dataUrl });
+    return Object.freeze({ ...image, imageUrl: image.contentSha256 && !cached.preservedOriginal ? cached.originalDataUrl : cached.dataUrl });
   }
 
   async resolve(context: MinimaxSceneContext, signal?: AbortSignal): Promise<MinimaxSceneContext> {
+    const coverage = context.preparedCoverage;
+    if (coverage) {
+      const identity = preparedSceneIdentity(context);
+      const previous = this.preparations.get(coverage.preparationId);
+      if (previous && previous !== identity) throw new Error('Prepared coverage immutable identity changed');
+      this.preparations.set(coverage.preparationId, identity);
+    }
     const [setImage, ...characterImages] = await Promise.all([
       this.resolveImage(context.setImage, signal),
-      ...context.characterImages.map(image => this.resolveImage(image, signal)),
+      ...context.characterImages.map(image => this.resolveImage({ ...image, ...(coverage ? { contentSha256: coverage.characterContentSha256[image.sourceId] } : {}) }, signal)),
     ]);
+    let preparedCoverage: PreparedCoverage | undefined;
+    if (coverage) {
+      const resolveView = async (view: PreparedCoverage['master']) => {
+        const resolved = await this.resolveImage({ ...view, sourceId: `${coverage.preparationId}:${context.setImage.sourceId}` }, signal);
+        return Object.freeze({ ...view, imageUrl: resolved.imageUrl });
+      };
+      const [master, ...closeups] = await Promise.all([resolveView(coverage.master), ...Object.values(coverage.closeups).map(resolveView)]);
+      preparedCoverage = Object.freeze({ ...coverage, master, closeups: Object.freeze(Object.fromEntries(Object.keys(coverage.closeups).map((id, index) => [id, closeups[index]]))), verified: true });
+    }
     return Object.freeze({
+      ...(preparedCoverage ? { preparedCoverage } : {}),
       setImage,
       characterImages: Object.freeze(characterImages),
       characterPositions: context.characterPositions,

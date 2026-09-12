@@ -346,3 +346,33 @@ renderer. A future Turbo opening-frame composition should use the relevant canon
 be cached separately; it must not overwrite those source assets. Refreshable references or cross-run
 caches would also need upstream asset versions in their cache keys. Automatic opening-frame
 generation and changes to the Kernel wire format are outside this renderer integration.
+
+### Prepared stationary coverage (PIC-1920)
+
+The configured `fal-max-ref2v` adapter advertises typed `prepared_coverage_versions: [1]`
+in `renderer.hello`. Other adapters omit it and reject prepared catalogs before generation.
+Legacy `scene_context` remains supported. A v1 catalog supplies a full-cast master, one
+speaker closeup per cast member, body orientations, immutable preparation/source identities,
+and SHA-256 hashes for the compositions and full original portraits. It does not create a
+second command, acknowledgement or playback lifecycle.
+
+The renderer validates exact cast membership and distinct assets, then verifies downloaded
+composition and original portrait bytes before a provider submission. Prepared images bypass
+downscaling. Signed URL refresh retains cached bytes; a fresh run verifies them again. Catalog,
+identity or position mutation within an accepted scene fails closed. A fixture of the wire
+contract lives in `server/fixtures/prepared-coverage-dss.json`; its URLs and bytes are test data.
+
+Prepared shots use the ensemble master unless DSS explicitly requests a speaker closeup.
+Unsupported reaction closeups fail instead of selecting unrelated coverage. The composition
+is reference Image 1; only the visible cast's full original portraits follow it, in the
+composition's declared order. Portrait references bind character identity, never global
+style or camera placement. Body orientation stays as prepared while authored `look` takes
+precedence over respondent-derived gaze. Unknown or ambiguous respondents preserve the
+composed eyeline; visible listeners watch the speaker unless they have an authored look.
+Offscreen recipients remain outside the shot.
+
+These shots enter the existing bounded scheduler independently and reference the prepared
+composition directly; they never await or append a frame extracted from the first video.
+A repeated master retains its setup identity across speaker changes. This provides stable
+framing, not continuous performance across independent generated clips. Existing measured
+full-clip duration, playout, `Script_Started` and `Group_Finished` handling still applies.

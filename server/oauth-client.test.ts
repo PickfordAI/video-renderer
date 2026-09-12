@@ -152,6 +152,7 @@ describe('scope pairing', () => {
       name: 'prod',
       apiBaseUrl: 'https://api.pickford.ai',
       webBaseUrl: 'https://pickford.ai',
+      rendererPlatformBaseUrl: 'https://pickford.ai',
       chatBaseUrl: 'https://chat.pickford.ai',
       oauthResource: 'https://api.pickford.ai/renderer',
       oauthScope: 'storykernel:renderer',
@@ -159,6 +160,7 @@ describe('scope pairing', () => {
     expect(pickfordEnvironment({ STORY_ENVIRONMENT: 'local' })).toMatchObject({
       apiBaseUrl: 'http://127.0.0.1:8081',
       webBaseUrl: 'http://127.0.0.1:5173',
+      rendererPlatformBaseUrl: 'http://127.0.0.1:5173',
       chatBaseUrl: 'http://127.0.0.1:8080',
       oauthResource: 'http://localhost:8090/renderer',
       oauthScope: 'storykernel:renderer',
@@ -186,6 +188,20 @@ describe('scope pairing', () => {
     expect(pickfordEnvironment({
       CHAT_BACKEND_URL: 'https://chat.preview.example/api',
     })).toMatchObject({ chatBaseUrl: 'https://chat.preview.example/api' });
+  });
+
+  it('separates renderer login from the browser origin and validates its transport', () => {
+    expect(pickfordEnvironment({
+      PICKFORD_WEB_URL: 'http://localhost:3300',
+      RENDERER_PLATFORM_URL: 'http://localhost:8393/',
+    })).toMatchObject({
+      webBaseUrl: 'http://localhost:3300',
+      rendererPlatformBaseUrl: 'http://localhost:8393',
+    });
+    expect(() => pickfordEnvironment({ RENDERER_PLATFORM_URL: 'http://renderer.example' }))
+      .toThrow('RENDERER_PLATFORM_URL must use HTTPS, or HTTP on a loopback host.');
+    expect(() => pickfordEnvironment({ RENDERER_PLATFORM_URL: 'https://key@renderer.example' }))
+      .toThrow('RENDERER_PLATFORM_URL must not contain credentials, a query, or a fragment.');
   });
 
   it('keeps an overridden resource paired with the right scope', () => {
