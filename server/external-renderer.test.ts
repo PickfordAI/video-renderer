@@ -331,20 +331,31 @@ describe('StoryKernel look direction', () => {
 describe('renderer websocket URL resolution', () => {
   const loopback = { baseUrl: 'http://127.0.0.1:8195' };
 
-  it('downgrades a loopback wss front to ws on the advertised host and port', () => {
+  it('preserves the secure protocol, host and port advertised by a local TLS bridge', () => {
     expect(rendererWebSocketUrl(loopback, 'wss://localhost:8294/api/v1/renderer-bridge/ws'))
-      .toBe('ws://localhost:8294/api/v1/renderer-bridge/ws');
-    expect(rendererWebSocketUrl(loopback, 'wss://127.0.0.1:8294/ws')).toBe('ws://127.0.0.1:8294/ws');
+      .toBe('wss://localhost:8294/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl(loopback, 'wss://127.0.0.1:8294/ws')).toBe('wss://127.0.0.1:8294/ws');
     expect(rendererWebSocketUrl({ baseUrl: 'http://host.docker.internal:8195' }, 'wss://host.docker.internal:8294/ws'))
-      .toBe('ws://host.docker.internal:8294/ws');
+      .toBe('wss://host.docker.internal:8294/ws');
+    expect(rendererWebSocketUrl(loopback, 'wss://stack.local:8443/ws')).toBe('wss://stack.local:8443/ws');
   });
 
-  it('still rehosts a .local advertisement onto the base URL host and port', () => {
-    expect(rendererWebSocketUrl(loopback, 'wss://stack.local:443/ws')).toBe('ws://127.0.0.1:8195/ws');
+  it('supports advertised plain ws endpoints for a loopback HTTP service', () => {
+    expect(rendererWebSocketUrl(loopback, 'ws://localhost:8293/api/v1/renderer-bridge/ws'))
+      .toBe('ws://localhost:8293/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl(loopback, 'ws://127.0.0.1:8293/ws')).toBe('ws://127.0.0.1:8293/ws');
+    expect(rendererWebSocketUrl({ baseUrl: 'http://host.docker.internal:8195' }, 'ws://host.docker.internal:8293/ws'))
+      .toBe('ws://host.docker.internal:8293/ws');
+  });
+
+  it('rehosts only a plain .local advertisement onto the loopback HTTP base host and port', () => {
+    expect(rendererWebSocketUrl(loopback, 'ws://stack.local:8093/ws')).toBe('ws://127.0.0.1:8195/ws');
   });
 
   it('leaves a non-loopback wss URL untouched, including from a loopback base URL', () => {
     expect(rendererWebSocketUrl(loopback, 'wss://pickford.ai/api/v1/renderer-bridge/ws'))
+      .toBe('wss://pickford.ai/api/v1/renderer-bridge/ws');
+    expect(rendererWebSocketUrl({ baseUrl: 'https://pickford.ai' }, 'wss://pickford.ai/api/v1/renderer-bridge/ws'))
       .toBe('wss://pickford.ai/api/v1/renderer-bridge/ws');
     expect(rendererWebSocketUrl({ baseUrl: 'https://pickford.ai' }, 'wss://localhost:8294/ws'))
       .toBe('wss://localhost:8294/ws');

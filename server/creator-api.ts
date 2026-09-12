@@ -208,7 +208,7 @@ export class CreatorApi {
     }
     const credential = await this.ensureCredential();
     const run = this.runs.start({
-      baseUrl: this.environment.webBaseUrl,
+      baseUrl: this.environment.rendererPlatformBaseUrl,
       audienceExchangeUrl: `${this.environment.chatBaseUrl}${AUDIENCE_EXCHANGE_PATH}`,
       environment: this.environment.name,
       rendererId: credential.rendererId,

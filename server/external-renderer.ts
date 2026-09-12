@@ -974,15 +974,9 @@ export function rendererWebSocketUrl(config: Pick<ExternalRendererRunConfig, 'ba
   if (url.search) throw new Error('renderer websocket_url must be query-free');
   const service = new URL(config.baseUrl);
   const localService = service.protocol === 'http:' && LOOPBACK_HOSTS.includes(service.hostname);
-  if (localService && url.hostname.endsWith('.local')) {
-    url.protocol = 'ws:';
+  if (localService && url.protocol === 'ws:' && url.hostname.endsWith('.local')) {
     url.hostname = service.hostname;
     url.port = service.port;
-  } else if (localService && url.protocol === 'wss:' && LOOPBACK_HOSTS.includes(url.hostname)) {
-    // A local stack advertises its self-signed TLS front, whose cert no client trusts.
-    // Its plain bridge port is unknown here, so keep the advertised port and let an
-    // explicit handoff services.rendererWebsocketUrl override this best-effort guess.
-    url.protocol = 'ws:';
   }
   if (url.protocol !== 'wss:' && !(localService && url.protocol === 'ws:')) {
     throw new Error('renderer websocket_url must use WSS (or WS for a loopback service)');
