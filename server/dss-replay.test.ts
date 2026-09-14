@@ -83,6 +83,19 @@ describe('replayDss planning', () => {
     expect(result.shots[1].dependency).toMatchObject({ sourceShotId: result.shots[0].shotId });
   });
 
+  // PIC-1971: replay is the offline harness the stills work is verified against, so the mode has
+  // to compile here before any provider exists. Continuity none makes every shot independent.
+  it('compiles single-frame runs as independent stills', async () => {
+    const result = await replayDss(story, { rendererConfig: { model: 'single-frame' }, shotPlanner: references });
+    expect(result.rendererConfig).toMatchObject({ model: 'single-frame', continuity: 'none' });
+    expect(result.shots.map(shot => [shot.sequence, shot.dependency.kind])).toEqual([
+      [1, 'independent'], [2, 'independent'], [3, 'independent'], [4, 'independent'],
+    ]);
+    expect(result.shots[0].imageReferences.map(reference => reference.name)).toContain('Alex');
+    expect(generateVideo).not.toHaveBeenCalled();
+    expect(extractVideoFrame).not.toHaveBeenCalled();
+  });
+
   it('keeps compiling after a payload the compiler rejects, and reports it', async () => {
     const broken = [payload(0, setup), payload(1, [{ command: 'teleport', args: {} }]), payload(2, [talk('Alex', 'Sam')])];
     const result = await replayDss(broken, { rendererConfig: { model: 'fal-max-ref2v', continuity: 'none' }, shotPlanner: references });
@@ -91,7 +104,7 @@ describe('replayDss planning', () => {
   });
 
   it('rejects the configured-provider mode and Turbo without an opening frame', async () => {
-    await expect(replayDss(story, { rendererConfig: { model: 'auto' } })).rejects.toThrow(/explicit fal modes/);
+    await expect(replayDss(story, { rendererConfig: { model: 'auto' } })).rejects.toThrow(/explicit modes/);
     await expect(replayDss(story, { rendererConfig: { model: 'fal-turbo-i2v' } })).rejects.toThrow(/initialImageUrl/);
   });
 });

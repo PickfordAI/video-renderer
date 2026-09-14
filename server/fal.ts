@@ -202,6 +202,11 @@ export async function generateVideo(
 ): Promise<GenerateVideoResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const renderMode = parseRenderMode(input.renderMode);
+  // PIC-1971: this module submits video jobs only. `single-frame` must never fall through to the
+  // text-to-video default, which would silently pay for a video clip the mode never asked for.
+  if (renderMode === 'single-frame') {
+    throw new FalVideoError('single-frame rendering is not wired to a provider yet');
+  }
   const imageUrls = [...(input.referenceImageUrls ?? [])];
   if (renderMode === 'fal-max-ref2v' && input.initialImageUrl && !imageUrls.includes(input.initialImageUrl)) {
     imageUrls.push(input.initialImageUrl);

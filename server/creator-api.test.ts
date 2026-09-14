@@ -79,7 +79,7 @@ describe('CreatorApi playback routing', () => {
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
       baseUrl: 'https://pickford.ai',
       audienceExchangeUrl: 'https://chat.pickford.ai/api/v1/external-audience/exchange',
-      rendererVersion: 'h3.opensource.v1.2',
+      rendererVersion: 'h3.opensource.v1.3',
       supersedeExistingStory: true,
     }));
   });

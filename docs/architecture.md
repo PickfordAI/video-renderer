@@ -301,6 +301,14 @@ frame extraction. Supported combinations are auto/none, Turbo image-to-video/las
 and Max reference-to-video with either none or camera-anchors. Unsupported combinations fail
 before generation. Legacy renderMode/concurrency fields normalize to their previous strategies.
 
+Single Frame is the stills mode: it generates one image per talk payload with FLUX.2 klein 4B and
+holds that frame for the whole line while the kernel's own dialogue audio plays, so a story costs
+roughly a cent per line instead of several dollars per scene. It supports continuity `none` only —
+there is no generated video to extract a frame from, and each line is an independent still. It
+announces itself to Renderer Platform as `still-flux-klein` and advertises no prepared-coverage
+support. Its asset manifest names the klein model family rather than a video endpoint, which is why
+it registers under its own renderer version.
+
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
 adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the

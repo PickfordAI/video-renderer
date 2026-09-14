@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRendererConfig } from './render-mode.js';
+import { defaultContinuity, parseRenderMode, parseRendererConfig, RENDER_MODE_LABELS, RENDER_MODES } from './render-mode.js';
 
 describe('renderer configuration', () => {
   it('keeps model, continuity, concurrency and buffering independently configurable', () => {
@@ -19,5 +19,17 @@ describe('renderer configuration', () => {
     expect(() => parseRendererConfig({ concurrency: 17 })).toThrow('concurrency');
     expect(() => parseRendererConfig({ maxBufferedSeconds: 0 })).toThrow('maxBufferedSeconds');
     expect(() => parseRendererConfig([])).toThrow('must be an object');
+  });
+  // PIC-1971: the stills mode holds one generated frame per line, so it has no frame to chain
+  // from and no camera anchor to establish. Only `none` is a coherent continuity for it.
+  it('registers single-frame as a stills mode that supports no continuity but none', () => {
+    expect(defaultContinuity('single-frame')).toBe('none');
+    expect(parseRendererConfig({ model: 'single-frame' })).toEqual({ model: 'single-frame', continuity: 'none', concurrency: 4, maxBufferedSeconds: 45 });
+    expect(() => parseRendererConfig({ model: 'single-frame', continuity: 'last-frame-chain' })).toThrow('does not yet support');
+    expect(() => parseRendererConfig({ model: 'single-frame', continuity: 'camera-anchors' })).toThrow('does not yet support');
+    expect(parseRenderMode('single-frame')).toBe('single-frame');
+    expect(() => parseRenderMode('single-frames')).toThrow('single-frame');
+    // Every mode carries a creator-facing label; the picker reads them straight out of this map.
+    for (const mode of RENDER_MODES) expect(RENDER_MODE_LABELS[mode]).toBeTruthy();
   });
 });

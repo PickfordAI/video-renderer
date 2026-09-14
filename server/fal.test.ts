@@ -10,6 +10,17 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('generateVideo', () => {
+  // PIC-1971: `single-frame` shares the render-mode vocabulary but not this module. Without an
+  // explicit guard it would fall through to the text-to-video default and bill a video clip.
+  it('refuses the stills mode instead of falling through to a video endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9', renderMode: 'single-frame' },
+      { apiKey: 'secret', fetchImpl },
+    )).rejects.toThrow(FalVideoError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('runs the fal queue protocol and returns its video URL', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

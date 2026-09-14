@@ -14,8 +14,8 @@ export function handoffRendererConfig(value) {
   if (value.rendererConfig !== undefined) object(value.rendererConfig, 'rendererConfig');
   const config = value.rendererConfig ?? {};
   const model = config.model ?? value.renderMode ?? 'auto';
-  const supported = { auto: ['none'], 'fal-turbo-i2v': ['last-frame-chain'], 'fal-max-ref2v': ['none', 'camera-anchors'] };
-  if (!Object.hasOwn(supported, model)) throw new Error('rendererConfig.model must be auto, fal-turbo-i2v, or fal-max-ref2v.');
+  const supported = { auto: ['none'], 'fal-turbo-i2v': ['last-frame-chain'], 'fal-max-ref2v': ['none', 'camera-anchors'], 'single-frame': ['none'] };
+  if (!Object.hasOwn(supported, model)) throw new Error(`rendererConfig.model must be one of ${Object.keys(supported).join(', ')}.`);
   const continuity = config.continuity ?? (model === 'fal-turbo-i2v' ? 'last-frame-chain' : model === 'fal-max-ref2v' ? 'camera-anchors' : 'none');
   if (!supported[model].includes(continuity)) throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
   const concurrency = config.concurrency ?? value.generationConcurrency ?? 4;

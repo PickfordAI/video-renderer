@@ -801,6 +801,15 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
 }
 
 /**
+ * PIC-1971: how the stills mode identifies itself to Renderer Platform. `renderer_kind` is a new
+ * string rather than a MiniMax one because the kernel uses it to reason about what the renderer
+ * produces, and Single Frame deliberately advertises no prepared-coverage support.
+ */
+export const SINGLE_FRAME_RENDERER_KIND = 'still-flux-klein';
+/** Model family for the asset manifest; the edit/text endpoint varies per shot, the model does not. */
+export const SINGLE_FRAME_MODEL_FAMILY = 'fal-ai/flux-2/klein/4b';
+
+/**
  * The immutable asset manifest registered under `rendererVersion`. Renderer Platform keys manifests by
  * (renderer, version) and closes the bridge with 4400 when the same version arrives with a different
  * hash, so only inputs that change what gets generated belong here. Scheduler tuning (`concurrency`,
@@ -817,7 +826,9 @@ export function assetManifestFor(
     provider: providerKind,
     render_mode: config.renderMode,
     renderer_config: { model: config.rendererConfig.model, continuity: config.rendererConfig.continuity },
-    model: config.renderMode === 'fal-turbo-i2v'
+    model: config.renderMode === 'single-frame'
+      ? SINGLE_FRAME_MODEL_FAMILY
+      : config.renderMode === 'fal-turbo-i2v'
       ? 'minimax/h3-max-turbo/image-to-video'
       : config.renderMode === 'fal-max-ref2v'
         ? 'minimax/h3-max/reference-to-video'
@@ -1688,7 +1699,8 @@ class ExternalRendererRun {
         type: 'renderer.hello',
         protocol_version: PROTOCOL_VERSION,
         stream_id: this.config.rendererId,
-        renderer_kind: this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
+        renderer_kind: this.config.renderMode === 'single-frame' ? SINGLE_FRAME_RENDERER_KIND
+          : this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
         instance_id: `video-renderer-${this.runId}`,
         assignment_id: '',
       });
