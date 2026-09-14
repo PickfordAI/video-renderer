@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,10 +6,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { formatReplaySummary, loadDssRecording, replayDss, type ReplayMedia } from './dss-replay.js';
 import { generateVideo } from './fal.js';
+import { generateStillFrame } from './still-frame.js';
 import { extractVideoFrame } from './video-frame.js';
 
 vi.mock('./fal.js', () => ({ generateVideo: vi.fn() }));
 vi.mock('./video-frame.js', () => ({ extractVideoFrame: vi.fn() }));
+vi.mock('./still-frame.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./still-frame.js')>()),
+  generateStillFrame: vi.fn(),
+}));
+
+/** The real store shells out to ffmpeg; replay only needs the clip it would have written. */
+const stillSynthesize = vi.fn();
+vi.mock('./still-clip.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./still-clip.js')>()),
+  StillClipStore: class {
+    open() { return { synthesize: stillSynthesize, close: async () => undefined }; }
+  },
+}));
 
 type Json = Record<string, unknown>;
 type Generated = Awaited<ReturnType<typeof generateVideo>>;
@@ -147,6 +161,52 @@ describe('replayDss rendering', () => {
     ]);
     expect(result.timing).toMatchObject({ videoSeconds: 20, providerSeconds: 8 });
     expect(result.shots[0].generated?.continuityFrame).toBe('[frame]');
+  });
+
+  // PIC-1974: replay is the cheap offline harness the whole Single Frame verification rests on,
+  // so it must run the same generator branch the live bridge does.
+  it('renders single-frame stories from local clips without touching a video endpoint', async () => {
+    outDir = await mkdtemp(join(tmpdir(), 'dss-replay-'));
+    let frames = 0;
+    vi.mocked(generateStillFrame).mockImplementation(async () => {
+      const index = ++frames;
+      return {
+        imageUrl: `https://v3.fal.media/frame-${index}.jpg`, width: 1280, height: 720,
+        requestId: `still-${index}`, modelId: 'fal-ai/flux-2/klein/4b/edit',
+        timings: { submitSeconds: 0.1, queueSeconds: 1.4, totalSeconds: 1.6, polls: 2, maxQueuePosition: 0 },
+      };
+    });
+    stillSynthesize.mockImplementation(async ({ shotId, holdSeconds }: { shotId: string; holdSeconds: number }) => {
+      const filePath = join(outDir, `${shotId.replace(/[^A-Za-z0-9_-]/g, '_')}.source.mp4`);
+      await writeFile(filePath, 'fixture clip bytes');
+      return { url: `http://127.0.0.1:4173/still-clips/t/${shotId}.mp4`, filePath, durationSeconds: holdSeconds };
+    });
+    const calls: string[] = [];
+    const media: ReplayMedia = {
+      download: vi.fn(async () => undefined),
+      normalize: async (input, output, duration, offset) => { calls.push(`normalize ${input.split('/').at(-1)} ${duration}s @${offset}`); void output; },
+      concat: async (inputs, output) => { calls.push(`concat ${inputs.length} -> ${output.split('/').at(-1)}`); },
+    };
+    const result = await replayDss(story, {
+      rendererConfig: { model: 'single-frame' }, shotPlanner: references,
+      render: { apiKey: 'fixture', outDir, media },
+    });
+
+    expect(result.output).toMatchObject({ failures: 0, moviePath: join(outDir, 'story.mp4') });
+    expect(generateVideo).not.toHaveBeenCalled();
+    expect(generateStillFrame).toHaveBeenCalledTimes(4);
+    expect(extractVideoFrame).not.toHaveBeenCalled();
+    // Clips are copied off disk, not fetched: there is no HTTP server in a replay run.
+    expect(media.download).not.toHaveBeenCalled();
+    expect(await readFile(join(outDir, 'clips', '001-seq1.mp4'), 'utf8')).toBe('fixture clip bytes');
+    expect(calls).toEqual([
+      'normalize 001-seq1.mp4 5s @0', 'normalize 002-seq2.mp4 5s @5',
+      'normalize 003-seq3.mp4 5s @10', 'normalize 004-seq4.mp4 5s @15',
+      'concat 4 -> story.mp4',
+    ]);
+    // The prompt the still was generated from is the planner's, unchanged.
+    expect(vi.mocked(generateStillFrame).mock.calls[0][0].prompt).toMatch(/Alex/);
+    expect(vi.mocked(generateStillFrame).mock.calls[0][0].referenceImageUrls).toContain('https://images.example/alex.png');
   });
 
   it('records a failed shot, skips assembly, and still releases the budget for later shots', async () => {

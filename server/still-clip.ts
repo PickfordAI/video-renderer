@@ -99,8 +99,8 @@ function run(command: string, args: string[], signal?: AbortSignal): Promise<voi
 }
 
 export interface StillClipStoreOptions {
-  /** Loopback origin the renderer's operator server listens on, e.g. `http://127.0.0.1:4173`. */
-  origin: string;
+  /** Loopback origin the renderer's operator server listens on; defaults to `http://127.0.0.1:$PORT`. */
+  origin?: string;
   ffmpegPath?: string;
   fetchImpl?: typeof fetch;
   /** Mirrors playout's PICKFORD_KEEP_MEDIA: retain the temp directory for inspection. */
@@ -146,7 +146,7 @@ export class StillClipSession {
     }
     this.clips.set(fileName, outputPath);
     return {
-      url: `${this.options.origin.replace(/\/$/, '')}${STILL_CLIP_ROUTE_PREFIX}${this.token}/${fileName}`,
+      url: `${(this.options.origin ?? defaultOrigin()).replace(/\/$/, '')}${STILL_CLIP_ROUTE_PREFIX}${this.token}/${fileName}`,
       filePath: outputPath,
       durationSeconds: request.holdSeconds,
     };
@@ -170,10 +170,15 @@ async function download(url: string, destination: string, fetchImpl: typeof fetc
   await writeFile(destination, bytes, { mode: 0o600 });
 }
 
+function defaultOrigin(env: NodeJS.ProcessEnv = process.env): string {
+  const parsed = Number.parseInt(env.PORT ?? '', 10);
+  return `http://127.0.0.1:${Number.isInteger(parsed) && parsed > 0 ? parsed : 4173}`;
+}
+
 export class StillClipStore {
   private readonly sessions = new Map<string, StillClipSession>();
 
-  constructor(private readonly options: StillClipStoreOptions) {}
+  constructor(private readonly options: StillClipStoreOptions = {}) {}
 
   /**
    * Open a session. The token — not the run id — is what appears in the URL, so a clip cannot be
@@ -236,4 +241,15 @@ export class StillClipStore {
     await pipeline(createReadStream(filePath), response);
     return true;
   }
+}
+
+let shared: StillClipStore | null = null;
+
+/**
+ * The process-wide store. There is exactly one operator server serving the clip route, so the
+ * sessions it can resolve and the URLs it hands out have to come from the same object.
+ */
+export function sharedStillClipStore(): StillClipStore {
+  shared ??= new StillClipStore({ keepMedia: process.env.PICKFORD_KEEP_MEDIA === '1' });
+  return shared;
 }

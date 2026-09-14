@@ -63,7 +63,10 @@ async function main(): Promise<void> {
     const apiKey = process.env.FAL_KEY;
     if (!apiKey) throw new Error('--render requires FAL_KEY in the environment or .env');
     const plan = await replayDss(recording, options);
-    process.stderr.write(`Submitting ${plan.shots.length} paid video job(s), ${plan.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0)}s of video, to fal.\n`);
+    const stills = plan.rendererConfig.model === 'single-frame';
+    process.stderr.write(stills
+      ? `Submitting ${plan.shots.length} paid still-image job(s) to fal, one per line, for ${plan.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0)}s of held-frame video.\n`
+      : `Submitting ${plan.shots.length} paid video job(s), ${plan.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0)}s of video, to fal.\n`);
     options.render = { apiKey, outDir };
   }
   const result = await replayDss(recording, options);

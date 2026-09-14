@@ -323,6 +323,15 @@ the route checks the peer address itself rather than the operator token, because
 this process's own playout. Playout's clip duration bound is correspondingly 5-180 s rather than the
 video provider's 5-15 s.
 
+The stills branch sits at the provider call site inside `ShotGenerator.schedule`, so validation,
+dependency description and scheduling are shared with the video modes unchanged — continuity `none`
+already short-circuits the anchor and chain logic. The live bridge and the offline `npm run replay`
+harness both take that branch; replay copies each synthesized clip off disk instead of fetching the
+loopback URL, because a replay run has no HTTP server. Group render metrics report `fal-image` as
+the provider, and each shot logs one `[single-frame]` line covering payload receipt, fal submit,
+image return, clip ready, and playback, so per-frame latency and cost are reconstructable from a run
+log alone.
+
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
 adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the
