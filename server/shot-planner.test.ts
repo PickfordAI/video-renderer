@@ -30,7 +30,7 @@ function certifiedScene(): MinimaxSceneContext {
       { assetId: 'maya-asset', sourceId: '11111111-1111-4111-8111-111111111111', characterName: 'Maya', imageUrl: 'data:image/png;base64,bWF5YQ==' },
     ],
     characterPositions: {
-      '11111111-1111-4111-8111-111111111111': 'Maya sits camera-left beside the window.',
+      '11111111-1111-4111-8111-111111111111': 'Maya sits camera-left beside the window, torso facing the door.',
       '22222222-2222-4222-8222-222222222222': 'Theo stands camera-right at the blue bench.',
       '33333333-3333-4333-8333-333333333333': 'Inéz waits silently by the doorway.',
     },
@@ -58,23 +58,65 @@ describe('DSS shot planning', () => {
     expect(returning.continuityKey).toBe(first.continuityKey);
     expect(reverse.continuityKey).toBe(first.continuityKey);
     expect(returning.setupKey).toBe(first.setupKey);
-    expect(returning.prompt).toContain('Maya looks toward Theo');
-    expect(first.prompt).toContain('Maya has the character design in Image 3');
-    expect(first.prompt).toContain('Maya (11111111-1111-4111-8111-111111111111) has their character design in Image 3');
-    expect(first.prompt).toContain('Image 4 depicts the complete environment');
+    expect(returning.prompt).not.toMatch(/Theo|Inéz/);
+    expect(returning.resultingState.characters.Maya.gaze).toBe('Theo');
+    expect(first.prompt).toMatch(/<Subject \d+> is Maya[^\n]*<Picture 3>/);
+    expect(first.prompt).not.toMatch(/Theo|Inéz|11111111-1111-4111-8111-111111111111/);
+    expect(first.prompt).toMatch(/set design and lighting[^\n]*<Picture 4>/);
     expect(first.prompt).not.toContain('old-ue-mark');
     expect(first.prompt).not.toContain('Maya is standing');
     expect(first.startingState.characters.Maya).toMatchObject({ characterId: context.characterImages[2].sourceId, certifiedPosition: context.characterPositions[context.characterImages[2].sourceId] });
-    expect(first.prompt).toContain('Maya sits camera-left beside the window.');
+    expect(first.prompt).not.toContain('beside the window');
     expect(returning.resultingState.characters.Inéz.certifiedPosition).toBe('Inéz waits silently by the doorway.');
     const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full' })], 'wide', 'block').shots[0];
     expect(wide.imageReferences.map(reference => reference.name)).toEqual(['style', 'initial frame', 'Inéz', 'Maya', 'Theo', 'set']);
-    expect(wide.prompt).toContain('Inéz has the character design in Image 3');
+    expect(wide.prompt).toMatch(/<Subject \d+> is Inéz[^\n]*<Picture 3>/);
     // Appending a derived anchor must not rebind the set to "the final image".
     const finalReferences = [...first.imageReferences, { name: 'camera anchor', label: 'Image 5' }];
     const rebound = sceneContextPrompt(context, finalReferences);
     expect(rebound).toContain('Image 4 depicts the complete environment');
     expect(rebound).not.toContain('Image 5');
+  });
+
+  it('keeps authored atmosphere in every view and includes complete set staging only in the wide shot', () => {
+    const planner = new DssShotPlanner({
+      ...configured,
+      sets: { Station: { ...configured.sets!.Station, description: 'A tiled station with blue benches. Maya stands beside Theo at the doorway.' } },
+    });
+    planner.planGroup([
+      command('enable set', { set: 'Station', dressing: 'warm amber lighting', time_of_day: 'night' }),
+      command('add character', { name: 'Maya', point: { mark: 'Station.Door' } }),
+      command('add character', { name: 'Theo', point: { mark: 'Station.Platform' } }),
+    ], 'atmosphere-setup', 'block');
+    const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full' })], 'wide-atmosphere', 'block').shots[0];
+    const closeup = planner.planGroup([talk()], 'tight-atmosphere', 'block').shots[0];
+    for (const shot of [wide, closeup]) {
+      expect(shot.prompt).toContain('warm amber lighting');
+      expect(shot.prompt).toContain('night');
+      expect(shot.resultingState).toMatchObject({ dressing: 'warm amber lighting', timeOfDay: 'night' });
+    }
+    expect(wide.prompt).toContain('A tiled station with blue benches.');
+    expect(wide.prompt).toContain('Maya stands beside Theo at the doorway.');
+    expect(closeup.prompt).not.toMatch(/Theo|blue benches|stands beside/);
+    expect(closeup.imageReferences.filter(reference => reference.role === 'character').map(reference => reference.name)).toEqual(['Maya']);
+  });
+
+  it('uses posture in closeups while retaining full room blocking for wide views and state', () => {
+    const planner = new DssShotPlanner({ ...configured, markNames: { 'Station.Rug': 'foreground rug beside the coffee table and armchair' } });
+    planner.planGroup([
+      command('enable set', { set: 'Station' }),
+      command('add character', { name: 'Maya', point: { mark: 'Station.Rug' }, posture: 'standing relaxed' }),
+    ], 'posture-setup', 'block');
+    const closeup = planner.planGroup([talk()], 'posture-closeup', 'block').shots[0];
+    expect(closeup.prompt).toContain('Initial blocking: Maya is standing relaxed');
+    expect(closeup.prompt).toContain('Ending state: Maya is standing relaxed');
+    expect(closeup.prompt).not.toMatch(/foreground rug|coffee table|armchair/);
+    expect(closeup.startingState.characters.Maya.mark).toBe('Station.Rug');
+    expect(closeup.resultingState.characters.Maya.mark).toBe('Station.Rug');
+    expect(closeup.promptInput.subjects[0].startingBlocking).toContain('foreground rug beside the coffee table and armchair');
+    const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full' })], 'posture-wide', 'block').shots[0];
+    expect(wide.prompt).toContain('Maya is standing relaxed at foreground rug beside the coffee table and armchair');
+    expect(wide.referenceImageUrls).toEqual(closeup.referenceImageUrls);
   });
 
   it('changes scene identity for a new scene or certified assets/layout but ignores access-URL refreshes', () => {
@@ -123,9 +165,11 @@ describe('DSS shot planning', () => {
     expect(shot.speaker).toBe('Maya');
     expect(shot.referenceImageUrls).toEqual([]);
     expect(shot.referenceAudioUrls).toEqual([]);
-    expect(shot.prompt).not.toMatch(/\b(?:Image|Audio) \d+\b|final reference image/);
-    expect(shot.prompt).toContain('Inéz waits silently by the doorway.');
-    expect(shot.prompt).toContain('Maya sits camera-left beside the window.');
+    expect(shot.prompt).not.toMatch(/<(?:Picture|Audio) \d+>|final reference image/);
+    expect(shot.prompt).not.toMatch(/Inéz|Theo/);
+    expect(shot.resultingState.characters.Inéz.certifiedPosition).toBe('Inéz waits silently by the doorway.');
+    expect(shot.prompt).not.toContain('beside the window');
+    expect(shot.resultingState.characters.Maya.certifiedPosition).toBe('Maya sits camera-left beside the window, torso facing the door.');
     expect(() => planner.planGroup([talk('maya')], 'bad-name', 'block')).toThrow('no certified scene image');
     expect(() => planner.planGroup([command('sit', { character: 'Maya' })], 'bad-posture', 'block')).toThrow('fixed certified scene positions');
     const legacy = new DssShotPlanner(configured);
@@ -156,12 +200,14 @@ describe('DSS shot planning', () => {
       command('set emotion', { character: 'Maya', emotion: 'concerned' }),
     ], 'dialogue', 'block').shots[0];
     expect(shot.speaker).toBe('Maya');
-    expect(shot.prompt).toContain('Maya looks toward Theo (eye contact)');
+    expect(shot.prompt).not.toContain('Theo');
+    expect(shot.resultingState.characters.Maya.gaze).toBe('Theo (eye contact)');
     expect(shot.prompt).toContain('Maya appears concerned');
-    expect(shot.prompt).toContain('Maya is standing at door');
+    expect(shot.prompt).toContain('Maya is standing');
     const next = planner.planGroup([talk()], 'next', 'block').shots[0];
-    expect(next.prompt).toContain('Maya looks toward Theo (eye contact)');
-    expect(next.prompt).toContain('night');
+    expect(next.prompt).not.toContain('Theo');
+    expect(next.resultingState.characters.Maya.gaze).toBe('Theo (eye contact)');
+    expect(next.resultingState.timeOfDay).toBe('night');
     expect(next.continuityKey).toBe(shot.continuityKey);
   });
 
@@ -176,18 +222,19 @@ describe('DSS shot planning', () => {
     expect(move.continuityKey).not.toBe(before.continuityKey);
     expect(move.startingState.characters.Maya.mark).toBe('Station.Door');
     expect(move.resultingState.characters.Maya.mark).toBe('Station.Platform');
-    expect(move.prompt).toContain('starting_state: Maya is standing at door');
+    expect(move.prompt).toContain('Initial blocking: Maya is standing');
     expect(move.prompt).toContain('Maya walks to platform');
-    expect(move.prompt).toContain('Perform the scripted actions; otherwise hold');
-    expect(move.prompt).toContain('resulting_state: Maya is standing at platform');
+    expect(move.prompt).toContain('The camera holds this framing throughout the shot');
+    expect(move.prompt).toContain('Ending state: Maya is standing');
     expect(move.hasMovement).toBe(true);
     const seated = planner.planGroup([command('sit', { character: 'Maya' }), talk()], 'sit', 'block').shots[0];
     expect(seated.continuityKey).not.toBe(move.continuityKey);
     const follow = planner.planGroup([talk()], 'follow', 'block').shots[0];
     expect(follow.continuityKey).toBe(seated.continuityKey);
-    expect(follow.prompt).toContain('Maya is sitting at platform');
-    expect(follow.prompt).toContain('Hold the established character positions');
-    expect(follow.prompt).toContain('Hard cut into this camera setup');
+    expect(follow.prompt).toContain('Maya is sitting');
+    expect(follow.prompt).not.toContain('platform');
+    expect(follow.prompt).toContain('Ending state: Maya is sitting');
+    expect(follow.prompt).toContain('Open directly on a close-up of Maya');
   });
 
   it('preserves camera anchors across StoryKernel talking beats while keeping real movement distinct', () => {
@@ -285,7 +332,9 @@ describe('DSS shot planning', () => {
     ], 'new-set', 'block').shots[0];
     expect(shot.startingState.characters.Maya.mark).toBe('Cafe.Counter');
     expect(shot.prompt).not.toContain('standing at door');
-    expect(shot.prompt).toContain('standing at Counter');
+    expect(shot.prompt).toContain('Maya is standing');
+    expect(shot.prompt).not.toContain('Counter');
+    expect(shot.promptInput.subjects[0].startingBlocking).toContain('standing at Counter');
   });
 
   it('uses stable canonical reference slots and the supplied art style without forcing live action', () => {
@@ -297,13 +346,13 @@ describe('DSS shot planning', () => {
     expect(first.speaker).toBe('Maya');
     expect(first.referenceImageUrls).toEqual(second.referenceImageUrls);
     expect(first.imageReferences.map((entry) => entry.label)).toEqual(['Image 1', 'Image 2', 'Image 3', 'Image 4']);
-    expect(first.prompt).toContain('Maya has the character design in Image 2');
-    expect(first.prompt).toContain('Theo has the character design in Image 3');
-    expect(first.prompt).toContain('set design and lighting in Image 4');
-    expect(first.prompt).toContain("Use Audio 1 only as Maya's voice identity and timbre reference");
+    expect(first.prompt).toMatch(/<Subject \d+> is Maya[^\n]*<Picture 2>/);
+    expect(first.prompt).toMatch(/<Subject \d+> is Theo[^\n]*<Picture 3>/);
+    expect(first.prompt).toMatch(/set design and lighting[^\n]*<Picture 4>/);
+    expect(first.prompt).toContain("<Audio 1>");
     expect(first.prompt).not.toMatch(/live.action|photorealistic/i);
-    for (const match of first.prompt.matchAll(/Image (\d+)/g)) expect(first.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
-    for (const match of first.prompt.matchAll(/Audio (\d+)/g)) expect(first.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
+    for (const match of first.prompt.matchAll(/<Picture (\d+)>/g)) expect(first.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
+    for (const match of first.prompt.matchAll(/<Audio (\d+)>/g)) expect(first.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
   });
 
   it('compiles Turbo initial-frame prompts without unsupported reference arrays or phantom reference labels', () => {
@@ -314,14 +363,14 @@ describe('DSS shot planning', () => {
     expect(shot.referenceAudioUrls).toEqual([]);
     expect(shot.imageReferences).toEqual([]);
     expect(shot.audioReferences).toEqual([]);
-    expect(shot.prompt).not.toMatch(/\b(?:Image|Audio) \d+\b/);
+    expect(shot.prompt).not.toMatch(/<(?:Picture|Audio) \d+>/);
     expect(shot.prompt).toContain('A woman wearing a green coat.');
     expect(shot.prompt).toContain('Maya is standing at door');
-    expect(shot.prompt).toContain('supplied initial frame provides the visual context');
-    expect(shot.prompt).toContain('Preserve the visual medium and art style');
+    expect(shot.prompt).toContain('supplied initial frame');
+    expect(shot.prompt).toContain('The visual medium and art style match the supplied initial frame');
     expect(shot.prompt).toContain('<d>[English] Stay here.</d>');
     expect(shot.prompt).not.toContain("voice follows");
-    expect(shot.prompt).toContain('Continue from the supplied initial frame and preserve its camera framing');
+    expect(shot.prompt).toContain('Continue from the supplied initial frame');
     expect(shot.prompt).not.toContain('Hard cut');
   });
 
@@ -332,7 +381,7 @@ describe('DSS shot planning', () => {
     })], 'delivery', 'block').shots[0];
     expect(shot.dialogue).toBe('Stay here. I will return.');
     expect(shot.prompt).toContain('<d>[English] Stay here. I will return.</d>');
-    expect(shot.prompt).toContain('Delivery directions, not spoken text, in order: whispering; firmly.');
+    expect(shot.prompt).toContain('Delivery: whispering; firmly.');
     expect(shot.prompt).toContain('speaking in a concerned tone');
     expect(shot.audioDurationSeconds).toBe(8.75);
     expect(shot.durationSeconds).toBe(9);
@@ -347,32 +396,33 @@ describe('DSS shot planning', () => {
       audio_duration: 20, audio: 'https://assets.example/long.wav',
     })], 'long-delivery', 'block').shots;
     expect(shots.map((shot) => shot.dialogue)).toEqual(['Stay by the station door.', 'I will come right back.']);
-    expect(shots[0].prompt).toContain('in order: whispering.');
+    expect(shots[0].prompt).toContain('Delivery: whispering.');
     expect(shots[0].prompt).not.toContain('firmly');
-    expect(shots[1].prompt).toContain('in order: firmly.');
+    expect(shots[1].prompt).toContain('Delivery: firmly.');
     expect(shots[1].prompt).not.toContain('whispering');
     expect(shots.every((shot) => shot.dialogueAudioUrl === undefined && shot.audioReferences[0].purpose === 'voice')).toBe(true);
   });
 
-  it('keeps a tight shot on the intended speaker with a camera-relative eyeline and silent listeners', () => {
+  it('keeps close-ups focused on visible cast and preserves audible offscreen speech', () => {
     const planner = new DssShotPlanner(configured);
     setup(planner);
     const tight = planner.planGroup([
       talk('lead'), command('look', { character: 'lead', target: { name: 'partner', bias: 'eyes' } }),
     ], 'tight', 'block').shots[0];
     expect(tight.prompt).toContain('close-up of Maya');
-    expect(tight.prompt).toContain('Theo is off-screen; Maya addresses them with an eyeline just off-camera');
-    expect(tight.prompt).toContain('Keep the camera on Maya');
-    expect(tight.prompt).toContain('Only Maya speaks; any other characters listen silently');
+    expect(tight.prompt).not.toContain('Theo');
+    expect(tight.prompt).toContain('<d>[English] We should go.</d>');
     expect(tight.prompt).not.toContain('camera facing Theo');
     const wide = planner.planGroup([command('talk', { character: 'Maya', dialogue: 'Stay here.', camera_shot: 'Character_Full', respondent: 'Theo' })], 'wide', 'block').shots[0];
-    expect(wide.prompt).toContain('Maya directs their eyeline toward Theo');
+    expect(wide.prompt).toContain('Maya looks toward Theo');
     expect(wide.prompt).not.toContain('Theo is off-screen');
     const reaction = planner.planGroup([
       command('character camera', { character: 'Theo', shot: 'Character_CloseUp' }),
       command('talk', { character: 'Maya', dialogue: 'Stay here.', respondent: 'Theo' }),
     ], 'reaction', 'block').shots[0];
-    expect(reaction.prompt).toContain('camera holds on Theo listening silently');
+    expect(reaction.prompt).toContain('close-up of Theo');
+    expect(reaction.prompt).toMatch(/Maya[^\n]*off[ -]screen/i);
+    expect(reaction.prompt).not.toMatch(/<Subject \d+> is Maya/);
     expect(reaction.prompt).not.toContain('Keep the camera on Maya');
   });
 
@@ -385,18 +435,18 @@ describe('DSS shot planning', () => {
     ], 'speaker-closeup', 'block').shots[0];
     expect(tight.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'set']);
     expect(tight.referenceImageUrls).not.toContain('https://assets.example/theo.png');
-    expect(tight.prompt).toContain('Maya has the character design in Image 2');
+    expect(tight.prompt).toMatch(/<Subject \d+> is Maya[^\n]*<Picture 2>/);
     expect(tight.prompt).not.toContain('Theo has the character design in');
-    expect(tight.prompt).toContain('Theo is off-screen');
+    expect(tight.prompt).not.toContain('Theo');
     expect(tight.resultingState.characters.Theo).toEqual(before.characters.Theo);
     const wide = planner.planGroup([command('talk', {
       character: 'Maya', respondent: 'Theo', dialogue: 'Stay here.', camera_shot: 'Character_Full',
     })], 'wide-view', 'block').shots[0];
     expect(wide.imageReferences.map(reference => reference.name)).toEqual(['style', 'Maya', 'Theo', 'set']);
-    expect(wide.prompt).toContain('Theo has the character design in Image 3');
+    expect(wide.prompt).toMatch(/<Subject \d+> is Theo[^\n]*<Picture 3>/);
     const reverse = planner.planGroup([talk('partner')], 'reverse-closeup', 'block').shots[0];
     expect(reverse.imageReferences.map(reference => reference.name)).toEqual(['style', 'Theo', 'set']);
-    expect(reverse.prompt).toContain('Theo has the character design in Image 2');
+    expect(reverse.prompt).toMatch(/<Subject \d+> is Theo[^\n]*<Picture 2>/);
     expect(reverse.referenceAudioUrls).toEqual([]);
     expect(reverse.resultingState.characters.Maya.mark).toBe(before.characters.Maya.mark);
     const reaction = planner.planGroup([
@@ -405,10 +455,12 @@ describe('DSS shot planning', () => {
     ], 'listener-reaction', 'block').shots[0];
     expect(reaction.imageReferences.map(reference => reference.name)).toEqual(['style', 'Theo', 'set']);
     expect(reaction.referenceAudioUrls).toEqual(['https://assets.example/maya.wav']);
-    expect(reaction.prompt).toContain('camera holds on Theo listening silently');
+    expect(reaction.prompt).toContain('close-up of Theo');
+    expect(reaction.prompt).toMatch(/Maya[^\n]*off[ -]screen/i);
+    expect(reaction.prompt).not.toMatch(/<Subject \d+> is Maya/);
     for (const shot of [tight, wide, reverse, reaction]) {
-      for (const match of shot.prompt.matchAll(/Image (\d+)/g)) expect(shot.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
-      for (const match of shot.prompt.matchAll(/Audio (\d+)/g)) expect(shot.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
+      for (const match of shot.prompt.matchAll(/<Picture (\d+)>/g)) expect(shot.referenceImageUrls[Number(match[1]) - 1]).toBeTruthy();
+      for (const match of shot.prompt.matchAll(/<Audio (\d+)>/g)) expect(shot.referenceAudioUrls[Number(match[1]) - 1]).toBeTruthy();
     }
     const establishing = planner.planGroup([
       command('still shot', { 'shot name': 'Establishing wide' }), command('play animation', { character: 'Maya', animation: 'talking' }),
@@ -419,14 +471,14 @@ describe('DSS shot planning', () => {
   it('uses only a neutral style or set anchor for global style, never a character portrait fallback', () => {
     const explicit = new DssShotPlanner(configured);
     setup(explicit);
-    expect(explicit.planGroup([talk()], 'style', 'block').shots[0].prompt).toContain('Use Image 1 for the overall rendering style');
+    expect(explicit.planGroup([talk()], 'style', 'block').shots[0].prompt).toContain('Rendering style follows <Subject 2>');
     const setOnly = new DssShotPlanner({ ...configured, styleImageUrl: undefined });
     setup(setOnly);
-    expect(setOnly.planGroup([talk()], 'set-style', 'block').shots[0].prompt).toContain('Use Image 2 for the overall rendering style');
+    expect(setOnly.planGroup([talk()], 'set-style', 'block').shots[0].prompt).toContain('Rendering style follows <Subject 2>');
     const portraitsOnly = new DssShotPlanner({ characters: configured.characters });
     setup(portraitsOnly);
     const portraitShot = portraitsOnly.planGroup([talk()], 'portraits', 'block').shots[0];
-    expect(portraitShot.prompt).toContain('Maya has the character design in Image 1');
+    expect(portraitShot.prompt).toMatch(/<Subject \d+> is Maya[^\n]*<Picture 1>/);
     expect(portraitShot.prompt).not.toContain('for the overall rendering style');
     expect(portraitShot.prompt).not.toContain('art style of the supplied references');
   });
@@ -438,7 +490,7 @@ describe('DSS shot planning', () => {
       character: 'Maya', respondent: 'Theo', dialogue: 'Stay here.', camera_shot: 'Character_POV',
     })], 'pov', 'block').shots[0];
     expect(pov.prompt).toContain('point-of-view shot');
-    expect(pov.prompt).toContain('Maya directs their eyeline toward Theo');
+    expect(pov.prompt).toContain('Maya looks toward Theo');
     expect(pov.prompt).not.toContain('Theo is off-screen');
     expect(pov.prompt).not.toContain('Keep the camera on Maya');
     expect(pov.prompt).not.toContain('Maya speaks from off-screen');
@@ -473,9 +525,9 @@ describe('DSS shot planning', () => {
     expect(exact.durationSeconds).toBe(9);
     expect(exact.dialogueAudioUrl).toBe('https://assets.example/line.wav');
     expect(exact.audioReferences[0]).toMatchObject({ purpose: 'dialogue', url: 'https://assets.example/line.wav', durationSeconds: 8.75 });
-    expect(exact.prompt).toContain("Audio 1 contains Maya's exact spoken performance for this line; match its words, timing, delivery and voice");
+    expect(exact.prompt).toContain("<Audio 1> supplies Maya's spoken performance, timing, delivery and voice for this line");
     const sample = planner.planGroup([talk()], 'sample', 'block').shots[0];
-    expect(sample.prompt).toContain("rather than copying the sample's words or timing");
+    expect(sample.prompt).toContain("Maya's voice identity and timbre match <Audio 1>");
     expect(sample.prompt).not.toContain('exact spoken performance');
     const crowded = new DssShotPlanner({ characters: Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`Person${i}`, { imageUrl: `https://assets.example/${i}.png` }])) });
     crowded.planGroup(Array.from({ length: 13 }, (_, i) => command('add character', { name: `Person${i}` })), 'cast', 'block');

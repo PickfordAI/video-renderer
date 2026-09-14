@@ -153,7 +153,8 @@ describe('rolling DSS generation and ordered playout', () => {
       await vi.waitFor(() => expect(fixture.pending).toHaveLength(1));
       const first = vi.mocked(generateVideo).mock.calls[0][0];
       expect(first.prompt).toContain('close-up of Alex');
-      expect(first.prompt).toContain('at the left window');
+      expect(first.prompt).toContain('Alex is standing');
+      expect(first.prompt).not.toMatch(/left window|right doorway|Sam/);
       expect(first.referenceImageUrls).toContain('https://images.example/alex.png');
       expect(first.referenceImageUrls).toContain('https://images.example/lobby.png');
       expect(first.referenceImageUrls).not.toContain('https://images.example/sam.png');
@@ -161,6 +162,8 @@ describe('rolling DSS generation and ordered playout', () => {
       fixture.send(fixture.chunk(3, 0, [[camera('Sam')], [dialogue('Sam')]]));
       await vi.waitFor(() => expect(fixture.pending).toHaveLength(2));
       expect(vi.mocked(generateVideo).mock.calls[1][0].prompt).toContain('close-up of Sam');
+      expect(vi.mocked(generateVideo).mock.calls[1][0].prompt).toContain('Sam is standing');
+      expect(vi.mocked(generateVideo).mock.calls[1][0].prompt).not.toMatch(/left window|right doorway|Alex/);
       expect(vi.mocked(generateVideo).mock.calls[1][0].referenceImageUrls).toContain('https://images.example/sam.png');
       fixture.pending[1].resolve(result('angle-b'));
       await vi.waitFor(() => expect(extractVideoFrame).toHaveBeenCalledTimes(1));

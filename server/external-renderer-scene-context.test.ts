@@ -56,7 +56,7 @@ function clone<T>(value: T): T {
 
 function expectNamedImage(prompt: string, characterName: string, imageNumber: number): void {
   const escapedName = characterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const imageLabel = `Image\\s+${imageNumber}\\b`;
+  const imageLabel = `<Picture\\s+${imageNumber}>`;
   expect(prompt).toMatch(new RegExp(
     `(?:${escapedName}[\\s\\S]{0,240}${imageLabel}|${imageLabel}[\\s\\S]{0,240}${escapedName})`,
   ));
@@ -223,12 +223,12 @@ describe('certified MiniMax DSS scene context', () => {
 
       const setIndex = input.referenceImageUrls!.indexOf('data:image/png;base64,ZG93bmxvYWRlZDpob3RlbC5wbmc=') + 1;
       expect(setIndex).toBeGreaterThan(0);
-      expect(input.prompt).toMatch(new RegExp(`(?:environment|setting|set)[^.]*(?:Image ${setIndex})|(?:Image ${setIndex})[^.]*(?:environment|setting|set)`, 'i'));
+      expect(input.prompt).toMatch(new RegExp(`(?:environment|setting|set)[^.]*(?:<Picture ${setIndex}>)|(?:<Picture ${setIndex}>)[^.]*(?:environment|setting|set)`, 'i'));
       for (const characterAsset of ['maya', 'theo', 'inez']) {
         const encoded = btoa(`downloaded:${characterAsset}.png`);
         const imageIndex = input.referenceImageUrls!.indexOf(`data:image/png;base64,${encoded}`) + 1;
         expect(imageIndex).toBeGreaterThan(0);
-        expect(input.prompt).toContain(`Image ${imageIndex}`);
+        expect(input.prompt).toContain(`<Picture ${imageIndex}>`);
       }
     } finally {
       await fixture.close();

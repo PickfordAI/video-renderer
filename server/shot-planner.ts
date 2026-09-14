@@ -1,6 +1,7 @@
 import { preparedCoverageIdentity, type PreparedView } from './prepared-coverage.js';
 import { preparedAttention } from './prepared-attention.js';
-import { sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
+import type { MinimaxSceneContext } from './scene-context.js';
+import { formatShotPrompt, selectShotPromptReferences, type ShotPromptInput } from './shot-prompt.js';
 
 /** PIC-1410: Deterministic DSS compilation; generation and playback belong to the caller. */
 export interface VoiceReference {
@@ -56,6 +57,9 @@ export interface ShotPlannerState {
 }
 
 export interface PlannedImageReference { name: string; url: string; label: string; assetId?: string }
+export interface ShotImageReference extends PlannedImageReference {
+  role: 'character' | 'style' | 'initial-frame' | 'set' | 'camera-anchor' | 'composition';
+}
 export interface PlannedAudioReference extends PlannedImageReference {
   durationSeconds: number;
   purpose: 'dialogue' | 'voice';
@@ -66,6 +70,8 @@ export interface PlannedShot {
   groupId: string;
   storyBlockId: string;
   prompt: string;
+  /** Immutable formatter input retained for binding references at submission time. */
+  promptInput: ShotPromptInput;
   durationSeconds: number;
   dialogue?: string;
   speaker?: string;
@@ -76,7 +82,7 @@ export interface PlannedShot {
   dialogueAudioUrl?: string;
   referenceImageUrls: readonly string[];
   referenceAudioUrls: readonly string[];
-  imageReferences: readonly PlannedImageReference[];
+  imageReferences: readonly ShotImageReference[];
   audioReferences: readonly PlannedAudioReference[];
   setupKey: string;
   continuityKey: string;
@@ -506,11 +512,11 @@ export class DssShotPlanner {
       const shotActions = index === 0 ? actions : [];
       const names = [...new Set([...Object.keys(next.characters), ...participants])].sort((a, b) => normalize(a) < normalize(b) ? -1 : normalize(a) > normalize(b) ? 1 : 0);
       const cameraSubject = camera.character ?? line?.speaker;
-      // Keep off-screen cast in scene state and eyeline prose, but their portraits
-      // can pull a close-up toward the wrong face. Wider/unmodeled views retain
+      // Keep the complete cast in scene state while selecting visible portraits
+      // and prompt subjects for this camera. Wider/unmodeled views retain
       // staged cast; reaction close-ups use the explicitly framed listener.
       const visibleNames = preparedView ? preparedView.visibleCharacterIds.map(id => this.sceneContext!.characterImages.find(image => image.sourceId === id)!.characterName!) : isCloseUp(camera.shot) && cameraSubject && names.includes(cameraSubject) ? [cameraSubject] : names;
-      const refs = this.references(visibleNames, next, line, split, preparedView);
+      const candidateRefs = this.references(visibleNames, next, line, split, preparedView);
       const sourceDuration = segment?.duration;
       const durationSeconds = Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
       if (durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
@@ -525,9 +531,11 @@ export class DssShotPlanner {
       });
       const anchorKey = preparedView ? setupKey : JSON.stringify([sceneKey, next.backdropImageUrl ?? null, camera.shot, cameraSubject ?? null, line?.speaker ?? null, line?.respondent ?? null, blocking]);
       const id = `${storyBlockId}:${groupId}:${index}`;
+      const promptInput = this.promptInput(names, visibleNames, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView);
+      const refs = selectShotPromptReferences(promptInput, candidateRefs.images, candidateRefs.audios);
       shots.push(freeze({
         id, groupId, storyBlockId,
-        prompt: this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView),
+        prompt: formatShotPrompt(promptInput, refs.images, refs.audios), promptInput,
         durationSeconds, ...(line ? { speaker: line.speaker, dialogue: segment!.dialogue, audioDurationSeconds: sourceDuration, sourceAudioDurationSeconds: line.duration } : {}),
         ...(!split && line?.audio ? { dialogueAudioUrl: httpsUrl(line.audio, 'dialogue audio') } : {}),
         referenceImageUrls: refs.images.map((entry) => entry.url), referenceAudioUrls: refs.audios.map((entry) => entry.url),
@@ -548,22 +556,22 @@ export class DssShotPlanner {
 
   private markName(mark: string): string { return this.settings.markNames?.[mark] ?? humanize(mark.split('.').at(-1) ?? mark); }
 
-  private references(names: string[], state: MutableState, line?: Line, split = false, preparedView?: PreparedView): { images: PlannedImageReference[]; audios: PlannedAudioReference[] } {
-    const images: PlannedImageReference[] = [];
+  private references(names: string[], state: MutableState, line?: Line, split = false, preparedView?: PreparedView): { images: ShotImageReference[]; audios: PlannedAudioReference[] } {
+    const images: ShotImageReference[] = [];
     const audios: PlannedAudioReference[] = [];
     if (this.settings.referenceMode === 'initial-frame') return { images, audios };
-    const image = (name: string, url?: string, assetId?: string): void => {
+    const image = (role: ShotImageReference['role'], name: string, url?: string, assetId?: string): void => {
       if (url) images.push({
-        name,
+        name, role,
         url: assetId ? resolvedSceneImage(url, `${name} image`) : httpsUrl(url, `${name} image`),
         label: `Image ${images.length + 1}`,
         ...(assetId ? { assetId } : {}),
       });
     };
-    if (preparedView) image('composition', preparedView.imageUrl, preparedView.assetId);
+    if (preparedView) image('composition', 'composition', preparedView.imageUrl, preparedView.assetId);
     else {
-      image('style', this.settings.styleImageUrl);
-      image('initial frame', this.settings.initialImageUrl);
+      image('style', 'style', this.settings.styleImageUrl);
+      image('initial-frame', 'initial frame', this.settings.initialImageUrl);
     }
     if (this.sceneContext) {
       const certifiedNames = new Set(this.sceneContext.characterImages.map(character => character.characterName!));
@@ -571,12 +579,12 @@ export class DssShotPlanner {
       if (missingName) throw new Error(`DSS character has no certified scene image: ${missingName}`);
       for (const name of names) {
         const character = this.sceneContext.characterImages.find(item => item.characterName === name)!;
-        image(name, character.imageUrl, character.assetId);
+        image('character', name, character.imageUrl, character.assetId);
       }
-      if (!preparedView) image('set', this.sceneContext.setImage.imageUrl, this.sceneContext.setImage.assetId);
+      if (!preparedView) image('set', 'set', this.sceneContext.setImage.imageUrl, this.sceneContext.setImage.assetId);
     } else {
-      for (const name of names) image(name, this.characterReferences.get(normalize(name))?.imageUrl);
-      image('set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
+      for (const name of names) image('character', name, this.characterReferences.get(normalize(name))?.imageUrl);
+      image('set', 'set', state.backdropImageUrl ?? (state.set ? this.setReferences.get(normalize(state.set))?.imageUrl : undefined));
     }
     // Each shot contains one speaker. Other cast members need appearance grounding,
     // but their voice samples consume budget and can confuse speaker attribution.
@@ -595,73 +603,37 @@ export class DssShotPlanner {
     return { images, audios };
   }
 
-  private prompt(names: string[], refs: { images: PlannedImageReference[]; audios: PlannedAudioReference[] }, start: ShotPlannerState, end: ShotPlannerState, actions: readonly string[], camera: MutableState['camera'], line: Line | undefined, segment: DialogueSegment | undefined, duration: number, preparedView?: PreparedView): string {
-    if (preparedView) {
-      const coverage = this.sceneContext!.preparedCoverage!;
-      return [
-        'composition: Image 1 is the prepared composition reference. Match its camera, framing, character placement, environment, lighting and rendering style. Hard cut into this fixed setup. Do not reframe, add people, or copy portrait backgrounds.',
-        `subject_definitions: ${names.map(name => {
-          const ref = refs.images.find(item => item.name === name)!;
-          return `${name} uses ${ref.label} only as their full original character identity reference; it does not control global style, camera, background or another character. Body orientation: ${coverage.bodyOrientations[end.characters[name].characterId!]}.`;
-        }).join(' ')}`,
-        `attention: ${preparedAttention(end, names, line?.speaker, line?.respondent)}`,
-        `shot: ${camera.shot}. Hold the prepared composition throughout. ${actions.join(' ')} ${names.map(name => end.characters[name]?.emotion ? `${name} appears ${end.characters[name].emotion}.` : '').join(' ')} ${segment?.deliveryDirections.length ? `Delivery directions, not spoken words: ${segment.deliveryDirections.join('; ')}.` : ''}${line ? ` ${line.speaker}${line.tone ? `, in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; other visible characters listen silently.` : ''}`,
-        ...refs.audios.map(ref => `${ref.label} is only ${ref.name}'s ${ref.purpose === 'dialogue' ? 'exact dialogue performance; match its words, timing and delivery' : "voice identity; speak the scripted words, not the sample"}.`),
-        `overall_soundscape: Natural room tone and dialogue. Let the performance occupy the ${duration}-second shot without extra dialogue or captions. Each shot preserves stable framing; do not invent continuity of performance from previous clips.`,
-      ].join('\n');
-    }
-    const imageFor = (name: string) => refs.images.find((entry) => entry.name === name)?.label;
-    const subjects = names.map((name) => {
-      const reference = this.characterReferences.get(normalize(name));
-      const image = imageFor(name);
-      const audio = refs.audios.find((entry) => entry.name === name);
-      const audioInstruction = !audio ? undefined : audio.purpose === 'dialogue'
-        ? `${audio.label} contains ${name}'s exact spoken performance for this line; match its words, timing, delivery and voice.`
-        : `Use ${audio.label} only as ${name}'s voice identity and timbre reference; speak the scripted dialogue rather than copying the sample's words or timing.`;
-      return [`${name}${image ? ` has the character design in ${image}` : ''}.`, reference?.description, end.characters[name]?.appearance, audioInstruction].filter(Boolean).join(' ');
-    });
-    const staging = (state: ShotPlannerState): string => names.map((name) => {
+  private promptInput(names: string[], visibleNames: string[], start: ShotPlannerState, end: ShotPlannerState, actions: readonly string[], camera: MutableState['camera'], line: Line | undefined, segment: DialogueSegment | undefined, durationSeconds: number, preparedView?: PreparedView): ShotPromptInput {
+    const staging = (name: string, state: ShotPlannerState): string | undefined => {
       const character = state.characters[name];
-      if (!character) return '';
+      if (!character) return undefined;
       if (character.certifiedPosition) return character.certifiedPosition;
       const place = character.mark ? this.markName(character.mark) : character.zone;
       return `${name} is ${character.posture}${place ? ` at ${place}` : ''}`;
-    }).filter(Boolean).join('; ');
-    const expressions = names.map((name) => {
-      const character = end.characters[name];
-      return [character?.gaze ? `${name} looks toward ${character.gaze}.` : '', character?.emotion ? `${name} appears ${character.emotion}.` : ''].filter(Boolean).join(' ');
-    }).filter(Boolean);
-    const tightShot = isCloseUp(camera.shot);
+    };
     const gazeTarget = line ? end.characters[line.speaker]?.gaze?.replace(/ \(eye contact\)$/, '') : undefined;
     const listener = line ? gazeTarget ? (names.includes(gazeTarget) ? gazeTarget : undefined) : line.respondent : undefined;
-    const speakerInFrame = !camera.character || camera.character === line?.speaker;
-    const eyeline = line && listener && listener !== line.speaker
-      ? tightShot && speakerInFrame
-        ? `${listener} is off-screen; ${line.speaker} addresses them with an eyeline just off-camera. Keep the camera on ${line.speaker}.`
-        : tightShot
-          ? `${line.speaker} speaks from off-screen while the camera holds on ${camera.character} listening silently.`
-        : `${line.speaker} directs their eyeline toward ${listener}; keep the stated camera composition.`
-      : '';
-    const delivery = segment?.deliveryDirections.length ? `Delivery directions, not spoken text, in order: ${segment.deliveryDirections.join('; ')}.` : '';
     const setRef = end.set ? this.setReferences.get(normalize(end.set)) : undefined;
-    const scene = [end.set, end.dressing, end.timeOfDay, setRef?.description].filter(Boolean).join(', ');
-    const initialFrameOnly = this.settings.referenceMode === 'initial-frame';
-    // A neutral style/set image may govern the world; a portrait governs only its
-    // named character. Promoting a portrait to global style can blend identities.
-    const styleImage = imageFor('style') ?? imageFor('set');
-    const style = this.settings.styleDescription ?? (initialFrameOnly ? 'Preserve the visual medium and art style of the supplied initial frame.' : 'Coherent cinematic staging and expressive performances.');
-    const initialImage = imageFor('initial frame');
-    const cut = initialFrameOnly ? 'Continue from the supplied initial frame and preserve its camera framing.' : 'Hard cut into this camera setup; do not morph or dissolve between shots.';
-    const blocking = actions.length ? 'Perform the scripted actions; otherwise hold the established character positions and camera framing.' : 'Hold the established character positions and camera framing throughout the shot.';
-    return [
-      `subject_definitions: ${subjects.join(' ')}`,
-      `summary: ${scene ? `Setting: ${scene}. ` : ''}${style}${styleImage ? ` Use ${styleImage} for the overall rendering style.` : ''}`,
-      ...(this.sceneContext ? [`certified_scene_context: ${sceneContextPrompt(this.sceneContext, refs.images)}`] : []),
-      `set: ${scene || 'Preserve the established setting'}${imageFor('set') ? `; match the set design and lighting in ${imageFor('set')}` : ''}.`,
-      `starting_state: ${staging(start) || 'Use the established staging.'}${initialFrameOnly ? ' The supplied initial frame provides the visual context; preserve its character designs, set and lighting.' : initialImage ? ` ${initialImage} is the supplied initial visual context.` : ''}`,
-      `shot: ${CAMERA_NAMES[camera.shot] ?? humanize(camera.shot)}${camera.character ? ` of ${camera.character}` : ''}. ${cut} ${blocking} ${actions.join(' ')} ${expressions.join(' ')} ${eyeline} ${delivery}${line ? ` ${line.speaker}${line.tone ? `, speaking in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; any other characters listen silently.` : ''}`,
-      `resulting_state: ${staging(end) || 'Preserve staging.'}`,
-      `overall_soundscape: ${line ? 'Natural dialogue acoustics and quiet room tone.' : 'Quiet environmental ambience.'} Let the performance occupy the ${duration}-second shot without adding dialogue or captions.`,
-    ].join('\n');
+    return {
+      subjects: names.map(name => ({
+        name, visible: visibleNames.includes(name),
+        description: this.characterReferences.get(normalize(name))?.description,
+        appearance: end.characters[name]?.appearance,
+        startingBlocking: staging(name, start), resultingBlocking: staging(name, end),
+        startingPosture: start.characters[name]?.posture, resultingPosture: end.characters[name]?.posture,
+        gaze: end.characters[name]?.gaze, emotion: end.characters[name]?.emotion,
+        ...(preparedView ? { bodyOrientation: this.sceneContext!.preparedCoverage!.bodyOrientations[end.characters[name].characterId!] } : {}),
+      })),
+      sceneName: end.set ?? undefined,
+      sceneAtmosphere: [end.dressing, end.timeOfDay].filter((value): value is string => Boolean(value)),
+      scene: [end.set, end.dressing, end.timeOfDay, setRef?.description].filter(Boolean).join(', '),
+      sceneContext: this.sceneContext ?? undefined,
+      ...(preparedView ? { preparedAttention: preparedAttention(end, visibleNames, line?.speaker, line?.respondent) } : {}),
+      styleDescription: this.settings.styleDescription,
+      initialFrameOnly: this.settings.referenceMode === 'initial-frame',
+      framing: CAMERA_NAMES[camera.shot] ?? humanize(camera.shot),
+      cameraCharacter: camera.character, tightShot: isCloseUp(camera.shot), durationSeconds, actions: [...actions],
+      ...(line ? { speech: { speaker: line.speaker, dialogue: segment!.dialogue, deliveryDirections: segment!.deliveryDirections, tone: line.tone, listener } } : {}),
+    };
   }
 }

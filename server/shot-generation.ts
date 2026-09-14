@@ -8,6 +8,7 @@ const DEFAULT_INDEPENDENT_STARTUP_SHOTS = (() => {
 })();
 import type { ContinuityStrategy, RenderMode } from './render-mode.js';
 import type { PlannedShot } from './shot-planner.js';
+import { formatShotPrompt, selectShotPromptReferences } from './shot-prompt.js';
 import type { ScheduledShot, ShotScheduler } from './shot-scheduler.js';
 import { extractVideoFrame } from './video-frame.js';
 
@@ -72,10 +73,11 @@ export class ShotGenerator {
   validate(shot: PlannedShot): void {
     if (shot.preparedCoverage && this.options.renderMode !== 'fal-max-ref2v') throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
     if (this.options.renderMode !== 'fal-max-ref2v') return;
-    if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
+    const references = selectShotPromptReferences(shot.promptInput, shot.imageReferences, shot.audioReferences);
+    if (references.images.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
     const anchors = !shot.preparedCoverage && this.options.continuity === 'camera-anchors';
     const referenceLimit = anchors ? 11 : 12;
-    if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
+    if (references.images.length + references.audios.length > referenceLimit) {
       throw new Error(anchors
         ? 'fal-max-ref2v allows at most 11 configured image/audio references, reserving one slot for the camera anchor'
         : 'fal-max-ref2v allows at most 12 image/audio references');
@@ -121,18 +123,19 @@ export class ShotGenerator {
       guard();
       const continuityFrame = previous?.continuityFrame;
       if (source && !continuityFrame) throw new Error('Required shot continuity frame is unavailable');
-      const images = [...shot.referenceImageUrls];
-      let prompt = shot.prompt;
+      const imageReferences = [...shot.imageReferences];
       if (continuity === 'camera-anchors' && continuityFrame) {
-        images.push(continuityFrame);
-        prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
+        imageReferences.push({ name: 'camera anchor', role: 'camera-anchor', url: continuityFrame, label: `Image ${imageReferences.length + 1}` });
       }
+      const references = selectShotPromptReferences(shot.promptInput, imageReferences, shot.audioReferences);
+      const images = references.images.map(reference => reference.url);
+      const prompt = formatShotPrompt(shot.promptInput, references.images, references.audios);
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',
         renderMode: mode,
         initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.options.initialImageUrl : undefined,
         referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
-        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
+        referenceAudioUrls: mode === 'fal-max-ref2v' ? references.audios.map(reference => reference.url) : undefined,
       }, {
         apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,

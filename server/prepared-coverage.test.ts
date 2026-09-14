@@ -29,9 +29,19 @@ describe('prepared coverage v1', () => {
     const closeup = p.planGroup(frame.groups[1].commands, 'closeup', 'block').shots[0];
     expect(master.imageReferences.map(r => r.name)).toEqual(['composition', 'Maya', 'Theo']);
     expect(closeup.imageReferences.map(r => r.name)).toEqual(['composition', 'Theo']);
-    expect(closeup.prompt).toContain('Maya remains outside the shot');
-    expect(closeup.prompt).toContain('Image 2 only as their full original character identity');
-    expect(closeup.prompt).not.toContain('Image 2 for the overall rendering style');
+    expect(closeup.prompt).not.toContain('Maya');
+    expect(closeup.resultingState.characters.Maya).toBeDefined();
+    expect(closeup.prompt).toMatch(/<Subject \d+> is Theo[^\n]*<Picture 2>/);
+    expect(closeup.prompt).not.toContain('<Picture 2> for the overall rendering style');
+    expect(master.imageReferences.map(r => r.role)).toEqual(['composition', 'character', 'character']);
+    for (const shot of [master, closeup]) {
+      expect(shot.prompt.match(/^([a-z_]+):$/gm)).toEqual([
+        'subject_definitions:', 'summary:', 'retention_analysis:', 'detailed_description:', 'overall_soundscape:', 'non_diegetic_music:',
+      ]);
+      expect(shot.prompt).toContain('<Picture 1>');
+      expect(shot.prompt).not.toContain('Fixed scene position:');
+    }
+    expect(master.prompt).toContain(raw().prepared_coverage.body_orientations[maya]);
     expect(closeup.referenceImageUrls[1]).toBe('data:image/png;base64,' + Buffer.from('downloaded:theo.png').toString('base64'));
   });
   it('reuses master setup independent of speaker/respondent and returns to master after closeup', async () => {
@@ -42,14 +52,16 @@ describe('prepared coverage v1', () => {
     expect(c.setupKey).toBe(a.setupKey);
     expect(c.anchorKey).toBe(a.anchorKey);
     expect(c.imageReferences.map(r => r.name)).toEqual(['composition', 'Maya', 'Theo']);
-    expect(c.prompt).toContain('no recipient is inferred');
-    expect(c.prompt).not.toContain('unknown has');
+    expect(c.prompt).toContain('eyeline');
+    expect(c.prompt).not.toContain('unknown');
   });
-  it('preserves authored gaze independently of body orientation', async () => {
+  it('keeps authored targets in state and uses the prepared eyeline for targets outside the visible cast', async () => {
     const p = await planner();
     const shot = p.planGroup([talk('Maya', 'Theo'), { command: 'look', args: { character: 'Maya', target: { name: 'window' } } }, { command: 'look', args: { character: 'Theo', target: { name: 'door' } } }], 'a', 'block').shots[0];
-    expect(shot.prompt).toContain('Maya follows the authored look toward window');
-    expect(shot.prompt).toContain('Theo follows the authored look toward door');
+    expect(shot.resultingState.characters.Maya.gaze).toBe('window');
+    expect(shot.prompt).toContain("Maya's eyeline follows the direction shown in <Picture 1>");
+    expect(shot.resultingState.characters.Theo.gaze).toBe('door');
+    expect(shot.prompt).toContain("Theo's eyeline follows the direction shown in <Picture 1>");
     expect(shot.prompt).toContain('Seated torso facing the doorway');
     expect(shot.prompt).not.toContain('Maya speaks to Theo');
   });
@@ -117,6 +129,8 @@ describe('prepared coverage v1', () => {
     const generator = new ShotGenerator({ renderMode: 'fal-max-ref2v', continuity: 'camera-anchors', resolution: '480P', apiKey: 'unused', scheduler: {} as ShotScheduler<never>, signal: new AbortController().signal, independentStartupShots: 0 });
     expect(generator.plan(shot)).toEqual({ kind: 'independent' });
     expect(generator.plan(shot)).toEqual({ kind: 'independent' });
-    expect(() => generator.validate({ ...shot, referenceImageUrls: Array(12).fill('https://fal.media/image.png') })).not.toThrow();
+    const imageReferences = Array.from({ length: 12 }, (_, index) => ({ name: 'composition', role: 'composition' as const, url: `https://fal.media/image-${index}.png`, label: `Image ${index + 1}` }));
+    expect(() => generator.validate({ ...shot, imageReferences })).not.toThrow();
+    expect(() => generator.validate({ ...shot, imageReferences: [...imageReferences, imageReferences[0]] })).toThrow('at most 12');
   });
 });
