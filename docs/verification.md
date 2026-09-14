@@ -1,3 +1,48 @@
+# Verification — Single Frame render mode, 2026-09-14
+
+Acceptance evidence for PIC-1927 phase 1 (PIC-1976), covering the stack PIC-1971 → PIC-1976.
+
+- `npm run check` passed at the top of the stack: **531 tests across 54 files**, TypeScript, and
+  the server/viewer production builds, on Node 22. `docker compose config --quiet` and
+  `git diff --check` passed. Baseline on `main` at `fc42266` was 489 tests across 51 files.
+- **Offline replay against recorded MINIMAX DSS, with real paid klein calls.** 46 payloads from a
+  finished local MINIMAX story (46 talk lines, 53 command groups) compiled and rendered to a
+  468.0 s `story.mp4`, 1280x720 H.264 with 48 kHz stereo AAC, in 85.8 s of wall time. **46 shots,
+  zero failures, 46 distinct generated images — one per line.** The only model id invoked across
+  the whole run was `fal-ai/flux-2/klein/4b`; no fal video model was called.
+- Latency per frame, klein submit through result: **p50 1.1 s, p95 2.3 s** (min 0.9 s, max 2.9 s,
+  mean 1.3 s); submit alone p50 0.12 s. For comparison, PIC-1865 measured the fal video path
+  (`minimax/h3-max`) at p50 19 s / p90 36 s per clip. Cost was **~$0.21 for the whole story**
+  (46 frames, klein text-to-image at roughly $0.005 per megapixel for a 0.92 MP frame), against a
+  pre-authorized $2 per-run cap. The video path is several dollars per scene.
+- Held frames were verified by probe, not by assertion: four shots exceed 15 s, which no video mode
+  can schedule at all, and frames sampled at +8 s and +15 s inside a 17 s line are byte-identical
+  while adjacent lines differ. The kernel's own dialogue audio is present and audible
+  (mean -24.7 dB, max -4.5 dB over the first minute), which is the first time `talk.audio` has had
+  a consumer in this renderer.
+- The creator picker was verified in the real `viewer/creator.js` against fixture bundles: the
+  Renderer select renders beside Play, defaults to Single Frame, and disables with it.
+
+**Defect found and filed, not fixed here:** every generated still carries garbled subtitle-style
+dialogue text burned into the image, which PIC-1927 explicitly ruled out. The planner writes the
+spoken line verbatim into the prompt — correct for a video model that must lip-sync it, wrong for
+an image model, which draws it. Filed as PIC-1984.
+
+Not established: the live bridge run. Both halves of it need an interactive Pickford sign-in on the
+creator page, which is the account holder's action. The replay above exercises the same planner,
+provider, mux and assembly path, but not the WebSocket bridge, `command_progress`/`Group_Finished`
+acknowledgement against a real kernel, or Stop — those have unit coverage only.
+
+Also not established: reference-grounded frames. The recorded story's certified set and character
+images sit behind 5-minute signed URLs in `stoked-genius-449903-r6-local-studio-imagery`, long
+expired, and the account running this has no `storage.objects.get` on that bucket. The run therefore
+exercised the sanctioned text-only klein fallback (`fal-ai/flux-2/klein/4b`) rather than the
+`/edit` endpoint with certified references. Character appearance consequently drifts between lines,
+which is expected for that fallback and says nothing about the grounded path. The dialogue audio in
+the same export is public and was fetched normally.
+
+---
+
 # Verification — incremental MiniMax DSS compilation, 2026-09-06
 
 The streaming integration combines scene-context PR #4 (`6a880bce`) with the runtime contracts
