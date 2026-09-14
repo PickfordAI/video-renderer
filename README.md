@@ -181,6 +181,16 @@ Story Kernel, stories, generated media, provider output, or Pickford trademarks.
 
 ## Generation choices
 
+Two renderers play the same StoryBundle, and the creator picks one beside Play:
+
+- **Single Frame** (default) generates one still per line with FLUX.2 [klein] 4B and holds it while
+  the kernel's own dialogue audio plays. About a cent a line, so a whole story is a few dollars —
+  cheap enough to watch a story you just wrote and decide whether it holds together.
+- **MiniMax video** generates real video per shot. Several dollars a scene, tens of dollars for a
+  story, and the right choice once the writing is settled.
+
+Both bill the creator's own fal key. The choice is remembered in the browser between runs.
+
 The agent configures generation in the private onboarding handoff. Model choice, continuity,
 concurrency, and generation lookahead remain separate:
 

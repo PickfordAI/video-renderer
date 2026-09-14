@@ -6,6 +6,7 @@ import { AUDIENCE_EXCHANGE_PATH, type ExternalRendererRunManager, type ExternalR
 import { clearFalKey, falKeyStatus, saveFalKey } from './fal-key.js';
 import { CALLBACK_PATH, PickfordAuth } from './pickford-auth.js';
 import { pickfordEnvironment, type PickfordEnvironment } from './pickford-environment.js';
+import { parseRenderMode } from './render-mode.js';
 import {
   credentialFenced,
   mintRendererCredential,
@@ -32,6 +33,26 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 // (renderer, version), so a new render mode under the shipped version collides and closes the
 // bridge with 4400. The value only has to be stable and four dot-separated components long.
 const RENDERER_VERSION = 'h3.opensource.v1.3';
+
+/**
+ * PIC-1975: the two renderers a creator can choose between, and the default.
+ *
+ * `auto` and `fal-turbo-i2v` parse as render modes but are not offered here: `auto` is the legacy
+ * serial provider path that cannot build enough lookahead to avoid playback gaps, and Turbo
+ * image-to-video requires an opening frame this route never supplies.
+ */
+export const CREATOR_RENDER_MODES = ['single-frame', 'fal-max-ref2v'] as const;
+export type CreatorRenderMode = typeof CREATOR_RENDER_MODES[number];
+export const DEFAULT_CREATOR_RENDER_MODE: CreatorRenderMode = 'single-frame';
+
+export function parseCreatorRenderMode(value: unknown): CreatorRenderMode {
+  if (value === undefined || value === null || value === '') return DEFAULT_CREATOR_RENDER_MODE;
+  const mode = parseRenderMode(value);
+  if (!CREATOR_RENDER_MODES.some(candidate => candidate === mode)) {
+    throw new Error(`renderMode must be one of ${CREATOR_RENDER_MODES.join(', ')}`);
+  }
+  return mode as CreatorRenderMode;
+}
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -200,7 +221,7 @@ export class CreatorApi {
     return { bundles: listing.bundles, adapter: listing.adapter, notice: this.bundleNotice };
   }
 
-  private async play(evdId: string): Promise<ExternalRendererRunStatus> {
+  private async play(evdId: string, renderMode: CreatorRenderMode = DEFAULT_CREATOR_RENDER_MODE): Promise<ExternalRendererRunStatus> {
     if (!UUID.test(evdId)) throw new Error('That StoryBundle id is not valid.');
     if (!falKeyStatus(this.env).present && !this.env.MINIMAX_API_KEY) {
       throw new Error('Add your fal key on this page before starting a StoryBundle.');
@@ -224,10 +245,10 @@ export class CreatorApi {
       // Pressing Play means "start this as a new story." The authenticated backend may cancel only
       // this renderer's prior exact assignment before admitting the fresh idempotency identity.
       supersedeExistingStory: true,
-      // The creator picker currently lists MiniMax StoryBundles. Select the reference-to-video
-      // pipeline explicitly so playback uses its bounded concurrent scheduler and camera anchors;
-      // `auto` is the legacy serial provider path and cannot build enough lookahead to avoid gaps.
-      rendererConfig: { model: 'fal-max-ref2v' },
+      // PIC-1975: the creator picks this per Play, defaulting to Single Frame because a test run
+      // through MiniMax video costs several dollars per scene. `auto` is the legacy serial provider
+      // path and cannot build enough lookahead to avoid gaps, so it is not offered.
+      rendererConfig: { model: renderMode },
       resolution: this.env.STORY_RESOLUTION || '480P',
       clipDurationSeconds: Number.parseInt(this.env.STORY_CLIP_SECONDS ?? '6', 10),
     });
@@ -339,7 +360,7 @@ export class CreatorApi {
     if (pathname === '/api/creator/play' && request.method === 'POST') {
       const body = await readJson(request);
       const evdId = typeof body.evdId === 'string' ? body.evdId : '';
-      const run = await this.play(evdId);
+      const run = await this.play(evdId, parseCreatorRenderMode(body.renderMode));
       sendJson(response, 202, {
         runId: run.runId,
         state: run.state,

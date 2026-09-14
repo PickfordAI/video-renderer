@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   bundleAction,
   bundleTitle,
+  DEFAULT_RENDER_MODE,
+  rememberedRenderMode,
+  rememberRenderMode,
+  RENDERER_CHOICES,
+  RENDER_MODE_STORAGE_KEY,
   canStopPlayback,
   environmentLabel,
   falKeyLabel,
@@ -135,5 +140,45 @@ describe('headline and identities', () => {
     expect(runIdentityLines({ storyRunId: 'run-1', storyId: 42, audienceJoinUrl: 'https://pickford.ai/join/x' }))
       .toEqual(['Story run run-1', 'Story 42', 'Audience link https://pickford.ai/join/x']);
     expect(runIdentityLines({ storyRunId: null, storyId: null, audienceJoinUrl: null })).toEqual([]);
+  });
+});
+
+// PIC-1975: the renderer choice is the creator's third owned input, and it exists for cost.
+describe('renderer choice', () => {
+  const fakeStorage = () => {
+    const values = new Map();
+    return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  };
+
+  it('offers Single Frame first and defaults to it', () => {
+    expect(RENDERER_CHOICES.map(choice => choice.value)).toEqual(['single-frame', 'fal-max-ref2v']);
+    expect(DEFAULT_RENDER_MODE).toBe('single-frame');
+    expect(RENDERER_CHOICES[0].label).toMatch(/one still per line/);
+    expect(RENDERER_CHOICES[1].label).toMatch(/several dollars per scene/);
+    expect(rememberedRenderMode(fakeStorage())).toBe('single-frame');
+  });
+
+  it('remembers the last choice and ignores a stored value it no longer offers', () => {
+    const storage = fakeStorage();
+    expect(rememberRenderMode(storage, 'fal-max-ref2v')).toBe('fal-max-ref2v');
+    expect(storage.getItem(RENDER_MODE_STORAGE_KEY)).toBe('fal-max-ref2v');
+    expect(rememberedRenderMode(storage)).toBe('fal-max-ref2v');
+
+    storage.setItem(RENDER_MODE_STORAGE_KEY, 'fal-turbo-i2v');
+    expect(rememberedRenderMode(storage)).toBe('single-frame');
+    expect(rememberRenderMode(storage, 'nonsense')).toBe('single-frame');
+  });
+
+  // Private browsing and blocked site data make these throw; a remembered preference is a
+  // convenience and must never block Play.
+  it('falls back to the default when storage is unavailable or throws', () => {
+    const hostile = {
+      getItem: () => { throw new Error('site data blocked'); },
+      setItem: () => { throw new Error('site data blocked'); },
+    };
+    expect(rememberedRenderMode(hostile)).toBe('single-frame');
+    expect(rememberedRenderMode(null)).toBe('single-frame');
+    expect(() => rememberRenderMode(hostile, 'fal-max-ref2v')).not.toThrow();
+    expect(rememberRenderMode(hostile, 'fal-max-ref2v')).toBe('fal-max-ref2v');
   });
 });

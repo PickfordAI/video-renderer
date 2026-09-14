@@ -99,6 +99,17 @@ login and billing authorization are user actions; service URLs, private connecti
 names, secret transfer, DNS (for VMs), and link construction are agent work. Do not introduce a
 second hosting account for the viewer. The kernel remains an earlier onboarding dependency.
 
+## Renderer choice
+
+The creator picks a renderer beside Play; the choice is theirs because it is a cost decision.
+**Single Frame** is the default: one generated still per line held over the kernel's dialogue audio,
+roughly a cent a line, which makes watching a freshly authored story affordable. **MiniMax video**
+generates real video per shot at several dollars a scene and is the right choice once the writing is
+settled. Both bill the creator's own fal key, and the last choice is remembered in the browser. Do
+not choose for them or hide the cost difference; state both numbers when you offer the choice.
+
+![The renderer picker beside Play on the creator page](images/creator-renderer-picker.png)
+
 ## Advanced: handoff contract (legacy)
 
 The rest of this document describes the older agent-managed path, where onboarding hands the
