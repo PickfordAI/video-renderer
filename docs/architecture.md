@@ -275,6 +275,36 @@ to obtain more lookahead. If the kernel has not delivered later DSS, the rendere
 it. Offline overlap and ordering tests do not prove sustained live throughput or voice/lip-sync
 quality.
 
+The explicit modes share a deterministic six-section formatter (`subject_definitions`, `summary`,
+`retention_analysis`, `detailed_description`, `overall_soundscape`, `non_diegetic_music`). It runs
+at planning and again after generation assembles any camera anchor. One reference selector filters
+portraits to visible subjects and audio to the actual speaker before numbering and submission.
+Full cast and staging remain in internal scene state; visual Subject entries are numbered from the
+visible cast only. An audible off-screen speaker keeps their name, dialogue and voice reference,
+with an explicit off-screen speech label, but receives no visual Subject entry or portrait.
+
+Prompts describe positive visible actions, framing, appearance and attention. Authored prose clauses
+that contain negative instructions or hidden character names are omitted from visual descriptions;
+spoken dialogue remains verbatim. Scene-wide staging descriptions are separate from the setting name,
+so a close-up does not inherit whole-cast layout prose. Close-up blocking describes posture, while
+wide shots retain visible room positions. The formatter uses visible positions directly
+instead of injecting the complete certified-scene description. Hidden gaze targets become an explicit
+authored direction when supplied, a prepared image's eyeline, or "just beside the camera". Room-relative
+marks do not establish a reliable screen-left/right direction. Environmental floor/ceiling targets
+become downward/upward looks; unresolved environmental directions are omitted rather than redirected
+toward the camera. Positive body-orientation clauses remain distinct from gaze.
+
+Retention follows the [MiniMax reference guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md):
+one scoped record per defined Subject, composition Picture or Audio label, with a fixed relationship
+marker. Portrait, set and style images supply their Subject's defined role. Visual roles use
+`fully_preserved`; audible voice/performance conditioning uses `reference`. These request relationships
+rather than claim verified output fidelity. Existing quiet room tone/environmental ambience defaults
+remain; absent non-diegetic music is `N/A`. This adds no model call and leaves fal's `prompt_expansion_mode: balanced` unchanged.
+Prepared shots use the same formatter: the prepared composition governs framing, placement,
+environment and style, while original portraits supply visible identities. Per-subject attention and
+body orientation remain in the visible description; blanket scene-wide attention prose is not injected.
+Prepared shots remain independent of generated-video anchors.
+
 The explicit-mode prompt compiler separates bracketed TTS directions from spoken dialogue, binds
 speech to its subject, and makes listener eye-lines relative to the camera in tight shots. It
 distinguishes exact dialogue audio from a generic voice sample. Dedicated style and set images can

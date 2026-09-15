@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { formatReplaySummary, loadDssRecording, replayDss, type ReplayMedia } from './dss-replay.js';
 import { generateVideo } from './fal.js';
+import { DssShotPlanner } from './shot-planner.js';
+import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
+import { ShotScheduler } from './shot-scheduler.js';
 import { extractVideoFrame } from './video-frame.js';
 
 vi.mock('./fal.js', () => ({ generateVideo: vi.fn() }));
@@ -72,8 +75,10 @@ describe('replayDss planning', () => {
     const result = await replayDss(story, { rendererConfig: { model: 'fal-max-ref2v', continuity: 'camera-anchors' }, shotPlanner: references, from: 3, to: 4 });
     expect(result.payloads).toMatchObject({ replayedForStaging: 4, selected: 2 });
     expect(result.shots.map(shot => [shot.sequence, shot.dependency.kind])).toEqual([[3, 'anchor-establish'], [4, 'anchor-establish']]);
-    // Staging from the replayed setup payload still reaches the compiled prompt.
-    expect(result.shots[0].prompt).toMatch(/Sam/);
+    // Staging from the replayed setup reaches the visible subject without mentioning the hidden recipient.
+    expect(result.shots[0].prompt).toContain('Alex is standing');
+    expect(result.shots[0].prompt).not.toContain('at desk');
+    expect(result.shots[0].prompt).not.toContain('Sam');
   });
 
   it('chains Turbo shots within a scene and restarts on a scene change', async () => {
@@ -93,6 +98,46 @@ describe('replayDss planning', () => {
   it('rejects the configured-provider mode and Turbo without an opening frame', async () => {
     await expect(replayDss(story, { rendererConfig: { model: 'auto' } })).rejects.toThrow(/explicit fal modes/);
     await expect(replayDss(story, { rendererConfig: { model: 'fal-turbo-i2v' } })).rejects.toThrow(/initialImageUrl/);
+  });
+});
+
+describe('shot submission reference selection', () => {
+  it.each([false, true])('rebinds the final payload after excluding hidden portraits and unrelated audio (reaction=%s)', async reaction => {
+    const planner = new DssShotPlanner({
+      ...references,
+      characters: { ...references.characters, Alex: { ...references.characters.Alex, voice: { url: 'https://images.example/alex.wav', durationSeconds: 3 } } },
+    });
+    planner.planGroup(setup, 'setup', storyBlockId);
+    const visibleName = reaction ? 'Sam' : 'Alex';
+    const hiddenName = reaction ? 'Alex' : 'Sam';
+    const shot = planner.planGroup([
+      { command: 'character camera', args: { character: visibleName, shot: 'Character_CloseUp' } },
+      { command: 'talk', args: { character: 'Alex', respondent: 'Sam', dialogue: 'We should stay here.', audio_duration: 5 } },
+    ], 'line', storyBlockId).shots[0];
+    const hiddenPortrait = { name: hiddenName, role: 'character' as const, url: `https://images.example/${hiddenName.toLowerCase()}.png`, label: 'Image 99' };
+    const unrelatedVoice = { name: 'Sam', purpose: 'voice' as const, url: 'https://images.example/sam.wav', durationSeconds: 3, label: 'Audio 99' };
+    const supplied = {
+      ...shot,
+      imageReferences: [hiddenPortrait, ...shot.imageReferences],
+      referenceImageUrls: [hiddenPortrait.url, ...shot.referenceImageUrls],
+      audioReferences: [unrelatedVoice, ...shot.audioReferences],
+      referenceAudioUrls: [unrelatedVoice.url, ...shot.referenceAudioUrls],
+    };
+    vi.mocked(generateVideo).mockResolvedValue({ videoUrl: 'https://fal.media/selected.mp4', requestId: 'selected' } as Generated);
+    const signal = new AbortController().signal;
+    const generator = new ShotGenerator({ renderMode: 'fal-max-ref2v', continuity: 'none', resolution: '768P', apiKey: 'fixture', scheduler: new ShotScheduler<GeneratedShot>(1, 15, signal), signal });
+    await generator.schedule(supplied).job.result;
+    const submitted = vi.mocked(generateVideo).mock.calls[0][0];
+    expect(submitted.referenceImageUrls).toEqual([`https://images.example/${visibleName.toLowerCase()}.png`, 'https://images.example/lobby.png']);
+    expect(submitted.referenceAudioUrls).toEqual(['https://images.example/alex.wav']);
+    expect(submitted.prompt).toMatch(new RegExp(`<Subject \\d+> is ${visibleName}[^\\n]*<Picture 1>`));
+    expect(submitted.prompt).toContain('<Picture 2>');
+    expect(submitted.prompt).toContain('<Audio 1>');
+    expect(submitted.prompt).not.toMatch(/<(?:Picture|Audio) (?:3|99)>/);
+    expect(submitted.prompt).not.toMatch(new RegExp(`<Subject \\d+> is ${hiddenName}`));
+    expect(submitted.prompt).toContain('<d>[English] We should stay here.</d>');
+    if (reaction) expect(submitted.prompt).toMatch(/Alex[^\n]*off[ -]screen/i);
+    else expect(submitted.prompt).not.toContain('Sam');
   });
 });
 
@@ -117,14 +162,27 @@ describe('replayDss rendering', () => {
     };
     const result = await replayDss(story, {
       rendererConfig: { model: 'fal-max-ref2v', continuity: 'camera-anchors', concurrency: 2, maxBufferedSeconds: 10 },
-      shotPlanner: references, render: { apiKey: 'fixture', outDir, media },
+      shotPlanner: {
+        ...references, styleImageUrl: 'https://images.example/style.png', initialImageUrl: 'https://images.example/context.png',
+        characters: { ...references.characters, Alex: { ...references.characters.Alex, voice: { url: 'https://images.example/alex.wav', durationSeconds: 3 } } },
+      }, render: { apiKey: 'fixture', outDir, media },
     });
     expect(result.output).toMatchObject({ failures: 0, moviePath: join(outDir, 'story.mp4') });
     expect(result.shots.every(shot => shot.generated)).toBe(true);
     // The reused anchor received its source's extracted frame as the extra reference.
     const reuse = vi.mocked(generateVideo).mock.calls[2][0];
     expect(reuse.referenceImageUrls?.at(-1)).toMatch(/^data:image\/jpeg;base64,/);
-    expect(reuse.prompt).toMatch(/established frame for this camera setup/);
+    expect(reuse.referenceImageUrls?.slice(0, -1)).toEqual([
+      'https://images.example/style.png', 'https://images.example/context.png', 'https://images.example/alex.png', 'https://images.example/lobby.png',
+    ]);
+    expect(reuse.referenceAudioUrls).toEqual(['https://images.example/alex.wav']);
+    expect(reuse.prompt).toMatch(/<Subject \d+> is Alex[^\n]*<Picture 3>/);
+    expect(reuse.prompt).toMatch(/set design and lighting[^\n]*<Picture 4>/);
+    const retention = reuse.prompt.split('retention_analysis:')[1].split('detailed_description:')[0];
+    expect(retention).toContain('<Picture 5> ([Shot 1] established camera composition anchor): fully_preserved -');
+    expect(reuse.prompt).toContain("<Audio 1>");
+    expect(reuse.prompt.split('non_diegetic_music:\n')[1]).toBe('N/A');
+    expect(submitted[0]).not.toContain('<Picture 5>');
     expect(calls).toEqual([
       'download https://fal.media/clip-1.mp4 -> 001-seq1.mp4', 'normalize 001-seq1.mp4 5s @0',
       'download https://fal.media/clip-2.mp4 -> 002-seq2.mp4', 'normalize 002-seq2.mp4 5s @5',
