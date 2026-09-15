@@ -28,7 +28,10 @@ import { listStoryBundles, type StoryBundle, type StoryBundleAdapter } from './s
 
 const MAX_BODY_BYTES = 8_192;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const RENDERER_VERSION = 'h3.opensource.v1.2';
+// PIC-1971: bumped for the single-frame asset manifest. Renderer Platform keys manifests by
+// (renderer, version), so a new render mode under the shipped version collides and closes the
+// bridge with 4400. The value only has to be stable and four dot-separated components long.
+const RENDERER_VERSION = 'h3.opensource.v1.3';
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {

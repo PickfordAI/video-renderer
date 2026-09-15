@@ -141,7 +141,7 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
   const clipDurationSeconds = options.clipDurationSeconds ?? 5;
   const initialImageUrl = options.initialImageUrl ?? options.shotPlanner?.initialImageUrl;
   if (rendererConfig.model === 'fal-turbo-i2v' && !initialImageUrl) throw new Error('fal-turbo-i2v requires an initialImageUrl');
-  if (rendererConfig.model === 'auto') throw new Error('Replay compiles explicit fal modes; choose fal-max-ref2v or fal-turbo-i2v');
+  if (rendererConfig.model === 'auto') throw new Error('Replay compiles explicit modes; choose single-frame, fal-max-ref2v, or fal-turbo-i2v');
   const controller = new AbortController();
   options.signal?.addEventListener('abort', () => controller.abort(options.signal?.reason), { once: true });
   const planner = new DssShotPlanner({

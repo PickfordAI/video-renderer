@@ -1,5 +1,5 @@
 /** Provider choices and continuity capabilities for private renderer configuration. */
-export const RENDER_MODES = ['auto', 'fal-turbo-i2v', 'fal-max-ref2v'] as const;
+export const RENDER_MODES = ['auto', 'fal-turbo-i2v', 'fal-max-ref2v', 'single-frame'] as const;
 export type RenderMode = typeof RENDER_MODES[number];
 
 /**
@@ -28,6 +28,8 @@ export const SUPPORTED_CONTINUITY: Readonly<Record<RenderMode, readonly Continui
   auto: ['none'],
   'fal-turbo-i2v': ['last-frame-chain'],
   'fal-max-ref2v': ['none', 'camera-anchors'],
+  // PIC-1971: stills hold one generated frame per line, so there is no frame to chain or anchor.
+  'single-frame': ['none'],
 };
 
 export function defaultContinuity(model: RenderMode): ContinuityStrategy {
@@ -65,12 +67,13 @@ export const RENDER_MODE_LABELS: Record<RenderMode, string> = {
   auto: 'Configured provider',
   'fal-turbo-i2v': 'H3 Max Turbo · image to video',
   'fal-max-ref2v': 'H3 Max · reference to video',
+  'single-frame': 'Single Frame (stills, cheap)',
 };
 
 export function parseRenderMode(value: unknown): RenderMode {
   if (value === undefined) return 'auto';
   if (typeof value === 'string' && RENDER_MODES.some(mode => mode === value)) return value as RenderMode;
-  throw new Error('renderMode must be auto, fal-turbo-i2v, or fal-max-ref2v');
+  throw new Error(`renderMode must be one of ${RENDER_MODES.join(', ')}`);
 }
 
 export function parseInitialImageUrl(value: unknown, allowInlineFrame = false): string | undefined {
