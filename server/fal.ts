@@ -248,7 +248,7 @@ export async function generateVideo(
         duration: input.duration,
         resolution: input.resolution,
         ...(generationMode !== 'image' ? { aspect_ratio: input.aspectRatio } : {}),
-        prompt_expansion_mode: 'balanced',
+        prompt_expansion_mode: 'disabled',
         enable_safety_checker: true,
         ...(generationMode === 'image'
           ? { image_url: input.initialImageUrl }

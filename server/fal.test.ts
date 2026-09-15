@@ -33,7 +33,7 @@ describe('generateVideo', () => {
       duration: 5,
       resolution: '768P',
       aspect_ratio: '16:9',
-      prompt_expansion_mode: 'balanced',
+      prompt_expansion_mode: 'disabled',
     });
   });
 
@@ -218,6 +218,7 @@ describe('generateVideo', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max-turbo/image-to-video');
     const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
     expect(payload.image_url).toBe('data:image/jpeg;base64,/9j/AAAA');
+    expect(payload.prompt_expansion_mode).toBe('disabled');
     expect(payload.reference_image_urls).toBeUndefined();
     expect(payload.reference_audio_urls).toBeUndefined();
     expect(result.generationMode).toBe('image');
@@ -235,6 +236,7 @@ describe('generateVideo', () => {
     }, { apiKey: 'secret', modelId: 'ignored', referenceModelId: 'ignored', fetchImpl });
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max/reference-to-video');
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      prompt_expansion_mode: 'disabled',
       reference_image_urls: ['https://images.example/character.jpg', 'https://images.example/scene.jpg'],
       reference_audio_urls: ['data:audio/mp3;base64,AAAA'],
     });

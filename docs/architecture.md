@@ -299,7 +299,7 @@ one scoped record per defined Subject, composition Picture or Audio label, with 
 marker. Portrait, set and style images supply their Subject's defined role. Visual roles use
 `fully_preserved`; audible voice/performance conditioning uses `reference`. These request relationships
 rather than claim verified output fidelity. Existing quiet room tone/environmental ambience defaults
-remain; absent non-diegetic music is `N/A`. This adds no model call and leaves fal's `prompt_expansion_mode: balanced` unchanged.
+remain; absent non-diegetic music is `N/A`. This adds no model call. The fal adapter sends `prompt_expansion_mode: disabled` for all generation modes.
 Prepared shots use the same formatter: the prepared composition governs framing, placement,
 environment and style, while original portraits supply visible identities. Per-subject attention and
 body orientation remain in the visible description; blanket scene-wide attention prose is not injected.
