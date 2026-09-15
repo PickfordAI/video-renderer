@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { parseDssFrame, type DssFrame } from './external-renderer.js';
 import { normalizeClipArgs } from './playout.js';
 import { parseRendererConfig, type RendererConfig } from './render-mode.js';
+import { falReferenceUploader } from './fal-storage.js';
 import { MinimaxSceneAssetCache } from './scene-context.js';
+import { StillClipStore, type StillClipSession } from './still-clip.js';
 import { ShotGenerator, type GeneratedShot, type ShotDependency } from './shot-generation.js';
 import { DssShotPlanner, type PlannedGroup, type PlannedShot, type ShotPlannerSettings } from './shot-planner.js';
 import { ShotScheduler } from './shot-scheduler.js';
@@ -148,11 +150,22 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
     ...options.shotPlanner, initialImageUrl,
     referenceMode: rendererConfig.model === 'fal-turbo-i2v' ? 'initial-frame' : 'reference',
     defaultDurationSeconds: clipDurationSeconds,
+    singleFrame: rendererConfig.model === 'single-frame',
   });
   const scheduler = new ShotScheduler<GeneratedShot>(rendererConfig.concurrency, rendererConfig.maxBufferedSeconds, controller.signal);
+  // PIC-1974: replay is the offline harness for the stills mode, so it runs the same generator
+  // branch. Clips are read from disk rather than over loopback: there is no HTTP server here.
+  const stillClips: StillClipSession | null = rendererConfig.model === 'single-frame' && options.render
+    ? new StillClipStore({ rootDir: options.render.outDir }).open()
+    : null;
   const generator = new ShotGenerator({
     renderMode: rendererConfig.model, continuity: rendererConfig.continuity, resolution, initialImageUrl,
     apiKey: options.render?.apiKey ?? 'plan-only', scheduler, signal: controller.signal,
+    ...(stillClips && options.render ? {
+      stillClipSession: stillClips,
+      stillReferenceUploader: falReferenceUploader(options.render.apiKey),
+      stillUploadCache: new Map<string, Promise<string>>(),
+    } : {}),
   });
   const sceneAssets = new MinimaxSceneAssetCache();
   const result: ReplayResult = {
@@ -223,7 +236,8 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
       job.release();
       providerSeconds += generated.timings?.totalSeconds ?? 0;
       const clipPath = join(clipsDir, `${String(index + 1).padStart(3, '0')}-seq${shot.sequence}.mp4`);
-      await media.download(generated.videoUrl, clipPath, controller.signal);
+      if (generated.localFilePath) await copyFile(generated.localFilePath, clipPath);
+      else await media.download(generated.videoUrl, clipPath, controller.signal);
       const tsPath = clipPath.replace(/\.mp4$/, '.ts');
       await media.normalize(clipPath, tsPath, shot.durationSeconds, offset, controller.signal);
       offset += shot.durationSeconds;
@@ -236,6 +250,7 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
     }
   }
   await scheduler.drain();
+  await stillClips?.close();
   let moviePath: string | null = null;
   if (failures === 0 && normalized.length > 0) {
     moviePath = join(outDir, 'story.mp4');

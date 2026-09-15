@@ -12,6 +12,7 @@ import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type Render
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
 import { KLEIN_MODEL_FAMILY } from './still-frame.js';
+import { sharedStillClipStore, type StillClipSession } from './still-clip.js';
 import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
@@ -91,8 +92,13 @@ export interface RendererClipRecord {
   sequence: number;
   position: number;
   durationSeconds: number;
+  /** PIC-1974: when the payload carrying this shot was compiled, i.e. the start of its timeline. */
+  receivedAt: string | null;
   /** When the provider call actually began, which is after any scheduler or dependency wait. */
   submittedAt: string | null;
+  /** Single Frame only: when the generated image returned, before the local mux into a clip. */
+  stillImageReadyAt: string | null;
+  stillModelId: string | null;
   readyAt: string | null;
   generationMs: number | null;
   playedAt: string | null;
@@ -140,7 +146,7 @@ export interface PlaybackGapSummary {
  * line yields several clips, which are summed).
  */
 export interface GroupRenderMetrics {
-  provider: 'fal' | 'minimax-direct';
+  provider: 'fal' | 'minimax-direct' | 'fal-image';
   clips: number;
   submitted_at: string | null;
   ready_at: string | null;
@@ -1061,6 +1067,7 @@ class ExternalRendererRun {
     downscale: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? ffmpegReferenceDownscaler() : null,
   });
   private assignmentKey: string | null = null;
+  private stillClips: StillClipSession | null = null;
   private readonly pendingAudienceMessages = new Map<
     string,
     { resolve: (value: AudienceChatMessageResult) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
@@ -1073,13 +1080,22 @@ class ExternalRendererRun {
     private readonly fakeFailureAfterClips: number | null,
     private readonly consumeFakeFailure: () => void,
   ) {
-    this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds });
+    this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds, singleFrame: config.renderMode === 'single-frame' });
     this.scheduler = new ShotScheduler(config.generationConcurrency, config.maxBufferedSeconds, this.abortController.signal);
+    // Single Frame muxes its own clips locally and serves them back over loopback; the session
+    // owns that temp directory for the life of the run.
+    this.stillClips = config.renderMode === 'single-frame' ? sharedStillClipStore().open() : null;
     this.generator = new ShotGenerator({
       renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
       initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
       signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
       frameUploader: provider.kind === 'fal' && sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
+      ...(this.stillClips ? {
+        stillClipSession: this.stillClips,
+        stillReferenceUploader: sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
+        // One memo for the whole run: every line references the same cast portraits.
+        stillUploadCache: new Map<string, Promise<string>>(),
+      } : {}),
     });
     this.status = {
       runId: this.runId,
@@ -1149,10 +1165,13 @@ class ExternalRendererRun {
         this.scheduler.drain(),
       ]).then(() => undefined);
     }
+    const closingStillClips = this.stillClips;
+    this.stillClips = null;
+    const stillClipStop = closingStillClips ? closingStillClips.close().catch(() => undefined) : Promise.resolve();
     const closingPlayout = this.playout && !options.preservePlayableOutput ? this.playout : null;
     const playoutStop = closingPlayout ? this.playoutManager.stop(closingPlayout.sessionId) : Promise.resolve();
     if (closingPlayout) this.playout = null;
-    await Promise.all([this.closing, playoutStop]);
+    await Promise.all([this.closing, playoutStop, stillClipStop]);
     if (closingPlayout) this.recordRetainedMedia(closingPlayout);
   }
 
@@ -1186,7 +1205,8 @@ class ExternalRendererRun {
       storyBlockId: frame.storyBlockId,
       durationSeconds,
       episodeId: frame.episodeId,
-      renderMetrics: groupRenderMetrics(records, this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
+      renderMetrics: groupRenderMetrics(records, this.config.renderMode === 'single-frame' ? 'fal-image'
+        : this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
     });
   }
 
@@ -1316,7 +1336,10 @@ class ExternalRendererRun {
       sequence: frame.sequence,
       position,
       durationSeconds: shot.durationSeconds,
+      receivedAt: new Date().toISOString(),
       submittedAt: null,
+      stillImageReadyAt: null,
+      stillModelId: null,
       readyAt: null,
       generationMs: null,
       playedAt: null,
@@ -1352,7 +1375,9 @@ class ExternalRendererRun {
    * before `waitForPlayback` returns, so a null boundary means a playout that does not report them.
    */
   private markPlayed(record: RendererClipRecord): void {
+    const firstPlay = record.playedAt === null;
     record.playedAt ??= new Date().toISOString();
+    if (firstPlay && this.config.renderMode === 'single-frame') this.logStillFrameTiming(record);
     if (record.streamStartSeconds !== null) return;
     const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
     const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(record.position) : null;
@@ -1378,11 +1403,30 @@ class ExternalRendererRun {
     }
   }
 
+  /**
+   * PIC-1974: one line per shot, so per-frame latency and cost stay reconstructable from a run log
+   * alone — which is the whole evidence basis for the Single Frame cost comparison (PIC-1976).
+   * Offsets are seconds from the payload's receipt; `image` is the fal call, `clip` the local mux.
+   */
+  private logStillFrameTiming(record: RendererClipRecord): void {
+    const base = record.receivedAt === null ? null : Date.parse(record.receivedAt);
+    const at = (value: string | null) => (base === null || value === null ? 'n/a' : `+${((Date.parse(value) - base) / 1000).toFixed(1)}s`);
+    console.log(
+      `[single-frame] shot=${record.shotId} seq=${record.sequence} model=${record.stillModelId ?? 'unknown'}`
+      + ` request=${record.providerRequestId ?? 'none'} hold=${record.durationSeconds}s received=${record.receivedAt ?? 'n/a'}`
+      + ` submitted=${at(record.submittedAt)} image=${at(record.stillImageReadyAt)} clip=${at(record.readyAt)}`
+      + ` played=${at(record.playedAt)} fal_submit=${record.falSubmitSeconds ?? 'n/a'}s fal_total=${record.falTotalSeconds ?? 'n/a'}s`,
+    );
+  }
+
   private completeClip(
     record: RendererClipRecord,
     requestId: unknown,
     timings?: { submitSeconds?: number; queueSeconds?: number; totalSeconds?: number; maxQueuePosition?: number | null } | null,
+    still?: { imageReadyAt?: string; stillModelId?: string } | null,
   ): void {
+    if (still?.imageReadyAt) record.stillImageReadyAt = still.imageReadyAt;
+    if (still?.stillModelId) record.stillModelId = still.stillModelId;
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
@@ -1409,7 +1453,7 @@ class ExternalRendererRun {
     });
     // Registered at schedule time so it settles before any consumer's own await of the same result.
     void job.result.then(
-      generated => this.completeClip(record, generated.requestId, generated.timings ?? null),
+      generated => this.completeClip(record, generated.requestId, generated.timings ?? null, generated),
       // A future shot can fail while an earlier clip is playing. Fence the whole run
       // immediately, before another scheduler slot submits additional paid work.
       error => {
