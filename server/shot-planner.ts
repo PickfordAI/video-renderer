@@ -26,7 +26,16 @@ export interface ShotPlannerSettings {
   markNames?: Readonly<Record<string, string>>;
   useDialogueAudioReferences?: boolean;
   defaultDurationSeconds?: number;
+  /**
+   * PIC-1973: stills mode. One generated frame is held for a whole line however long it runs, so
+   * lines are never split, the 15 s provider clip limit does not apply, and the shot's duration is
+   * the hold itself rather than the configured clip length.
+   */
+  singleFrame?: boolean;
 }
+
+/** A line shorter than this still holds its frame for the floor; playout pads the audio to match. */
+export const STILL_FRAME_MIN_HOLD_SECONDS = 5;
 
 export interface CharacterStaging {
   name: string;
@@ -199,8 +208,8 @@ function spokenDialogue(raw: string): { dialogue: string; deliveryDirections: De
 }
 
 /** Preserve every spoken word; prefer sentence boundaries without exceeding the time budget. */
-function splitLine(line: Line): DialogueSegment[] {
-  if (line.duration <= 15) return [{ dialogue: line.dialogue, duration: line.duration, deliveryDirections: line.deliveryDirections.map((direction) => direction.text) }];
+function splitLine(line: Line, singleFrame = false): DialogueSegment[] {
+  if (singleFrame || line.duration <= 15) return [{ dialogue: line.dialogue, duration: line.duration, deliveryDirections: line.deliveryDirections.map((direction) => direction.text) }];
   const tokens = words(line.dialogue);
   const secondsPerWord = line.duration / tokens.length;
   const maximumWords = Math.floor(15 / secondsPerWord);
@@ -340,6 +349,7 @@ export class DssShotPlanner {
 
   planGroup(commands: readonly ObjectValue[], groupId: string, storyBlockId: string): PlannedGroup {
     required(groupId, 'groupId'); required(storyBlockId, 'storyBlockId');
+    const singleFrame = this.settings.singleFrame === true;
     const startingState = this.state;
     let visualStartingState = startingState;
     const next = clone(this.current);
@@ -492,8 +502,10 @@ export class DssShotPlanner {
       const visibleNames = isCloseUp(camera.shot) && cameraSubject && names.includes(cameraSubject) ? [cameraSubject] : names;
       const refs = this.references(visibleNames, next, line, split);
       const sourceDuration = segment?.duration;
-      const durationSeconds = Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
-      if (durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
+      const durationSeconds = singleFrame
+        ? Math.max(STILL_FRAME_MIN_HOLD_SECONDS, Math.ceil(sourceDuration ?? STILL_FRAME_MIN_HOLD_SECONDS))
+        : Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
+      if (!singleFrame && durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
       const sceneKey = JSON.stringify([next.sceneIndex ?? null, this.sceneContextIdentity, next.set, next.dressing, next.timeOfDay, next.sceneRevision]);
       const setupKey = JSON.stringify([next.set, camera.shot, camera.character ?? line?.speaker ?? null]);
       const continuityKey = JSON.stringify([sceneKey, next.continuityRevision]);
@@ -517,7 +529,7 @@ export class DssShotPlanner {
       }));
     };
     for (const line of lines) {
-      const segments = splitLine(line);
+      const segments = splitLine(line, singleFrame);
       for (const segment of segments) createShot(line, segment, segments.length > 1);
     }
     if (!lines.length && actions.length) createShot();

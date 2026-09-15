@@ -314,6 +314,15 @@ reference images itself, any reference that is not already a `fal.media` URL (a 
 or an inline data URL) is downscaled and uploaded to fal storage once per run before it is
 referenced.
 
+A Single Frame shot is not a provider clip. The still and the kernel's own dialogue MP3 — the
+`talk.audio` the DSS has always carried and nothing previously consumed — are muxed locally into one
+mp4 that holds the frame for the whole line: minimum five seconds, no upper bound, silence when the
+payload carried no audio. Clips are written to a per-session temp directory and served over loopback
+on the operator port under an unguessable per-session token, which `parsePlayoutClip` already admits;
+the route checks the peer address itself rather than the operator token, because the consumer is
+this process's own playout. Playout's clip duration bound is correspondingly 5-180 s rather than the
+video provider's 5-15 s.
+
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
 adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the

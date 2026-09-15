@@ -16,9 +16,10 @@ import { generateMiniMaxVideo, MiniMaxVideoError } from './minimax.js';
 import { extractVideoFrame, validateFrameVideoUrl } from './video-frame.js';
 import { parseGenerationInput } from './generation-input.js';
 import { handleNarrativeEngineApi } from './narrative-engine.js';
-import { PlayoutManager } from './playout.js';
+import { keepMediaEnabled, PlayoutManager } from './playout.js';
 import { FakeClipPlayoutManager, fakeClipFailureAfter, fakeClipsEnabled } from './fake-clips.js';
 import { prepareReferenceAudioUrls } from './reference-audio.js';
+import { StillClipStore } from './still-clip.js';
 
 const port = Number.parseInt(process.env.PORT ?? '4173', 10);
 const maxRequestBytes = 32_000;
@@ -30,6 +31,9 @@ const externalRendererRuns = new ExternalRendererRunManager(
   { fakeClips, fakeFailureAfterClips },
 );
 const audienceChat = new AudienceChatGateway(externalRendererRuns);
+// PIC-1973: Single Frame clips are muxed locally and served back to this process's own playout
+// over loopback, which `parsePlayoutClip` already admits. Nothing leaves the machine.
+const stillClips = new StillClipStore({ origin: `http://127.0.0.1:${port}`, keepMedia: keepMediaEnabled() });
 // A fal key the creator entered on the local page lives in .renderer/, not in the environment.
 loadFalKey();
 const creatorApi = new CreatorApi(externalRendererRuns);
@@ -270,6 +274,15 @@ async function handleApi(request: IncomingMessage, response: ServerResponse): Pr
 }
 
 const server = createServer(async (request, response) => {
+  // Before the operator gate on purpose: the consumer is this process's own playout, which has no
+  // bearer token to present when RENDERER_ADMIN_TOKEN is configured. The route enforces its own,
+  // stricter boundary — a loopback peer address and an unguessable per-session token.
+  try {
+    if (await stillClips.serve(request, response)) return;
+  } catch {
+    response.destroy();
+    return;
+  }
   if (!allowOperatorRequest(request)) {
     sendJson(response, 403, { error: 'This is the private operator port. Use the local agent or authenticated private proxy.' });
     return;
@@ -314,7 +327,7 @@ mediaServer.listen(Number(process.env.MEDIA_PORT ?? '4174'), mediaHost);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).finally(() => {
+    void externalRendererRuns.stopAll().then(() => playoutManager.stopAll()).then(() => stillClips.closeAll()).finally(() => {
       server.close();
       server.closeAllConnections();
       mediaServer.close();
