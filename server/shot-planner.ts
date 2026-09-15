@@ -512,7 +512,10 @@ export class DssShotPlanner {
       const visibleNames = preparedView ? preparedView.visibleCharacterIds.map(id => this.sceneContext!.characterImages.find(image => image.sourceId === id)!.characterName!) : isCloseUp(camera.shot) && cameraSubject && names.includes(cameraSubject) ? [cameraSubject] : names;
       const refs = this.references(visibleNames, next, line, split, preparedView);
       const sourceDuration = segment?.duration;
-      const durationSeconds = Math.max(this.settings.defaultDurationSeconds ?? 5, Math.ceil(sourceDuration ?? 5));
+      // Prepared dialogue already carries measured audio timing (or the word-count fallback).
+      // The configured default is for shots without dialogue, not a floor for every line.
+      const minimumDuration = preparedView && line ? 5 : this.settings.defaultDurationSeconds ?? 5;
+      const durationSeconds = Math.max(minimumDuration, Math.ceil(sourceDuration ?? 5));
       if (durationSeconds > 15) throw new Error('Planned shot exceeds the 15-second provider limit');
       const sceneKey = JSON.stringify([next.sceneIndex ?? null, this.sceneContextIdentity, next.set, next.dressing, next.timeOfDay, next.sceneRevision]);
       const setupKey = preparedView ? JSON.stringify([sceneKey, preparedView.assetId]) : JSON.stringify([next.set, camera.shot, camera.character ?? line?.speaker ?? null]);
@@ -597,17 +600,16 @@ export class DssShotPlanner {
 
   private prompt(names: string[], refs: { images: PlannedImageReference[]; audios: PlannedAudioReference[] }, start: ShotPlannerState, end: ShotPlannerState, actions: readonly string[], camera: MutableState['camera'], line: Line | undefined, segment: DialogueSegment | undefined, duration: number, preparedView?: PreparedView): string {
     if (preparedView) {
-      const coverage = this.sceneContext!.preparedCoverage!;
       return [
         'composition: Image 1 is the prepared composition reference. Match its camera, framing, character placement, environment, lighting and rendering style. Hard cut into this fixed setup. Do not reframe, add people, or copy portrait backgrounds.',
         `subject_definitions: ${names.map(name => {
           const ref = refs.images.find(item => item.name === name)!;
-          return `${name} uses ${ref.label} only as their full original character identity reference; it does not control global style, camera, background or another character. Body orientation: ${coverage.bodyOrientations[end.characters[name].characterId!]}.`;
+          return `${name} uses ${ref.label} only as their full original character identity reference; it does not control global style, camera, background or another character. Preserve their body orientation and physical placement from Image 1.`;
         }).join(' ')}`,
         `attention: ${preparedAttention(end, names, line?.speaker, line?.respondent)}`,
         `shot: ${camera.shot}. Hold the prepared composition throughout. ${actions.join(' ')} ${names.map(name => end.characters[name]?.emotion ? `${name} appears ${end.characters[name].emotion}.` : '').join(' ')} ${segment?.deliveryDirections.length ? `Delivery directions, not spoken words: ${segment.deliveryDirections.join('; ')}.` : ''}${line ? ` ${line.speaker}${line.tone ? `, in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; other visible characters listen silently.` : ''}`,
         ...refs.audios.map(ref => `${ref.label} is only ${ref.name}'s ${ref.purpose === 'dialogue' ? 'exact dialogue performance; match its words, timing and delivery' : "voice identity; speak the scripted words, not the sample"}.`),
-        `overall_soundscape: Natural room tone and dialogue. Let the performance occupy the ${duration}-second shot without extra dialogue or captions. Each shot preserves stable framing; do not invent continuity of performance from previous clips.`,
+        `overall_soundscape: Natural room tone${line ? ` and dialogue. Begin the scripted dialogue within the first half-second. Speak at a natural conversational pace without stretching words or inserting pauses to fill the ${duration}-second shot. After the line, hold a brief natural reaction.` : ". Hold the scripted silent action without adding speech."} No extra dialogue or captions. Each shot preserves stable framing; do not invent continuity of performance from previous clips.`,
       ].join('\n');
     }
     const imageFor = (name: string) => refs.images.find((entry) => entry.name === name)?.label;

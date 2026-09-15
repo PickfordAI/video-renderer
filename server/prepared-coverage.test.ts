@@ -30,9 +30,25 @@ describe('prepared coverage v1', () => {
     expect(master.imageReferences.map(r => r.name)).toEqual(['composition', 'Maya', 'Theo']);
     expect(closeup.imageReferences.map(r => r.name)).toEqual(['composition', 'Theo']);
     expect(closeup.prompt).toContain('Maya remains outside the shot');
+    expect(closeup.prompt).toContain('Theo preserves the head angle and eye direction shown in Image 1');
+    expect(closeup.prompt).toContain('Begin the scripted dialogue within the first half-second');
+    expect(closeup.prompt).not.toContain('Let the performance occupy');
     expect(closeup.prompt).toContain('Image 2 only as their full original character identity');
     expect(closeup.prompt).not.toContain('Image 2 for the overall rendering style');
     expect(closeup.referenceImageUrls[1]).toBe('data:image/png;base64,' + Buffer.from('downloaded:theo.png').toString('base64'));
+  });
+  it('sizes prepared dialogue from its audio duration rather than the default shot length', async () => {
+    download();
+    const p = new DssShotPlanner({ defaultDurationSeconds: 10 });
+    p.applySceneContext(await new MinimaxSceneAssetCache().resolve(parseMinimaxSceneContext(raw())), 0);
+    const shot = (duration: number) => p.planGroup([
+      { command: 'talk', args: { character: 'Maya', respondent: 'Theo', dialogue: 'Is it?', audio_duration: duration } },
+    ], `duration-${duration}`, 'block').shots[0];
+    expect(shot(1.306).durationSeconds).toBe(5);
+    expect(shot(6.348).durationSeconds).toBe(7);
+    expect(shot(14.8).durationSeconds).toBe(15);
+    // A non-dialogue shot still uses the configured default.
+    expect(p.planGroup([{ command: 'play animation', args: { character: 'Maya', animation: 'thinking' } }], 'silent', 'block').shots[0].durationSeconds).toBe(10);
   });
   it('reuses master setup independent of speaker/respondent and returns to master after closeup', async () => {
     const p = await planner();
@@ -50,8 +66,9 @@ describe('prepared coverage v1', () => {
     const shot = p.planGroup([talk('Maya', 'Theo'), { command: 'look', args: { character: 'Maya', target: { name: 'window' } } }, { command: 'look', args: { character: 'Theo', target: { name: 'door' } } }], 'a', 'block').shots[0];
     expect(shot.prompt).toContain('Maya follows the authored look toward window');
     expect(shot.prompt).toContain('Theo follows the authored look toward door');
-    expect(shot.prompt).toContain('Seated torso facing the doorway');
-    expect(shot.prompt).not.toContain('Maya speaks to Theo');
+    expect(shot.prompt).toContain('Preserve their body orientation and physical placement from Image 1');
+    expect(shot.prompt).not.toContain('Seated torso facing the doorway');
+    expect(shot.prompt).not.toContain('speaking to Theo');
   });
   it.each(['version', 'missing-closeup', 'visible', 'hash', 'overlap'])('rejects malformed %s without fallback', field => {
     const value = raw();
