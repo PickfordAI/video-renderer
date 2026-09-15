@@ -153,8 +153,8 @@ describe('renderer choice', () => {
   it('offers Single Frame first and defaults to it', () => {
     expect(RENDERER_CHOICES.map(choice => choice.value)).toEqual(['single-frame', 'fal-max-ref2v']);
     expect(DEFAULT_RENDER_MODE).toBe('single-frame');
-    expect(RENDERER_CHOICES[0].label).toMatch(/one still per line/);
-    expect(RENDERER_CHOICES[1].label).toMatch(/several dollars per scene/);
+    expect(RENDERER_CHOICES[0].label).toMatch(/cheap/);
+    expect(RENDERER_CHOICES[1].label).toMatch(/expensive/);
     expect(rememberedRenderMode(fakeStorage())).toBe('single-frame');
   });
 

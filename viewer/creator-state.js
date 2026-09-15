@@ -125,8 +125,8 @@ export function runIdentityLines(playback) {
 export const RENDER_MODE_STORAGE_KEY = 'pickford.renderMode';
 export const DEFAULT_RENDER_MODE = 'single-frame';
 export const RENDERER_CHOICES = [
-  { value: 'single-frame', label: 'Single Frame \u2014 one still per line, ~1\u00a2 per line' },
-  { value: 'fal-max-ref2v', label: 'MiniMax video \u2014 full video, several dollars per scene' },
+  { value: 'single-frame', label: 'Single Frame \u2014 cheap' },
+  { value: 'fal-max-ref2v', label: 'MiniMax video \u2014 expensive' },
 ];
 
 export function isRenderMode(value) {
