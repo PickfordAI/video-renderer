@@ -11,6 +11,7 @@ import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
+import { KLEIN_MODEL_FAMILY } from './still-frame.js';
 import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
@@ -807,7 +808,7 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
  */
 export const SINGLE_FRAME_RENDERER_KIND = 'still-flux-klein';
 /** Model family for the asset manifest; the edit/text endpoint varies per shot, the model does not. */
-export const SINGLE_FRAME_MODEL_FAMILY = 'fal-ai/flux-2/klein/4b';
+export const SINGLE_FRAME_MODEL_FAMILY = KLEIN_MODEL_FAMILY;
 
 /**
  * The immutable asset manifest registered under `rendererVersion`. Renderer Platform keys manifests by

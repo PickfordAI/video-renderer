@@ -307,7 +307,12 @@ roughly a cent per line instead of several dollars per scene. It supports contin
 there is no generated video to extract a frame from, and each line is an independent still. It
 announces itself to Renderer Platform as `still-flux-klein` and advertises no prepared-coverage
 support. Its asset manifest names the klein model family rather than a video endpoint, which is why
-it registers under its own renderer version.
+it registers under its own renderer version. Its provider shares the fal queue protocol
+(`fal-queue.ts`) with the video adapters — submit, poll to a terminal status, reread the paid
+result, cancel on abort — and differs only in request body and result shape. Because fal fetches
+reference images itself, any reference that is not already a `fal.media` URL (a foreign HTTPS URL
+or an inline data URL) is downscaled and uploaded to fal storage once per run before it is
+referenced.
 
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
