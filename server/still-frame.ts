@@ -30,6 +30,38 @@ export class FalStillFrameError extends Error {
 
 const stillError = (message: string): Error => new FalStillFrameError(message);
 
+export interface StillReference {
+  name: string;
+  url: string;
+}
+
+/**
+ * Choose which references survive the edit endpoint's four-image limit.
+ *
+ * The planner emits `style, initial frame, …each character…, set`, so the set is **last**. Simply
+ * keeping the first four therefore discards the environment as soon as four characters are staged
+ * — the frame keeps every face and loses the room it is in. Identity and place are the two things
+ * a still has to get right, so the speaker and the set are kept first and spare cast fill what is
+ * left. A fourth character's portrait is worth less than the set the scene happens in.
+ */
+export function orderStillReferences(
+  references: readonly StillReference[],
+  speaker?: string,
+  max: number = MAX_STILL_REFERENCE_IMAGES,
+): StillReference[] {
+  const taken = new Set<StillReference>();
+  const ordered: StillReference[] = [];
+  const take = (entry: StillReference | undefined): void => {
+    if (!entry || taken.has(entry) || ordered.length >= max) return;
+    taken.add(entry);
+    ordered.push(entry);
+  };
+  take(speaker ? references.find(reference => reference.name === speaker) : undefined);
+  take(references.find(reference => reference.name === 'set'));
+  for (const reference of references) take(reference);
+  return ordered;
+}
+
 export interface StillFrameInput {
   prompt: string;
   /** Ordered most- to least-important: speaker first, then other cast, then the set. */
@@ -161,8 +193,8 @@ export async function generateStillFrame(
   options: StillFrameOptions,
 ): Promise<StillFrameResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  // Drop extras from the end: the planner orders references speaker-first, so the tail is the
-  // least load-bearing grounding for the frame.
+  // Callers should trim with `orderStillReferences`, which knows which entry is the set. This
+  // slice is only a last-resort cap for callers that pass bare URLs.
   const requested = (input.referenceImageUrls ?? []).slice(0, MAX_STILL_REFERENCE_IMAGES);
   const imageUrls: string[] = [];
   for (const reference of requested) imageUrls.push(await resolveReference(reference, options, fetchImpl));

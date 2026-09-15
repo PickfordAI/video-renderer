@@ -388,7 +388,7 @@ describe('generation latency percentiles', () => {
 describe('groupRenderMetrics', () => {
   const record = (over: Partial<RendererClipRecord>): RendererClipRecord => ({
     shotId: 's', groupId: 'g', storyBlockId: 'b', sequence: 1, position: 0, durationSeconds: 6,
-    receivedAt: '2026-09-07T23:00:09.000Z', stillImageReadyAt: null, stillModelId: null,
+    receivedAt: '2026-09-07T23:00:09.000Z', stillImageReadyAt: null, stillModelId: null, stillReferenceNames: null,
     submittedAt: '2026-09-07T23:00:10.000Z', readyAt: '2026-09-07T23:00:19.000Z', generationMs: 9_000, playedAt: '2026-09-07T23:00:40.000Z',
     providerRequestId: 'r', continuity: 'camera-anchors', anchor: 'reuse', anchorKey: null,
     streamStartSeconds: 30, streamEndSeconds: 36, gapBeforeSeconds: 2, leadInBeforeSeconds: 2, gapKind: 'line',
