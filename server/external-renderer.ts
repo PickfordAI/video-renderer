@@ -99,6 +99,8 @@ export interface RendererClipRecord {
   /** Single Frame only: when the generated image returned, before the local mux into a clip. */
   stillImageReadyAt: string | null;
   stillModelId: string | null;
+  /** Which references survived the provider's image cap. A missing `set` explains a wrong room. */
+  stillReferenceNames: string[] | null;
   readyAt: string | null;
   generationMs: number | null;
   playedAt: string | null;
@@ -1340,6 +1342,7 @@ class ExternalRendererRun {
       submittedAt: null,
       stillImageReadyAt: null,
       stillModelId: null,
+      stillReferenceNames: null,
       readyAt: null,
       generationMs: null,
       playedAt: null,
@@ -1413,7 +1416,8 @@ class ExternalRendererRun {
     const at = (value: string | null) => (base === null || value === null ? 'n/a' : `+${((Date.parse(value) - base) / 1000).toFixed(1)}s`);
     console.log(
       `[single-frame] shot=${record.shotId} seq=${record.sequence} model=${record.stillModelId ?? 'unknown'}`
-      + ` request=${record.providerRequestId ?? 'none'} hold=${record.durationSeconds}s received=${record.receivedAt ?? 'n/a'}`
+      + ` request=${record.providerRequestId ?? 'none'} hold=${record.durationSeconds}s`
+      + ` refs=${record.stillReferenceNames?.join(',') || 'none'} received=${record.receivedAt ?? 'n/a'}`
       + ` submitted=${at(record.submittedAt)} image=${at(record.stillImageReadyAt)} clip=${at(record.readyAt)}`
       + ` played=${at(record.playedAt)} fal_submit=${record.falSubmitSeconds ?? 'n/a'}s fal_total=${record.falTotalSeconds ?? 'n/a'}s`,
     );
@@ -1423,10 +1427,11 @@ class ExternalRendererRun {
     record: RendererClipRecord,
     requestId: unknown,
     timings?: { submitSeconds?: number; queueSeconds?: number; totalSeconds?: number; maxQueuePosition?: number | null } | null,
-    still?: { imageReadyAt?: string; stillModelId?: string } | null,
+    still?: { imageReadyAt?: string; stillModelId?: string; stillReferenceNames?: string[] } | null,
   ): void {
     if (still?.imageReadyAt) record.stillImageReadyAt = still.imageReadyAt;
     if (still?.stillModelId) record.stillModelId = still.stillModelId;
+    if (still?.stillReferenceNames) record.stillReferenceNames = still.stillReferenceNames;
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);

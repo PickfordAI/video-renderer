@@ -7,6 +7,7 @@ import {
   KLEIN_EDIT_MODEL_ID,
   KLEIN_TEXT_MODEL_ID,
   MAX_STILL_REFERENCE_IMAGES,
+  orderStillReferences,
 } from './still-frame.js';
 
 function json(body: unknown, status = 200): Response {
@@ -85,6 +86,41 @@ describe('generateStillFrame', () => {
     const unseeded = queue(frame());
     await generateStillFrame({ prompt: 'A quiet diner.' }, { apiKey: 'secret', fetchImpl: unseeded, pollIntervalMs: 0 });
     expect(body(unseeded)).not.toHaveProperty('seed');
+  });
+});
+
+// PIC-1972 assumed the planner emits references speaker-first, so trimming the tail was safe.
+// It does not: the order is style, initial frame, each character, then the SET last. Keeping the
+// first four therefore threw away the environment as soon as four characters were staged, which is
+// what a live staging run showed — every face present, wrong room.
+describe('choosing which references survive the four-image cap', () => {
+  const refs = (...names: string[]) => names.map(name => ({ name, url: `https://v3.fal.media/${name}.png` }));
+
+  it('keeps the speaker and the set before any spare cast', () => {
+    const planner = refs('style', 'Alex', 'Sam', 'Rae', 'Kit', 'set');
+    expect(orderStillReferences(planner, 'Rae').map(r => r.name)).toEqual(['Rae', 'set', 'style', 'Alex']);
+  });
+
+  it('keeps the set even when the cap is already full of cast', () => {
+    // The exact live-run shape: four staged characters ahead of the set.
+    const planner = refs('Alex', 'Sam', 'Rae', 'Kit', 'set');
+    const chosen = orderStillReferences(planner, 'Alex').map(r => r.name);
+    expect(chosen).toContain('set');
+    expect(chosen).toHaveLength(4);
+    expect(chosen[0]).toBe('Alex');
+  });
+
+  it('never duplicates a reference and never exceeds the cap', () => {
+    const planner = refs('Alex', 'set');
+    expect(orderStillReferences(planner, 'Alex').map(r => r.name)).toEqual(['Alex', 'set']);
+    expect(orderStillReferences(refs('a', 'b', 'c', 'd', 'e', 'f'), undefined)).toHaveLength(4);
+  });
+
+  it('falls back sensibly with no speaker and with no set', () => {
+    // An action-only shot has no speaker; the set still leads.
+    expect(orderStillReferences(refs('Alex', 'set'), undefined).map(r => r.name)).toEqual(['set', 'Alex']);
+    expect(orderStillReferences(refs('Alex', 'Sam'), 'Sam').map(r => r.name)).toEqual(['Sam', 'Alex']);
+    expect(orderStillReferences([], 'Sam')).toEqual([]);
   });
 });
 

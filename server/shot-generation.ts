@@ -1,5 +1,5 @@
 import { generateVideo } from './fal.js';
-import { generateStillFrame } from './still-frame.js';
+import { generateStillFrame, orderStillReferences } from './still-frame.js';
 import type { StillClipSession } from './still-clip.js';
 import { type ReferenceUploader, uploadDataUrl } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
@@ -33,6 +33,8 @@ export interface GeneratedShot {
   localFilePath?: string;
   stillImageUrl?: string;
   stillModelId?: string;
+  /** Which references actually survived the edit endpoint's four-image cap, in order. */
+  stillReferenceNames?: string[];
   /** When the generated image came back, i.e. before the ffmpeg mux. */
   imageReadyAt?: string;
 }
@@ -147,7 +149,10 @@ export class ShotGenerator {
       if (mode === 'single-frame') {
         const session = this.options.stillClipSession;
         if (!session) throw new Error('single-frame rendering requires a still clip session');
-        const still = await generateStillFrame({ prompt, referenceImageUrls: images }, {
+        // The set is the planner's last reference, so it must be prioritized explicitly or the
+        // four-image cap drops the environment before it drops a spare face.
+        const stillReferences = orderStillReferences(shot.imageReferences, shot.speaker);
+        const still = await generateStillFrame({ prompt, referenceImageUrls: stillReferences.map(entry => entry.url) }, {
           apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
           timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
           referenceUploader: this.options.stillReferenceUploader, uploadCache: this.options.stillUploadCache,
@@ -161,8 +166,9 @@ export class ShotGenerator {
         guard();
         return {
           videoUrl: clip.url, localFilePath: clip.filePath, requestId: still.requestId,
-          submittedPrompt: prompt, referenceImageCount: images.length, timings: still.timings,
+          submittedPrompt: prompt, referenceImageCount: stillReferences.length, timings: still.timings,
           stillImageUrl: still.imageUrl, stillModelId: still.modelId, imageReadyAt,
+          stillReferenceNames: stillReferences.map(entry => entry.name),
         };
       }
       const generated = await generateVideo({
