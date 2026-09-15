@@ -100,6 +100,12 @@ export function concatToMp4Args(listPath: string, outputPath: string): string[] 
 }
 
 const MAX_CLIP_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+/**
+ * PIC-1973: video providers cap a clip at 15 s, but a Single Frame clip holds one still for a whole
+ * dialogue line, which can legitimately run far longer. The transport-stream normalization already
+ * handles arbitrary lengths; this bound exists to catch a nonsense duration, not to size a clip.
+ */
+const MAX_CLIP_DURATION_SECONDS = 180;
 const MAX_CONSECUTIVE_PUBLISHER_RESTARTS = 3;
 const HOLD_CLIP_SECONDS = 1;
 
@@ -125,8 +131,8 @@ function requiredClip(value: unknown): PlayoutClipInput {
   if (parsedVideoUrl.protocol !== 'https:' && !isLoopbackHttp) {
     throw new Error('clip videoUrl must use HTTPS (loopback HTTP is allowed for local testing)');
   }
-  if (typeof durationSeconds !== 'number' || durationSeconds < 5 || durationSeconds > 15) {
-    throw new Error('clip durationSeconds must be from 5 to 15');
+  if (typeof durationSeconds !== 'number' || durationSeconds < 5 || durationSeconds > MAX_CLIP_DURATION_SECONDS) {
+    throw new Error(`clip durationSeconds must be from 5 to ${MAX_CLIP_DURATION_SECONDS}`);
   }
   const leadInSeconds = body.leadInSeconds;
   if (leadInSeconds !== undefined) {

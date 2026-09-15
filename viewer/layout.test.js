@@ -29,3 +29,20 @@ describe('player layout', () => {
     expect(script).toContain("await call('/api/creator/stop', { method: 'POST', body: '{}' })");
   });
 });
+
+// PIC-1975: no DOM in this suite, so the page's own wiring is pinned by reading the source the
+// browser loads, the same way the layout assertions above do.
+describe('renderer picker wiring', () => {
+  it('sends the chosen renderer with Play and styles the control beside it', async () => {
+    const script = await readFile(new URL('./creator.js', import.meta.url), 'utf8');
+    expect(script).toContain("JSON.stringify({ evdId: bundle.evdId, renderMode })");
+    expect(script).toContain('rememberedRenderMode(storage())');
+    expect(script).toContain("rendererName.textContent = 'Renderer'");
+    // The select is disabled exactly when Play is.
+    expect(script).toContain('rendererSelect.disabled = action.disabled;');
+
+    const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+    expect(html).toContain('.bundle-controls');
+    expect(html).toContain('.bundle-renderer select');
+  });
+});

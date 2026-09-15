@@ -101,7 +101,7 @@ describe('CreatorApi playback routing', () => {
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
       baseUrl: rendererUrl,
       audienceExchangeUrl: audienceUrl,
-      rendererVersion: 'h3.opensource.v1.2',
+      rendererVersion: 'h3.opensource.v1.3',
       supersedeExistingStory: true,
     }));
   });

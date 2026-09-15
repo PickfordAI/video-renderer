@@ -109,4 +109,40 @@ describe('explicit bridge generation modes', () => {
     }
     expect(run.state).toBe('stopped');
   });
+
+  // PIC-1971: the kernel reasons about what a renderer produces from `renderer_kind`, so the stills
+  // mode announces its own string rather than borrowing a MiniMax one. It must also stay silent
+  // about prepared coverage: PR #36 adds that capability key for fal-max-ref2v alone, and the
+  // kernel gate refuses a prepared_coverage block for any renderer that did not advertise it.
+  it('advertises a stills renderer kind on hello and claims no prepared coverage', async () => {
+    vi.stubEnv('FAL_KEY', 'mock-fal');
+    vi.mocked(generateVideo).mockResolvedValue({ videoUrl: 'https://video.example/1.mp4' } as Awaited<ReturnType<typeof generateVideo>>);
+    const http = createServer(); const ws = new WebSocketServer({ server: http });
+    await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+    const port = (http.address() as { port: number }).port;
+    const events: Record<string, unknown>[] = [];
+    ws.on('connection', socket => socket.on('message', raw => {
+      const event = JSON.parse(raw.toString()); events.push(event);
+      if (event.type === 'renderer.hello') socket.send(JSON.stringify({ type: 'renderer.welcome', stream_id: rendererId, media_ingest_url: null, session_id: 'session', session_epoch: 1, lease_seconds: 30 }));
+    }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => (String(url).endsWith('/login')
+      ? Response.json({ access_token: 'mock-token', websocket_url: `ws://127.0.0.1:${port}` })
+      : Response.json({ renderer_id: rendererId }, { status: 202 }))));
+    const media = {
+      start: vi.fn(async () => ({ sessionId: 'media', hlsUrl: 'https://media.example/index.m3u8', enqueue: vi.fn(), status: () => ({ state: 'streaming', playedThroughPosition: -1 }) })),
+      stop: vi.fn(async () => undefined),
+    } as unknown as PlayoutManager;
+    const manager = new ExternalRendererRunManager(media);
+    manager.start({ ...config(`http://127.0.0.1:${port}`), rendererConfig: { model: 'single-frame' } });
+    try {
+      await vi.waitFor(() => expect(events.some(event => event.type === 'renderer.hello')).toBe(true));
+      const hello = events.find(event => event.type === 'renderer.hello')!;
+      expect(hello.renderer_kind).toBe('still-flux-klein');
+      expect(hello).not.toHaveProperty('prepared_coverage_versions');
+    } finally {
+      await manager.stopAll();
+      await new Promise<void>(resolve => ws.close(() => resolve()));
+      await new Promise<void>(resolve => http.close(() => resolve()));
+    }
+  });
 });

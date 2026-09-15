@@ -509,3 +509,55 @@ describe('DSS shot planning', () => {
     expect(() => new DssShotPlanner().planGroup([command('talk', { character: 'Maya', dialogue: 'Hello.', audio_duration: 'bad' })], 'bad-duration', 'block')).toThrow('must be numeric');
   });
 });
+
+// PIC-1973: in stills mode one generated frame is held for the whole line, so the reasons the
+// planner splits lines and caps their duration — a video provider's 15 s clip limit — do not apply.
+describe('single-frame planning', () => {
+  const stills: ShotPlannerSettings = { ...configured, singleFrame: true, useDialogueAudioReferences: true };
+  const longLine = command('talk', {
+    character: 'Maya',
+    dialogue: 'Take the stairs to the platform. I will wait here until you return.',
+    audio_duration: 40.4,
+    audio: 'https://assets.example/whole-line.wav',
+    camera_shot: 'Character_CloseUp',
+  });
+
+  it('keeps a long line whole and holds one frame for its full duration', () => {
+    const planner = new DssShotPlanner(stills);
+    setup(planner);
+    const shots = planner.planGroup([longLine], 'long', 'block').shots;
+    expect(shots).toHaveLength(1);
+    expect(shots[0].durationSeconds).toBe(41);
+    expect(shots[0].dialogue).toBe('Take the stairs to the platform. I will wait here until you return.');
+    // The exact performance audio survives only on an unsplit line, which is now every line.
+    expect(shots[0].dialogueAudioUrl).toBe('https://assets.example/whole-line.wav');
+  });
+
+  it('holds short lines for the five-second floor, ignoring the configured clip length', () => {
+    const planner = new DssShotPlanner({ ...stills, defaultDurationSeconds: 6 });
+    setup(planner);
+    expect(planner.planGroup([talk('Maya', 'Yes.', 0.679)], 'short', 'block').shots[0].durationSeconds).toBe(5);
+    expect(planner.planGroup([talk('Maya', 'Wait for me here.', 7.2)], 'medium', 'block').shots[0].durationSeconds).toBe(8);
+  });
+
+  it('accepts dialogue that no video mode could schedule at all', () => {
+    const planner = new DssShotPlanner(stills);
+    setup(planner);
+    // A line this dense cannot be cut into 15 s segments without word-level timing; the video
+    // planner refuses it outright, and holding one frame makes the question moot.
+    expect(planner.planGroup([talk('Maya', 'No.', 31)], 'dense', 'block').shots[0].durationSeconds).toBe(31);
+    expect(() => new DssShotPlanner(configured).planGroup([talk('Maya', 'No.', 31)], 'dense', 'block'))
+      .toThrow('word-level audio timing');
+  });
+
+  it('leaves video modes splitting and capped exactly as before', () => {
+    const planner = new DssShotPlanner({ ...configured, useDialogueAudioReferences: true });
+    setup(planner);
+    const shots = planner.planGroup([longLine], 'long', 'block').shots;
+    expect(shots.length).toBeGreaterThan(1);
+    for (const shot of shots) {
+      expect(shot.durationSeconds).toBeLessThanOrEqual(15);
+      expect(shot.dialogueAudioUrl).toBeUndefined();
+    }
+  });
+});

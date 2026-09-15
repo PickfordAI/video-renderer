@@ -115,3 +115,40 @@ export function runIdentityLines(playback) {
   if (playback?.audienceJoinUrl) lines.push(`Audience link ${playback.audienceJoinUrl}`);
   return lines;
 }
+
+/**
+ * PIC-1975: the renderer choice, the creator's third owned input.
+ *
+ * It exists for cost, not quality: a test run through MiniMax video is several dollars per scene,
+ * which is more than most creators will spend to check that a story they just wrote holds together.
+ */
+export const RENDER_MODE_STORAGE_KEY = 'pickford.renderMode';
+export const DEFAULT_RENDER_MODE = 'single-frame';
+export const RENDERER_CHOICES = [
+  { value: 'single-frame', label: 'Single Frame \u2014 cheap' },
+  { value: 'fal-max-ref2v', label: 'MiniMax video \u2014 expensive' },
+];
+
+export function isRenderMode(value) {
+  return RENDERER_CHOICES.some(choice => choice.value === value);
+}
+
+/** Storage throws in private browsing and when a viewer has blocked site data; the default stands. */
+export function rememberedRenderMode(storage) {
+  try {
+    const value = storage?.getItem(RENDER_MODE_STORAGE_KEY);
+    return isRenderMode(value) ? value : DEFAULT_RENDER_MODE;
+  } catch {
+    return DEFAULT_RENDER_MODE;
+  }
+}
+
+export function rememberRenderMode(storage, value) {
+  if (!isRenderMode(value)) return DEFAULT_RENDER_MODE;
+  try {
+    storage?.setItem(RENDER_MODE_STORAGE_KEY, value);
+  } catch {
+    // A remembered preference is a convenience; failing to store it must not block Play.
+  }
+  return value;
+}

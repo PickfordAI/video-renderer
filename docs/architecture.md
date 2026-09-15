@@ -301,6 +301,37 @@ frame extraction. Supported combinations are auto/none, Turbo image-to-video/las
 and Max reference-to-video with either none or camera-anchors. Unsupported combinations fail
 before generation. Legacy renderMode/concurrency fields normalize to their previous strategies.
 
+Single Frame is the stills mode: it generates one image per talk payload with FLUX.2 klein 4B and
+holds that frame for the whole line while the kernel's own dialogue audio plays, so a story costs
+roughly a cent per line instead of several dollars per scene. It supports continuity `none` only —
+there is no generated video to extract a frame from, and each line is an independent still. It
+announces itself to Renderer Platform as `still-flux-klein` and advertises no prepared-coverage
+support. Its asset manifest names the klein model family rather than a video endpoint, which is why
+it registers under its own renderer version. Its provider shares the fal queue protocol
+(`fal-queue.ts`) with the video adapters — submit, poll to a terminal status, reread the paid
+result, cancel on abort — and differs only in request body and result shape. Because fal fetches
+reference images itself, any reference that is not already a `fal.media` URL (a foreign HTTPS URL
+or an inline data URL) is downscaled and uploaded to fal storage once per run before it is
+referenced.
+
+A Single Frame shot is not a provider clip. The still and the kernel's own dialogue MP3 — the
+`talk.audio` the DSS has always carried and nothing previously consumed — are muxed locally into one
+mp4 that holds the frame for the whole line: minimum five seconds, no upper bound, silence when the
+payload carried no audio. Clips are written to a per-session temp directory and served over loopback
+on the operator port under an unguessable per-session token, which `parsePlayoutClip` already admits;
+the route checks the peer address itself rather than the operator token, because the consumer is
+this process's own playout. Playout's clip duration bound is correspondingly 5-180 s rather than the
+video provider's 5-15 s.
+
+The stills branch sits at the provider call site inside `ShotGenerator.schedule`, so validation,
+dependency description and scheduling are shared with the video modes unchanged — continuity `none`
+already short-circuits the anchor and chain logic. The live bridge and the offline `npm run replay`
+harness both take that branch; replay copies each synthesized clip off disk instead of fetching the
+loopback URL, because a replay run has no HTTP server. Group render metrics report `fal-image` as
+the provider, and each shot logs one `[single-frame]` line covering payload receipt, fal submit,
+image return, clip ready, and playback, so per-frame latency and cost are reconstructable from a run
+log alone.
+
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
 adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the

@@ -1,4 +1,6 @@
 import { generateVideo } from './fal.js';
+import { generateStillFrame, orderStillReferences } from './still-frame.js';
+import type { StillClipSession } from './still-clip.js';
 import { type ReferenceUploader, uploadDataUrl } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 
@@ -23,6 +25,18 @@ export interface GeneratedShot {
   submittedPrompt?: string;
   referenceImageCount?: number;
   timings?: { submitSeconds: number; queueSeconds: number; totalSeconds: number; polls: number; maxQueuePosition?: number | null };
+  /**
+   * PIC-1974: single-frame only. The clip is synthesized on this machine, so a consumer that can
+   * read the filesystem (the offline replay harness) uses the file directly instead of fetching
+   * the loopback URL, and the run log can separate image time from mux time.
+   */
+  localFilePath?: string;
+  stillImageUrl?: string;
+  stillModelId?: string;
+  /** Which references actually survived the edit endpoint's four-image cap, in order. */
+  stillReferenceNames?: string[];
+  /** When the generated image came back, i.e. before the ffmpeg mux. */
+  imageReadyAt?: string;
 }
 
 export type ShotDependency =
@@ -52,6 +66,11 @@ export interface ShotGeneratorOptions {
   guard?: () => void;
   queueBaseUrl?: string;
   timeoutMs?: number;
+  /** PIC-1974: required in `single-frame`; muxes each generated still with the line's audio. */
+  stillClipSession?: StillClipSession;
+  /** Uploads references fal cannot fetch, shared with `stillUploadCache` across the whole run. */
+  stillReferenceUploader?: ReferenceUploader;
+  stillUploadCache?: Map<string, Promise<string>>;
 }
 
 interface Source { shotId: string; job: ScheduledShot<GeneratedShot> | null }
@@ -126,6 +145,34 @@ export class ShotGenerator {
       if (continuity === 'camera-anchors' && continuityFrame) {
         images.push(continuityFrame);
         prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
+      }
+      // PIC-1974: the stills mode replaces the provider clip with a generated frame muxed against
+      // the line's own dialogue audio. Placed at the provider call site so the continuity work
+      // above (a no-op under continuity `none`) and the scheduling below are untouched.
+      if (mode === 'single-frame') {
+        const session = this.options.stillClipSession;
+        if (!session) throw new Error('single-frame rendering requires a still clip session');
+        // The set is the planner's last reference, so it must be prioritized explicitly or the
+        // four-image cap drops the environment before it drops a spare face.
+        const stillReferences = orderStillReferences(shot.imageReferences, shot.speaker);
+        const still = await generateStillFrame({ prompt, referenceImageUrls: stillReferences.map(entry => entry.url) }, {
+          apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
+          timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
+          referenceUploader: this.options.stillReferenceUploader, uploadCache: this.options.stillUploadCache,
+        });
+        const imageReadyAt = new Date().toISOString();
+        guard();
+        const clip = await session.synthesize({
+          shotId: shot.id, imageUrl: still.imageUrl,
+          dialogueAudioUrl: shot.dialogueAudioUrl ?? null, holdSeconds: shot.durationSeconds, signal,
+        });
+        guard();
+        return {
+          videoUrl: clip.url, localFilePath: clip.filePath, requestId: still.requestId,
+          submittedPrompt: prompt, referenceImageCount: stillReferences.length, timings: still.timings,
+          stillImageUrl: still.imageUrl, stillModelId: still.modelId, imageReadyAt,
+          stillReferenceNames: stillReferences.map(entry => entry.name),
+        };
       }
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',

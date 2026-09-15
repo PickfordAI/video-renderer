@@ -1,4 +1,4 @@
-import { parseRendererConfig } from '../server/render-mode.ts';
+import { parseRendererConfig, RENDER_MODES } from '../server/render-mode.ts';
 import { describe, expect, it } from 'vitest';
 import { handoffRendererConfig, renderingOptions, validateHandoff } from './handoff.mjs';
 const valid = () => ({ rendererId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', credentialId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', evdId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', clientSecret: 'test', setupToken: 'test' });
@@ -54,7 +54,7 @@ describe('render mode handoff', () => {
 
 describe('separate model and continuity policy', () => {
   it('keeps CLI capability validation in agreement with the shared server schema', () => {
-    for (const model of ['auto', 'fal-turbo-i2v', 'fal-max-ref2v']) for (const continuity of ['none', 'last-frame-chain', 'camera-anchors']) {
+    for (const model of RENDER_MODES) for (const continuity of ['none', 'last-frame-chain', 'camera-anchors']) {
       const rendererConfig = { model, continuity, concurrency: 3, maxBufferedSeconds: 25 };
       let parsed;
       try { parsed = parseRendererConfig(rendererConfig); } catch {

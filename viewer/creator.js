@@ -2,6 +2,9 @@ import {
   bundleAction,
   bundleTitle,
   canStopPlayback,
+  rememberedRenderMode,
+  rememberRenderMode,
+  RENDERER_CHOICES,
   environmentLabel,
   falKeyLabel,
   playbackLabel,
@@ -40,6 +43,9 @@ let statusTimer;
 let bundleTimer;
 let disposed = false;
 let stopPending = false;
+/** localStorage is unavailable in some embedding contexts; read it through a guard, never directly. */
+const storage = () => { try { return window.localStorage; } catch { return null; } };
+let renderMode = rememberedRenderMode(storage());
 
 function setText(node, value) {
   if (node) node.textContent = value;
@@ -106,8 +112,30 @@ function renderBundles() {
     play.type = 'button';
     play.textContent = action.label;
     play.disabled = action.disabled;
+    const renderer = document.createElement('label');
+    renderer.className = 'bundle-renderer';
+    const rendererName = document.createElement('span');
+    rendererName.textContent = 'Renderer';
+    const rendererSelect = document.createElement('select');
+    rendererSelect.replaceChildren(...RENDERER_CHOICES.map(choice => {
+      const option = document.createElement('option');
+      option.value = choice.value;
+      option.textContent = choice.label;
+      return option;
+    }));
+    rendererSelect.value = renderMode;
+    rendererSelect.disabled = action.disabled;
+    rendererSelect.addEventListener('change', () => {
+      renderMode = rememberRenderMode(storage(), rendererSelect.value);
+      // One choice for the page, so every card agrees with what the next Play will do.
+      for (const other of bundleList.querySelectorAll('.bundle-renderer select')) other.value = renderMode;
+    });
+    renderer.append(rendererName, rendererSelect);
+    const controls = document.createElement('div');
+    controls.className = 'bundle-controls';
+    controls.append(renderer, play);
     play.addEventListener('click', () => void startBundle(bundle, play));
-    card.append(heading, detail, play);
+    card.append(heading, detail, controls);
     return card;
   }));
 }
@@ -116,7 +144,7 @@ async function startBundle(bundle, button) {
   button.disabled = true;
   setText(bundleStatus, `Starting ${bundle.title}…`);
   try {
-    const run = await call('/api/creator/play', { method: 'POST', body: JSON.stringify({ evdId: bundle.evdId }) });
+    const run = await call('/api/creator/play', { method: 'POST', body: JSON.stringify({ evdId: bundle.evdId, renderMode }) });
     setText(bundleStatus, run.storyRunId ? `Started. Story run ${run.storyRunId}.` : 'Started.');
     await refreshStatus();
   } catch (error) {
