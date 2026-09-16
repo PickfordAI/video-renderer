@@ -14,6 +14,7 @@
     "story": "node scripts/story.mjs",
     "auth": "node scripts/auth.mjs",
     "share": "node scripts/share.mjs",
+    "prompt:trial": "node --import tsx server/prompt-trial-cli.ts",
     "replay": "tsx server/replay-cli.ts",
     "deploy:worker": "node scripts/deploy-worker.mjs",
     "build:viewer": "node scripts/build-viewer.mjs",

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import dotenv from 'dotenv';
 
 import { formatReplaySummary, loadDssRecording, replayDss, type ReplayOptions } from './dss-replay.js';
-import type { ContinuityStrategy, RenderMode } from './render-mode.js';
+import type { ContinuityStrategy, RenderMode, ShotPromptMode } from './render-mode.js';
 import type { ShotPlannerSettings } from './shot-planner.js';
 
 /** PIC-1410: `npm run replay -- --dss recording.jsonl [--from N --to M] [--render]`. */
@@ -14,6 +14,7 @@ const USAGE = `Usage: npm run replay -- --dss <file> [options]
   --episode <id>          Only this episode_id (default: all)
   --from <n> --to <n>     Inclusive payload sequence range; earlier payloads still replay staging
   --model <m>             fal-max-ref2v (default) | fal-turbo-i2v | single-frame
+  --prompt-mode <m>       template (default) | llm (adds an Anthropic prompt call)
   --continuity <c>        camera-anchors | none | last-frame-chain (default: model default)
   --concurrency <n>       1-16 (default 4)        --budget <s>   unplayed-video budget, 5-150 (default 45)
   --resolution <r>        480P (default) | 768P   --clip-seconds <s>  default shot length, 5-15 (default 5)
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
   const continuity = option('continuity') ?? handoffConfig.continuity as string | undefined;
   const options: ReplayOptions = {
     rendererConfig: {
+      promptMode: (option('prompt-mode') ?? handoffConfig.promptMode) as ShotPromptMode | undefined,
       model: (option('model') ?? handoffConfig.model ?? 'fal-max-ref2v') as RenderMode,
       ...(continuity ? { continuity: continuity as ContinuityStrategy } : {}),
       concurrency: integer('concurrency') ?? handoffConfig.concurrency as number | undefined,

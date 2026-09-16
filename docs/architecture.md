@@ -421,8 +421,7 @@ The template is rebuilt after camera-anchor selection so Image and Audio numbers
 match the actual submitted arrays. Authored location changes retain their movement
 instead of receiving a stationary instruction. Single Frame and Turbo retain their
 existing prompt paths. The shared FAL adapter permits an explicit expansion override
-and retains balanced as its default. Image-aware LLM expansion remains an offline
-experiment, not a live rendering dependency.
+and retains balanced as its default. Image-aware LLM expansion is opt-in; see `prompt-options.md`.
 
 Dialogue follows a natural conversational pace, with its onset unspecified; clip
 duration is not an instruction to stretch speech.
