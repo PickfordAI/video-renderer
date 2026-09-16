@@ -1,3 +1,8 @@
+import { expandShotPrompt } from './shot-expansion.js';
+import type { ShotPromptMode } from './render-mode.js';
+import { buildShotBrief } from './shot-brief.js';
+import { formatPositiveTemplate } from './shot-template.js';
+import { selectShotPromptReferences } from './shot-prompt.js';
 import { generateVideo } from './fal.js';
 import { generateStillFrame, orderStillReferences } from './still-frame.js';
 import type { StillClipSession } from './still-clip.js';
@@ -47,6 +52,10 @@ export type ShotDependency =
   | { kind: 'chain'; sceneKey: string; sourceShotId: string };
 
 export interface ShotGeneratorOptions {
+  promptMode?: ShotPromptMode;
+  /** Server-owned Anthropic credential; never included in renderer config or artifacts. */
+  promptApiKey?: string;
+  promptModel?: string;
   renderMode: RenderMode;
   continuity: ContinuityStrategy;
   resolution: '480P' | '768P';
@@ -89,9 +98,14 @@ export class ShotGenerator {
 
   /** Reference-slot rules that must hold before any paid submission for the shot's payload. */
   validate(shot: PlannedShot): void {
+    if (this.options.promptMode === 'llm') {
+      if (this.options.renderMode !== 'fal-max-ref2v') throw new Error('LLM prompts require fal-max-ref2v');
+      if (!this.options.promptApiKey) throw new Error('LLM prompts require server ANTHROPIC_API_KEY');
+    }
+    if (shot.preparedCoverage && this.options.renderMode !== 'fal-max-ref2v') throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
     if (this.options.renderMode !== 'fal-max-ref2v') return;
     if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
-    const anchors = this.options.continuity === 'camera-anchors';
+    const anchors = !shot.preparedCoverage && this.options.continuity === 'camera-anchors';
     const referenceLimit = anchors ? 11 : 12;
     if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
       throw new Error(anchors
@@ -102,6 +116,7 @@ export class ShotGenerator {
 
   /** The dependency `schedule` would create for this shot, given the shots registered so far. */
   describe(shot: PlannedShot): ShotDependency {
+    if (shot.preparedCoverage) return { kind: 'independent' };
     const { continuity } = this.options;
     if (continuity === 'last-frame-chain') {
       const tail = this.sceneTails.get(shot.sceneKey);
@@ -126,6 +141,7 @@ export class ShotGenerator {
   /** `shotGuard` fences this shot alone, e.g. against the assignment its payload arrived under. */
   schedule(shot: PlannedShot, shotGuard?: () => void): { dependency: ShotDependency; job: ScheduledShot<GeneratedShot> } {
     const { renderMode: mode, continuity, scheduler, signal } = this.options;
+    this.validate(shot);
     const guard = () => { this.options.guard?.(); shotGuard?.(); };
     const dependency = this.describe(shot);
     const source = dependency.kind === 'anchor-reuse' ? this.anchors.get(shot.anchorKey)
@@ -171,18 +187,42 @@ export class ShotGenerator {
           stillReferenceNames: stillReferences.map(entry => entry.name),
         };
       }
+      const candidates = [...shot.imageReferences];
+      if (continuity === 'camera-anchors' && continuityFrame) {
+        candidates.push({ name: 'camera anchor', role: 'camera-anchor', url: continuityFrame, label: `Image ${candidates.length + 1}` });
+      }
+      const references = selectShotPromptReferences(shot.promptInput, candidates, shot.audioReferences);
+      let promptExpansionMode: 'balanced' | 'disabled' = 'balanced';
+      if (mode === 'fal-max-ref2v') {
+        images.splice(0, images.length, ...references.images.map(r => r.url));
+        const resolvedShot = { ...shot, imageReferences: references.images, audioReferences: references.audios };
+        prompt = formatPositiveTemplate(buildShotBrief(resolvedShot));
+        if (this.options.promptMode === 'llm') {
+          try {
+            prompt = (await expandShotPrompt(resolvedShot, { apiKey: this.options.promptApiKey!, model: this.options.promptModel ?? 'claude-opus-5', signal })).prompt;
+            promptExpansionMode = 'disabled';
+          } catch {
+            // Cancellation/fencing still stops the run. Provider/validation failures use A for this shot.
+            signal.throwIfAborted();
+            guard();
+            console.warn('[H3 prompt] Image-aware expansion failed; using template + balanced for this shot.');
+          }
+        }
+        guard();
+      }
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',
         renderMode: mode,
+        ...(mode === 'fal-max-ref2v' ? { promptExpansionMode } : {}),
         initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.options.initialImageUrl : undefined,
         referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
-        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
+        referenceAudioUrls: mode === 'fal-max-ref2v' ? references.audios.map(r => r.url) : undefined,
       }, {
         apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
       });
       guard();
-      let nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
+      let nextFrame = shot.preparedCoverage || continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
         ? await extractVideoFrame(generated.videoUrl, {
           position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal,
         })

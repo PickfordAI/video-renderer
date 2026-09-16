@@ -160,6 +160,7 @@ export async function replayDss(payloads: readonly JsonObject[], options: Replay
     : null;
   const generator = new ShotGenerator({
     renderMode: rendererConfig.model, continuity: rendererConfig.continuity, resolution, initialImageUrl,
+    promptMode: rendererConfig.promptMode, promptApiKey: process.env.ANTHROPIC_API_KEY, promptModel: process.env.H3_PROMPT_MODEL,
     apiKey: options.render?.apiKey ?? 'plan-only', scheduler, signal: controller.signal,
     ...(stillClips && options.render ? {
       stillClipSession: stillClips,

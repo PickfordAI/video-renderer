@@ -1,3 +1,6 @@
+import { DssShotPlanner } from './shot-planner.js';
+import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
+import { ShotScheduler } from './shot-scheduler.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,7 +90,8 @@ describe('replayDss planning', () => {
     expect(result.payloads).toMatchObject({ replayedForStaging: 4, selected: 2 });
     expect(result.shots.map(shot => [shot.sequence, shot.dependency.kind])).toEqual([[3, 'anchor-establish'], [4, 'anchor-establish']]);
     // Staging from the replayed setup payload still reaches the compiled prompt.
-    expect(result.shots[0].prompt).toMatch(/Sam/);
+    expect(result.shots[0].prompt).not.toMatch(/Sam/);
+    expect(result.shots[0].prompt).toContain('at desk');
   });
 
   it('chains Turbo shots within a scene and restarts on a scene change', async () => {
@@ -123,6 +127,47 @@ describe('replayDss planning', () => {
   });
 });
 
+describe('shot submission reference selection', () => {
+  it.each([false, true])('rebinds the final payload after excluding hidden portraits and unrelated audio (reaction=%s)', async reaction => {
+    const planner = new DssShotPlanner({
+      ...references,
+      characters: { ...references.characters, Alex: { ...references.characters.Alex, voice: { url: 'https://images.example/alex.wav', durationSeconds: 3 } } },
+    });
+    planner.planGroup(setup, 'setup', storyBlockId);
+    const visibleName = reaction ? 'Sam' : 'Alex';
+    const hiddenName = reaction ? 'Alex' : 'Sam';
+    const shot = planner.planGroup([
+      { command: 'character camera', args: { character: visibleName, shot: 'Character_CloseUp' } },
+      { command: 'talk', args: { character: 'Alex', respondent: 'Sam', dialogue: 'We should stay here.', audio_duration: 5 } },
+    ], 'line', storyBlockId).shots[0];
+    const hiddenPortrait = { name: hiddenName, role: 'character' as const, url: `https://images.example/${hiddenName.toLowerCase()}.png`, label: 'Image 99' };
+    const unrelatedVoice = { name: 'Sam', purpose: 'voice' as const, url: 'https://images.example/sam.wav', durationSeconds: 3, label: 'Audio 99' };
+    const supplied = {
+      ...shot,
+      imageReferences: [hiddenPortrait, ...shot.imageReferences],
+      referenceImageUrls: [hiddenPortrait.url, ...shot.referenceImageUrls],
+      audioReferences: [unrelatedVoice, ...shot.audioReferences],
+      referenceAudioUrls: [unrelatedVoice.url, ...shot.referenceAudioUrls],
+    };
+    vi.mocked(generateVideo).mockResolvedValue({ videoUrl: 'https://fal.media/selected.mp4', requestId: 'selected' } as Generated);
+    const signal = new AbortController().signal;
+    const generator = new ShotGenerator({ renderMode: 'fal-max-ref2v', continuity: 'none', resolution: '768P', apiKey: 'fixture', scheduler: new ShotScheduler<GeneratedShot>(1, 15, signal), signal });
+    await generator.schedule(supplied).job.result;
+    const submitted = vi.mocked(generateVideo).mock.calls[0][0];
+    expect(submitted.referenceImageUrls).toEqual([`https://images.example/${visibleName.toLowerCase()}.png`, 'https://images.example/lobby.png']);
+    expect(submitted.referenceAudioUrls).toEqual(['https://images.example/alex.wav']);
+    expect(submitted.prompt).toContain(`${visibleName}'s identity and wardrobe follow Image 1`);
+    expect(submitted.prompt).toContain('Image 2');
+    expect(submitted.prompt).toContain('Audio 1');
+    expect(submitted.prompt).not.toMatch(/(?:Image|Audio) (?:3|99)\b/);
+    expect(submitted.prompt).not.toContain(`${hiddenName}'s identity and wardrobe`);
+    expect(submitted.promptExpansionMode).toBe('balanced');
+    expect(submitted.prompt).toContain('<d>[English] We should stay here.</d>');
+    if (reaction) expect(submitted.prompt).toMatch(/Alex \(voice from beyond the frame\)/i);
+    else expect(submitted.prompt).not.toContain('Sam');
+  });
+});
+
 describe('replayDss rendering', () => {
   let outDir: string;
   afterEach(async () => { if (outDir) await rm(outDir, { recursive: true, force: true }); });
@@ -151,7 +196,8 @@ describe('replayDss rendering', () => {
     // The reused anchor received its source's extracted frame as the extra reference.
     const reuse = vi.mocked(generateVideo).mock.calls[2][0];
     expect(reuse.referenceImageUrls?.at(-1)).toMatch(/^data:image\/jpeg;base64,/);
-    expect(reuse.prompt).toMatch(/established frame for this camera setup/);
+    expect(reuse.prompt).toContain('Image 3 establishes the camera setup');
+    expect(reuse.promptExpansionMode).toBe('balanced');
     expect(calls).toEqual([
       'download https://fal.media/clip-1.mp4 -> 001-seq1.mp4', 'normalize 001-seq1.mp4 5s @0',
       'download https://fal.media/clip-2.mp4 -> 002-seq2.mp4', 'normalize 002-seq2.mp4 5s @5',
