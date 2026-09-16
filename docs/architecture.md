@@ -407,3 +407,19 @@ composition directly; they never await or append a frame extracted from the firs
 A repeated master retains its setup identity across speaker changes. This provides stable
 framing, not continuous performance across independent generated clips. Existing measured
 full-clip duration, playout, `Script_Started` and `Group_Finished` handling still applies.
+
+### H3 reference-video prompt policy
+
+Reference-video shots use the accepted A template with FAL balanced expansion. The
+shot brief retains DSS placement, gaze, torso orientation, explicit emotion, current
+dialogue and phrase delivery. Visual definitions include visible cast only; hidden
+relationships become anonymous attention context. Composition images govern framing
+and the environment, while character portraits govern identity and wardrobe.
+Stationary shots explicitly state that each visible character stays in place.
+
+The template is rebuilt after camera-anchor selection so Image and Audio numbers
+match the actual submitted arrays. Authored location changes retain their movement
+instead of receiving a stationary instruction. Single Frame and Turbo retain their
+existing prompt paths. The shared FAL adapter permits an explicit expansion override
+and retains balanced as its default. Image-aware LLM expansion remains an offline
+experiment, not a live rendering dependency.

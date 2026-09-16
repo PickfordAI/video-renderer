@@ -7,6 +7,7 @@ export interface GenerateVideoInput {
   duration: number;
   resolution: '480P' | '768P';
   aspectRatio: '16:9';
+  promptExpansionMode?: 'disabled' | 'balanced' | 'quality';
   referenceImageUrls?: string[];
   referenceAudioUrls?: string[];
   renderMode?: RenderMode;
@@ -91,7 +92,7 @@ export async function generateVideo(
       duration: input.duration,
       resolution: input.resolution,
       ...(generationMode !== 'image' ? { aspect_ratio: input.aspectRatio } : {}),
-      prompt_expansion_mode: 'balanced',
+      prompt_expansion_mode: input.promptExpansionMode ?? 'balanced',
       enable_safety_checker: true,
       ...(generationMode === 'image'
         ? { image_url: input.initialImageUrl }

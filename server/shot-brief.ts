@@ -76,6 +76,8 @@ export function buildShotBrief(shot: PlannedShot): ShotBrief {
     if (target && /^(floor|ground)$/i.test(target)) return result('downward toward the ground', 'direction', 'authored');
     if (target && /^(sky|ceiling)$/i.test(target)) return result('upward', 'direction', 'authored');
     if (target && /^(camera|lens|viewer)$/i.test(target)) return result('into the camera', 'direction', 'authored');
+    if (target && /^(?:unknown|none)$/i.test(target)) return result(composition ? `in the direction established by ${composition}` : '', 'unspecified', 'unspecified');
+    if (target && !input.subjects.some(s => s.name === target)) return result(`toward ${positive(target)}`, 'direction', 'authored');
     if (target) {
       // Preserve the relationship before removing its name. Room marks alone do not establish screen direction.
       const resolved = result('toward the person beyond the frame', 'off-frame-character', composition ? 'composition-inference-required' : 'unspecified');

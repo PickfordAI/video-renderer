@@ -29,11 +29,11 @@ describe('prepared coverage v1', () => {
     const closeup = p.planGroup(frame.groups[1].commands, 'closeup', 'block').shots[0];
     expect(master.imageReferences.map(r => r.name)).toEqual(['composition', 'Maya', 'Theo']);
     expect(closeup.imageReferences.map(r => r.name)).toEqual(['composition', 'Theo']);
-    expect(closeup.prompt).toContain('Maya remains outside the shot');
-    expect(closeup.prompt).toContain('Theo preserves the head angle and eye direction shown in Image 1');
-    expect(closeup.prompt).toContain('Begin the scripted dialogue within the first half-second');
+    expect(closeup.prompt).not.toContain('Maya');
+    expect(closeup.prompt).toContain('using an off-axis conversational eyeline');
+    expect(closeup.prompt).toContain('Theo stays in place throughout the shot');
     expect(closeup.prompt).not.toContain('Let the performance occupy');
-    expect(closeup.prompt).toContain('Image 2 only as their full original character identity');
+    expect(closeup.prompt).toContain("Theo's identity and wardrobe follow Image 2");
     expect(closeup.prompt).not.toContain('Image 2 for the overall rendering style');
     expect(closeup.referenceImageUrls[1]).toBe('data:image/png;base64,' + Buffer.from('downloaded:theo.png').toString('base64'));
   });
@@ -58,16 +58,16 @@ describe('prepared coverage v1', () => {
     expect(c.setupKey).toBe(a.setupKey);
     expect(c.anchorKey).toBe(a.anchorKey);
     expect(c.imageReferences.map(r => r.name)).toEqual(['composition', 'Maya', 'Theo']);
-    expect(c.prompt).toContain('no recipient is inferred');
+    expect(c.prompt).toContain('the direction established by Image 1');
     expect(c.prompt).not.toContain('unknown has');
   });
   it('preserves authored gaze independently of body orientation', async () => {
     const p = await planner();
     const shot = p.planGroup([talk('Maya', 'Theo'), { command: 'look', args: { character: 'Maya', target: { name: 'window' } } }, { command: 'look', args: { character: 'Theo', target: { name: 'door' } } }], 'a', 'block').shots[0];
-    expect(shot.prompt).toContain('Maya follows the authored look toward window');
-    expect(shot.prompt).toContain('Theo follows the authored look toward door');
-    expect(shot.prompt).toContain('Preserve their body orientation and physical placement from Image 1');
-    expect(shot.prompt).not.toContain('Seated torso facing the doorway');
+    expect(shot.prompt).toContain('Maya looks toward window');
+    expect(shot.prompt).toContain('Theo looks toward door');
+    expect(shot.prompt).toContain('using the framing established by Image 1');
+    expect(shot.prompt).toContain('Seated torso facing the doorway');
     expect(shot.prompt).not.toContain('speaking to Theo');
   });
   it.each(['version', 'missing-closeup', 'visible', 'hash', 'overlap'])('rejects malformed %s without fallback', field => {

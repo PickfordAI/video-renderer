@@ -1,5 +1,7 @@
 import { preparedCoverageIdentity, type PreparedView } from './prepared-coverage.js';
-import { type ShotPromptInput } from './shot-prompt.js';
+import { buildShotBrief } from './shot-brief.js';
+import { formatPositiveTemplate } from './shot-template.js';
+import { selectShotPromptReferences, type ShotPromptInput } from './shot-prompt.js';
 import { preparedAttention } from './prepared-attention.js';
 import { sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 
@@ -582,7 +584,7 @@ export class DssShotPlanner {
       const anchorKey = preparedView ? setupKey : JSON.stringify([sceneKey, next.backdropImageUrl ?? null, camera.shot, cameraSubject ?? null, line?.speaker ?? null, line?.respondent ?? null, blocking]);
       const id = `${storyBlockId}:${groupId}:${index}`;
       const promptInput = this.promptInput(names, visibleNames, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView, commands);
-      shots.push(freeze({
+      const planned: PlannedShot = {
         id, groupId, storyBlockId, promptInput,
         prompt: this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView),
         durationSeconds, ...(line ? { speaker: line.speaker, dialogue: segment!.dialogue, audioDurationSeconds: sourceDuration, sourceAudioDurationSeconds: line.duration } : {}),
@@ -591,7 +593,16 @@ export class DssShotPlanner {
         imageReferences: refs.images, audioReferences: refs.audios,
         setupKey, continuityKey, sceneKey, anchorKey, ...(preparedView ? { preparedCoverage: { version: 1 as const, assetId: preparedView.assetId } } : {}), requiresPreviousFrame: !preparedView && (index > 0 || hasMovement),
         hasMovement: index === 0 && hasMovement, startingState: shotStart, resultingState: shotEnd, actions: [...shotActions],
-      }));
+      };
+      if (!singleFrame && !promptInput.initialFrameOnly) {
+        const selected = selectShotPromptReferences(promptInput, refs.images, refs.audios);
+        planned.imageReferences = selected.images;
+        planned.audioReferences = selected.audios;
+        planned.referenceImageUrls = selected.images.map(r => r.url);
+        planned.referenceAudioUrls = selected.audios.map(r => r.url);
+        planned.prompt = formatPositiveTemplate(buildShotBrief(planned));
+      }
+      shots.push(freeze(planned));
     };
     for (const line of lines) {
       const segments = splitLine(line, singleFrame);

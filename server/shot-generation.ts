@@ -1,3 +1,6 @@
+import { buildShotBrief } from './shot-brief.js';
+import { formatPositiveTemplate } from './shot-template.js';
+import { selectShotPromptReferences } from './shot-prompt.js';
 import { generateVideo } from './fal.js';
 import { generateStillFrame, orderStillReferences } from './still-frame.js';
 import type { StillClipSession } from './still-clip.js';
@@ -174,12 +177,22 @@ export class ShotGenerator {
           stillReferenceNames: stillReferences.map(entry => entry.name),
         };
       }
+      const candidates = [...shot.imageReferences];
+      if (continuity === 'camera-anchors' && continuityFrame) {
+        candidates.push({ name: 'camera anchor', role: 'camera-anchor', url: continuityFrame, label: `Image ${candidates.length + 1}` });
+      }
+      const references = selectShotPromptReferences(shot.promptInput, candidates, shot.audioReferences);
+      if (mode === 'fal-max-ref2v') {
+        images.splice(0, images.length, ...references.images.map(r => r.url));
+        prompt = formatPositiveTemplate(buildShotBrief({ ...shot, imageReferences: references.images, audioReferences: references.audios }));
+      }
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',
         renderMode: mode,
+        ...(mode === 'fal-max-ref2v' ? { promptExpansionMode: 'balanced' as const } : {}),
         initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.options.initialImageUrl : undefined,
         referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
-        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
+        referenceAudioUrls: mode === 'fal-max-ref2v' ? references.audios.map(r => r.url) : undefined,
       }, {
         apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,

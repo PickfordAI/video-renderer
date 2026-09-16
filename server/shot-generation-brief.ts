@@ -42,7 +42,7 @@ export function projectShotBrief(brief: ShotBrief, options: { annotateHiddenDire
   const speaker = raw.speech?.speaker;
   const hiddenNames = [...new Set([
     ...raw.subjects.filter(s => !s.visible && s.name !== speaker).map(s => s.name),
-    ...[raw.speech?.respondent, raw.speech?.listener].filter((s): s is string => Boolean(s) && !visible.has(s!) && s !== speaker && !specialTarget.test(s!)),
+    ...[raw.speech?.respondent, raw.speech?.listener].filter((s): s is string => Boolean(s) && !visible.has(s!) && s !== speaker && !specialTarget.test(s!) && !/^(?:unknown|none)$/i.test(s!)),
   ])];
   const aliases = new Map(hiddenNames.map((name, i) => [name, i === 0 ? 'the person beyond the frame' : `the other person beyond the frame${i > 1 ? ` (${i + 1})` : ''}`]));
   const rename = (value?: string) => {
@@ -102,7 +102,7 @@ export function projectShotBrief(brief: ShotBrief, options: { annotateHiddenDire
       ending: changes.join('. '), eyeline, gaze, emotion: rename(s.emotion), gazeProvenance: s.gazeSource, emotionProvenance: s.emotionSource };
   });
   const speech = raw.speech ? { speaker: raw.speech.speaker, visible: visible.has(raw.speech.speaker), dialogue: raw.speech.dialogue,
-    tone: rename(raw.speech.tone), respondent: renameFor(raw.speech.speaker, raw.speech.respondent) || undefined,
+    tone: rename(raw.speech.tone), respondent: /^(?:unknown|none)$/i.test(raw.speech.respondent ?? '') ? undefined : renameFor(raw.speech.speaker, raw.speech.respondent) || undefined,
     deliveryBeats: (raw.speech.deliveryBeats ?? [{ phrase: raw.speech.dialogue, directions: raw.speech.deliveryDirections }]).map(b => ({ phrase: b.phrase, directions: b.directions.map(rename) })) } : undefined;
   if (speech?.respondent) relationships.push({ actor: speech.speaker, relation: 'addresses', target: speech.respondent,
     targetPlacement: rename(raw.subjects.find(s => s.name === raw.speech?.respondent)?.resultingBlocking), targetDirection: directionTo(speech.speaker, raw.speech?.respondent), source: 'explicit-dss' });
