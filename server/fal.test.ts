@@ -48,7 +48,7 @@ describe('generateVideo', () => {
     });
   });
 
-  it('uses the reference-to-video endpoint and forwards ordered image and audio references', async () => {
+  it.each(['balanced', 'disabled'] as const)('forwards ordered references with explicit %s expansion', async promptExpansionMode => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json({ request_id: 'request-ref' }))
@@ -58,6 +58,7 @@ describe('generateVideo', () => {
     const result = await generateVideo(
       {
         prompt: 'Image 1 is Marcus Kent. He studies the ledger.',
+        promptExpansionMode,
         duration: 8,
         resolution: '768P',
         aspectRatio: '16:9',
@@ -69,6 +70,7 @@ describe('generateVideo', () => {
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max/reference-to-video');
     expect(JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({
+      prompt_expansion_mode: promptExpansionMode,
       reference_image_urls: ['data:image/jpeg;base64,AAAA'],
       reference_audio_urls: ['https://audio.example/kent.mp3'],
     });

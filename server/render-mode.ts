@@ -16,7 +16,10 @@ export const DEFAULT_CONCURRENCY = 4;
 export const DEFAULT_BUFFERED_SECONDS = 45;
 
 export type ContinuityStrategy = 'none' | 'last-frame-chain' | 'camera-anchors';
+export type ShotPromptMode = 'template' | 'llm';
 export interface RendererConfig {
+  /** Omission uses the accepted A template with balanced expansion. */
+  promptMode?: ShotPromptMode;
   model: RenderMode;
   continuity: ContinuityStrategy;
   concurrency: number;
@@ -45,6 +48,9 @@ export function parseRendererConfig(value: unknown, legacy: {
   }
   const config = (value ?? {}) as Record<string, unknown>;
   const model = parseRenderMode(config.model ?? legacy.renderMode);
+  const promptMode = config.promptMode;
+  if (promptMode !== undefined && promptMode !== 'template' && promptMode !== 'llm') throw new Error('rendererConfig.promptMode must be template or llm');
+  if (promptMode === 'llm' && model !== 'fal-max-ref2v') throw new Error('LLM prompts require fal-max-ref2v');
   const continuity = config.continuity ?? defaultContinuity(model);
   if (!['none', 'last-frame-chain', 'camera-anchors'].includes(continuity as string)) {
     throw new Error('rendererConfig.continuity must be none, last-frame-chain, or camera-anchors');
@@ -60,7 +66,7 @@ export function parseRendererConfig(value: unknown, legacy: {
   if (!Number.isInteger(maxBufferedSeconds) || (maxBufferedSeconds as number) < 5 || (maxBufferedSeconds as number) > MAX_BUFFERED_SECONDS) {
     throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to ' + MAX_BUFFERED_SECONDS);
   }
-  return { model, continuity: continuity as ContinuityStrategy, concurrency: concurrency as number, maxBufferedSeconds: maxBufferedSeconds as number };
+  return { ...(promptMode ? { promptMode } : {}), model, continuity: continuity as ContinuityStrategy, concurrency: concurrency as number, maxBufferedSeconds: maxBufferedSeconds as number };
 }
 
 export const RENDER_MODE_LABELS: Record<RenderMode, string> = {

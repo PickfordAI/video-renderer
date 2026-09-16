@@ -159,6 +159,7 @@ export class MinimaxSceneAssetCache {
   private readonly preparations = new Map<string, string>();
   private readonly uploader: ReferenceUploader | null;
   private readonly downscale: ReferenceDownscaler | null;
+  private readonly fetchImpl: typeof fetch;
 
   /**
    * With an uploader, each asset is uploaded once and referenced by URL; without one the bytes
@@ -166,13 +167,14 @@ export class MinimaxSceneAssetCache {
    * An optional downscaler runs before the upload so multi-megabyte certified PNGs do not sit
    * on the critical path at every scene boundary.
    */
-  constructor(options: { uploader?: ReferenceUploader | null; downscale?: ReferenceDownscaler | null } = {}) {
+  constructor(options: { uploader?: ReferenceUploader | null; downscale?: ReferenceDownscaler | null; fetchImpl?: typeof fetch } = {}) {
+    this.fetchImpl = options.fetchImpl ?? fetch;
     this.uploader = options.uploader ?? null;
     this.downscale = options.downscale ?? null;
   }
 
   private async download(image: MinimaxSceneImage, signal?: AbortSignal): Promise<CachedSceneImage> {
-    const response = await fetch(image.imageUrl, { signal });
+    const response = await this.fetchImpl(image.imageUrl, { signal });
     if (!response.ok) throw new Error(`Certified scene image download failed with HTTP ${response.status}`);
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
     if (!contentType?.startsWith('image/')) throw new Error('Certified scene image response must have an image content type');
