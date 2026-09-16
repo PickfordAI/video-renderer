@@ -12,6 +12,12 @@ describe('renderer configuration', () => {
     expect(parseRendererConfig({ model: 'fal-max-ref2v', continuity: 'none', concurrency: 4 }, { renderMode: 'auto', generationConcurrency: 1 })).toMatchObject({ model: 'fal-max-ref2v', continuity: 'none', concurrency: 4 });
     expect(parseRendererConfig(undefined)).toEqual({ model: 'auto', continuity: 'none', concurrency: 4, maxBufferedSeconds: 45 });
   });
+  it('keeps template as the implicit prompt policy and validates opt-in LLM mode', () => {
+    expect(parseRendererConfig({ model: 'fal-max-ref2v' }).promptMode).toBeUndefined();
+    expect(parseRendererConfig({ model: 'fal-max-ref2v', promptMode: 'llm' }).promptMode).toBe('llm');
+    expect(() => parseRendererConfig({ model: 'single-frame', promptMode: 'llm' })).toThrow('require fal-max-ref2v');
+    expect(() => parseRendererConfig({ model: 'fal-max-ref2v', promptMode: 'other' })).toThrow('promptMode');
+  });
   it('rejects unimplemented model/strategy pairs and invalid budgets explicitly', () => {
     expect(() => parseRendererConfig({ model: 'fal-turbo-i2v', continuity: 'camera-anchors' })).toThrow('does not yet support');
     expect(() => parseRendererConfig({ model: 'fal-max-ref2v', continuity: 'last-frame-chain' })).toThrow('does not yet support');
