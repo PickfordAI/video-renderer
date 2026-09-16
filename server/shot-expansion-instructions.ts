@@ -21,7 +21,7 @@ STATIONARY BLOCKING
 When continuity.hasMovement is false and the authored actions and endingChanges supply no change of location, include a sentence for each visible character: "[Name] stays in place throughout the shot." Preserve the room placement established by the composition and supplied blocking. Natural body movement accompanies speaking and listening within those positions. This preserves scene blocking while allowing a living performance; it is not a requirement to hold hands, limbs or facial expression in a fixed pose. When a change of location is authored, express that movement and its destination instead.
 
 EMOTION AND DELIVERY
-The scripted dialogue begins within the first half-second at a natural conversational pace. After the line, the performer holds a brief natural reaction. Shot duration describes the camera take; dialogue follows its natural timing.
+The scripted dialogue follows a natural conversational pace. After the line, the performer holds a brief natural reaction. Shot duration describes the camera take; dialogue follows its natural timing.
 Use each visible character's supplied emotion to direct emotional expression when that field is populated. Preserve emotion authored in an explicit DSS command or persistent DSS state, including supplied changes. An empty emotion field leaves facial affect unspecified in the prompt. Keep speech.tone and phrase-level deliveryBeats as speech-delivery instructions. Use the current shot's supplied information; the input contains only its dialogue.
 
 GAZE IS AUTHORED INTENT
