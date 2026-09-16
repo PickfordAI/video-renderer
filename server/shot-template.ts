@@ -50,7 +50,7 @@ export function formatPositiveTemplate(input: ShotBrief): string {
       ...cast.filter(s => speech && s.name !== speech.speaker).map(s => `${s.name} listens`),
       ...(!brief.continuity.hasMovement ? cast.map(s => `${s.name} stays in place throughout the shot`) : []),
       'Natural movement accompanies the performance within the authored blocking',
-      `The performance spans the ${brief.durationSeconds}-second shot`,
+      ...(speech ? ['The scripted dialogue begins within the first half-second, at a natural conversational pace', 'After the line, the performer holds a brief natural reaction'] : []),
     ])}.`,
     speech ? `dialogue: ${speech.speaker}${speech.visible ? '' : ' (voice from beyond the frame)'} speaks this sentence once, verbatim: <d>[English] ${speech.dialogue}</d>` : '',
     brief.endingChanges.length ? `resulting_state: ${join(brief.endingChanges)}.` : '',

@@ -586,7 +586,8 @@ export class DssShotPlanner {
       const promptInput = this.promptInput(names, visibleNames, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView, commands);
       const planned: PlannedShot = {
         id, groupId, storyBlockId, promptInput,
-        prompt: this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView),
+        prompt: singleFrame || promptInput.initialFrameOnly
+          ? this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView) : '',
         durationSeconds, ...(line ? { speaker: line.speaker, dialogue: segment!.dialogue, audioDurationSeconds: sourceDuration, sourceAudioDurationSeconds: line.duration } : {}),
         ...(!split && line?.audio ? { dialogueAudioUrl: httpsUrl(line.audio, 'dialogue audio') } : {}),
         referenceImageUrls: refs.images.map((entry) => entry.url), referenceAudioUrls: refs.audios.map((entry) => entry.url),
@@ -600,6 +601,7 @@ export class DssShotPlanner {
         planned.audioReferences = selected.audios;
         planned.referenceImageUrls = selected.images.map(r => r.url);
         planned.referenceAudioUrls = selected.audios.map(r => r.url);
+        // Plan/replay preview; generation rebuilds after adding and numbering a camera anchor.
         planned.prompt = formatPositiveTemplate(buildShotBrief(planned));
       }
       shots.push(freeze(planned));

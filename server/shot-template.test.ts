@@ -28,6 +28,8 @@ describe('brief to template boundary', () => {
   it('retains authored descriptions, placement, actions, mood, recipient and voice role in a tight shot', () => {
     const brief = buildShotBrief(compile());
     const out = formatPositiveTemplate(brief);
+    expect(out).toContain('dialogue begins within the first half-second, at a natural conversational pace');
+    expect(out).not.toContain('performance spans');
     for (const value of ['green shirt', 'Rolled-up sleeves', 'standing at window', 'desk beside the window', 'Hand-drawn animation', 'concerned', 'finger point', 'thoughtful', 'measured', 'earnest', 'voice identity and timbre']) expect(out).toContain(value);
     expect(out).not.toMatch(/\b(?:Maya|Rose)\b/);
     expect(out).toContain('Body turned toward the person beyond the frame');
