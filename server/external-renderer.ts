@@ -1084,6 +1084,7 @@ class ExternalRendererRun {
     this.stillClips = config.renderMode === 'single-frame' ? sharedStillClipStore().open() : null;
     this.generator = new ShotGenerator({
       renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
+      promptMode: config.rendererConfig.promptMode, promptApiKey: process.env.ANTHROPIC_API_KEY, promptModel: process.env.H3_PROMPT_MODEL,
       initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
       signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
       frameUploader: provider.kind === 'fal' && sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,

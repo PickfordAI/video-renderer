@@ -1,5 +1,7 @@
 import { preparedCoverageIdentity, type PreparedView } from './prepared-coverage.js';
-import { type ShotPromptInput } from './shot-prompt.js';
+import { buildShotBrief } from './shot-brief.js';
+import { formatPositiveTemplate } from './shot-template.js';
+import { selectShotPromptReferences, type ShotPromptInput } from './shot-prompt.js';
 import { preparedAttention } from './prepared-attention.js';
 import { sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 
@@ -582,16 +584,27 @@ export class DssShotPlanner {
       const anchorKey = preparedView ? setupKey : JSON.stringify([sceneKey, next.backdropImageUrl ?? null, camera.shot, cameraSubject ?? null, line?.speaker ?? null, line?.respondent ?? null, blocking]);
       const id = `${storyBlockId}:${groupId}:${index}`;
       const promptInput = this.promptInput(names, visibleNames, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView, commands);
-      shots.push(freeze({
+      const planned: PlannedShot = {
         id, groupId, storyBlockId, promptInput,
-        prompt: this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView),
+        prompt: singleFrame || promptInput.initialFrameOnly
+          ? this.prompt(preparedView ? visibleNames : names, refs, shotStart, shotEnd, shotActions, camera, line, segment, durationSeconds, preparedView) : '',
         durationSeconds, ...(line ? { speaker: line.speaker, dialogue: segment!.dialogue, audioDurationSeconds: sourceDuration, sourceAudioDurationSeconds: line.duration } : {}),
         ...(!split && line?.audio ? { dialogueAudioUrl: httpsUrl(line.audio, 'dialogue audio') } : {}),
         referenceImageUrls: refs.images.map((entry) => entry.url), referenceAudioUrls: refs.audios.map((entry) => entry.url),
         imageReferences: refs.images, audioReferences: refs.audios,
         setupKey, continuityKey, sceneKey, anchorKey, ...(preparedView ? { preparedCoverage: { version: 1 as const, assetId: preparedView.assetId } } : {}), requiresPreviousFrame: !preparedView && (index > 0 || hasMovement),
         hasMovement: index === 0 && hasMovement, startingState: shotStart, resultingState: shotEnd, actions: [...shotActions],
-      }));
+      };
+      if (!singleFrame && !promptInput.initialFrameOnly) {
+        const selected = selectShotPromptReferences(promptInput, refs.images, refs.audios);
+        planned.imageReferences = selected.images;
+        planned.audioReferences = selected.audios;
+        planned.referenceImageUrls = selected.images.map(r => r.url);
+        planned.referenceAudioUrls = selected.audios.map(r => r.url);
+        // Plan/replay preview; generation rebuilds after adding and numbering a camera anchor.
+        planned.prompt = formatPositiveTemplate(buildShotBrief(planned));
+      }
+      shots.push(freeze(planned));
     };
     for (const line of lines) {
       const segments = splitLine(line, singleFrame);
@@ -663,7 +676,7 @@ export class DssShotPlanner {
         `attention: ${preparedAttention(end, names, line?.speaker, line?.respondent)}`,
         `shot: ${camera.shot}. Hold the prepared composition throughout. ${actions.join(' ')} ${names.map(name => end.characters[name]?.emotion ? `${name} appears ${end.characters[name].emotion}.` : '').join(' ')} ${segment?.deliveryDirections.length ? `Delivery directions, not spoken words: ${segment.deliveryDirections.join('; ')}.` : ''}${line ? ` ${line.speaker}${line.tone ? `, in a ${line.tone} tone,` : ''} speaks: <d>[English] ${segment!.dialogue}</d> Only ${line.speaker} speaks; other visible characters listen silently.` : ''}`,
         ...refs.audios.map(ref => `${ref.label} is only ${ref.name}'s ${ref.purpose === 'dialogue' ? 'exact dialogue performance; match its words, timing and delivery' : "voice identity; speak the scripted words, not the sample"}.`),
-        `overall_soundscape: Natural room tone${line ? ` and dialogue. Begin the scripted dialogue within the first half-second. Speak at a natural conversational pace without stretching words or inserting pauses to fill the ${duration}-second shot. After the line, hold a brief natural reaction.` : ". Hold the scripted silent action without adding speech."} No extra dialogue or captions. Each shot preserves stable framing; do not invent continuity of performance from previous clips.`,
+        `overall_soundscape: Natural room tone${line ? ` and dialogue. Speak at a natural conversational pace without stretching words or inserting pauses to fill the ${duration}-second shot. After the line, hold a brief natural reaction.` : ". Hold the scripted silent action without adding speech."} No extra dialogue or captions. Each shot preserves stable framing; do not invent continuity of performance from previous clips.`,
       ].join('\n');
     }
     const imageFor = (name: string) => refs.images.find((entry) => entry.name === name)?.label;
