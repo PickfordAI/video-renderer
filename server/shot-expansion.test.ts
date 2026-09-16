@@ -101,6 +101,14 @@ describe('DSS prompt trial', () => {
     expect(() => validateExpandedPrompt(valid.replace('<Subject 1> (S1) speaks:', 'Maya (voice from beyond the frame) speaks:'), offFrameSpeech)).not.toThrow();
   });
 
+  it('rejects an oversized LLM image copy before calling Anthropic', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(expandShotPrompt(await shot(), { apiKey: 'test', model: 'test', fetchImpl,
+      imagePreprocessor: async () => ({ bytes: new Uint8Array(1500_001), contentType: 'image/jpeg' }),
+    })).rejects.toThrow('image copy exceeds');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('sends actual ordered images plus the filtered brief in one LLM request, preserving the response', async () => {
     const planned = structuredClone(await shot('Maya', 'amused'));
     const performer = planned.promptInput.subjects.find(s => s.name === 'Theo')!;
@@ -109,9 +117,12 @@ describe('DSS prompt trial', () => {
     planned.promptInput.subjects.find(s => s.name === 'Maya')!.resultingBlocking = 'Maya is standing at foreground rug center';
     const fetchImpl = vi.fn<typeof fetch>(async (_url, options) => {
       const request = JSON.parse(options!.body as string);
-      expect(request.system).toContain('six-section');
+      expect(request.system[0].text).toContain('six-section');
+      expect(request.max_tokens).toBe(16000);
+      expect(request.output_config).toEqual({ effort: 'low' });
+      expect(request.system[0].cache_control).toEqual({ type: 'ephemeral' });
       const blocks = request.messages[0].content;
-      expect(blocks.filter((b: { type: string }) => b.type === 'image').map((b: { source: { data: string } }) => Buffer.from(b.source.data, 'base64').toString())).toEqual(['downloaded:theo-close.png', 'downloaded:theo.png']);
+      expect(blocks.filter((b: { type: string }) => b.type === 'image').map((b: { source: { data: string } }) => Buffer.from(b.source.data, 'base64').toString())).toEqual(['copy:downloaded:theo-close.png', 'copy:downloaded:theo.png']);
       expect(blocks.at(-1).text).not.toContain('Maya');
       const projected = JSON.parse(blocks.at(-1).text.split('Resolved shot brief:\n')[1].split('\n\nWrite the final')[0]);
       expect(projected.visibleCast[0]).toMatchObject({ emotion: 'amused', emotionProvenance: 'explicit-dss', gaze: { source: 'dss-look', target: 'off-frame-character' } });
@@ -124,7 +135,8 @@ describe('DSS prompt trial', () => {
       return Response.json({ model: 'test-model', stop_reason: 'end_turn', usage: {}, content: [{ type: 'text', text: expansion(planned.dialogue!) }] });
     });
     const onResponse = vi.fn(async () => {});
-    const result = await expandShotPrompt(planned, { apiKey: 'test', model: 'test-model', fetchImpl, onResponse });
+    const result = await expandShotPrompt(planned, { apiKey: 'test', model: 'test-model', fetchImpl, onResponse, imagePreprocessor: async bytes => ({ bytes: Buffer.from('copy:' + Buffer.from(bytes).toString()), contentType: 'image/jpeg' }) });
+    expect(planned.imageReferences[0].url).not.toContain('copy:');
     expect(result.prompt).toContain(planned.dialogue);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(onResponse).toHaveBeenCalledTimes(1);

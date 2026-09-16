@@ -192,18 +192,28 @@ export class ShotGenerator {
         candidates.push({ name: 'camera anchor', role: 'camera-anchor', url: continuityFrame, label: `Image ${candidates.length + 1}` });
       }
       const references = selectShotPromptReferences(shot.promptInput, candidates, shot.audioReferences);
+      let promptExpansionMode: 'balanced' | 'disabled' = 'balanced';
       if (mode === 'fal-max-ref2v') {
         images.splice(0, images.length, ...references.images.map(r => r.url));
         const resolvedShot = { ...shot, imageReferences: references.images, audioReferences: references.audios };
-        prompt = this.options.promptMode === 'llm'
-          ? (await expandShotPrompt(resolvedShot, { apiKey: this.options.promptApiKey!, model: this.options.promptModel ?? 'claude-opus-5', signal })).prompt
-          : formatPositiveTemplate(buildShotBrief(resolvedShot));
+        prompt = formatPositiveTemplate(buildShotBrief(resolvedShot));
+        if (this.options.promptMode === 'llm') {
+          try {
+            prompt = (await expandShotPrompt(resolvedShot, { apiKey: this.options.promptApiKey!, model: this.options.promptModel ?? 'claude-opus-5', signal })).prompt;
+            promptExpansionMode = 'disabled';
+          } catch {
+            // Cancellation/fencing still stops the run. Provider/validation failures use A for this shot.
+            signal.throwIfAborted();
+            guard();
+            console.warn('[H3 prompt] Image-aware expansion failed; using template + balanced for this shot.');
+          }
+        }
         guard();
       }
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',
         renderMode: mode,
-        ...(mode === 'fal-max-ref2v' ? { promptExpansionMode: this.options.promptMode === 'llm' ? 'disabled' as const : 'balanced' as const } : {}),
+        ...(mode === 'fal-max-ref2v' ? { promptExpansionMode } : {}),
         initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.options.initialImageUrl : undefined,
         referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
         referenceAudioUrls: mode === 'fal-max-ref2v' ? references.audios.map(r => r.url) : undefined,

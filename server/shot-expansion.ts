@@ -1,3 +1,4 @@
+import { ffmpegReferenceDownscaler, type ReferenceDownscaler } from './image-downscale.js';
 import type { PlannedShot } from './shot-planner.js';
 import { selectShotPromptReferences } from './shot-prompt.js';
 import { buildShotBrief, type ShotBrief } from './shot-brief.js';
@@ -55,13 +56,17 @@ export interface ExpansionResult { prompt: string; model: string; usage: unknown
 /** One image-aware LLM call. This function cannot submit a video job. */
 export async function expandShotPrompt(shot: PlannedShot, options: {
   apiKey: string; model: string; signal?: AbortSignal; fetchImpl?: typeof fetch;
+  imagePreprocessor?: ReferenceDownscaler;
   onResponse?: (response: unknown) => Promise<void>;
 }): Promise<ExpansionResult> {
   const brief = buildShotBrief(shot);
   const refs = selectShotPromptReferences(shot.promptInput, shot.imageReferences, shot.audioReferences);
+  if (refs.images.length > 12) throw new Error('Expansion supports at most 12 images');
   const fetchImpl = options.fetchImpl ?? fetch;
-  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
   const content: unknown[] = [];
+  // Normalize private LLM copies only; FAL retains its verified original references.
+  const prepareImage = options.imagePreprocessor ?? ffmpegReferenceDownscaler({ maxEdge: 1568 });
   for (const [index, ref] of refs.images.entries()) {
     let dataUrl = ref.url;
     if (!dataUrl.startsWith('data:')) {
@@ -71,14 +76,18 @@ export async function expandShotPrompt(shot: PlannedShot, options: {
     }
     const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(dataUrl);
     if (!match) throw new Error(`Expansion image ${index + 1} has unsupported encoding`);
+    const imageBytes = Buffer.from(match[2], 'base64');
+    if (imageBytes.length > 20 * 1024 * 1024) throw new Error('Expansion source image exceeds 20 MB');
+    const prepared = await prepareImage(imageBytes, match[1], signal);
+    if (prepared.bytes.byteLength > 1500_000) throw new Error('Expansion image copy exceeds 1.5 MB');
     content.push({ type: 'text', text: `Picture ${index + 1}: ${ref.role}${ref.role === 'character' ? ` for ${ref.name}` : ''}` });
-    content.push({ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } });
+    content.push({ type: 'image', source: { type: 'base64', media_type: prepared.contentType, data: Buffer.from(prepared.bytes).toString('base64') } });
   }
   content.push({ type: 'text', text: `Resolved shot brief:\n${JSON.stringify(projectShotBrief(brief), null, 2)}\n\nWrite the final six-section prompt as plain text.` });
   const response = await fetchImpl('https://api.anthropic.com/v1/messages', {
     method: 'POST', signal,
     headers: { 'content-type': 'application/json', 'x-api-key': options.apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: options.model, max_tokens: 4096, system: H3_EXPANSION_INSTRUCTIONS, messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({ model: options.model, max_tokens: 16000, output_config: { effort: 'low' }, system: [{ type: 'text', text: H3_EXPANSION_INSTRUCTIONS, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content }] }),
   });
   // No automatic POST retry: retain the response for inspection even when validation fails.
   if (!response.ok) throw new Error(`Prompt expansion failed (${response.status}); request was not retried`);

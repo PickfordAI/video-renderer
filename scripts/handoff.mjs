@@ -16,13 +16,16 @@ export function handoffRendererConfig(value) {
   const model = config.model ?? value.renderMode ?? 'auto';
   const supported = { auto: ['none'], 'fal-turbo-i2v': ['last-frame-chain'], 'fal-max-ref2v': ['none', 'camera-anchors'], 'single-frame': ['none'] };
   if (!Object.hasOwn(supported, model)) throw new Error(`rendererConfig.model must be one of ${Object.keys(supported).join(', ')}.`);
+  const promptMode = config.promptMode;
+  if (promptMode !== undefined && promptMode !== 'template' && promptMode !== 'llm') throw new Error('rendererConfig.promptMode must be template or llm');
+  if (promptMode === 'llm' && model !== 'fal-max-ref2v') throw new Error('LLM prompts require fal-max-ref2v');
   const continuity = config.continuity ?? (model === 'fal-turbo-i2v' ? 'last-frame-chain' : model === 'fal-max-ref2v' ? 'camera-anchors' : 'none');
   if (!supported[model].includes(continuity)) throw new Error(`${model} does not yet support the ${continuity} continuity strategy`);
   const concurrency = config.concurrency ?? value.generationConcurrency ?? 4;
   const maxBufferedSeconds = config.maxBufferedSeconds ?? value.maxBufferedSeconds ?? 45;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error('rendererConfig.concurrency must be an integer from 1 to 16.');
   if (!Number.isInteger(maxBufferedSeconds) || maxBufferedSeconds < 5 || maxBufferedSeconds > 150) throw new Error('rendererConfig.maxBufferedSeconds must be an integer from 5 to 150.');
-  return { model, continuity, concurrency, maxBufferedSeconds };
+  return { ...(promptMode ? { promptMode } : {}), model, continuity, concurrency, maxBufferedSeconds };
 }
 
 export function renderingOptions(value) {
