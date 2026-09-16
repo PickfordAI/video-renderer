@@ -424,6 +424,5 @@ existing prompt paths. The shared FAL adapter permits an explicit expansion over
 and retains balanced as its default. Image-aware LLM expansion remains an offline
 experiment, not a live rendering dependency.
 
-Dialogue starts within the first half-second at a natural pace; clip duration is
-not an instruction to stretch speech. This restores the timing intent from #36
-after the A trial template had reintroduced duration-filling wording.
+Dialogue follows a natural conversational pace, with its onset unspecified; clip
+duration is not an instruction to stretch speech.
