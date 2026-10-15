@@ -1,4 +1,11 @@
+import { expandShotPrompt } from './shot-expansion.js';
+import type { ShotPromptMode } from './render-mode.js';
+import { buildShotBrief } from './shot-brief.js';
+import { formatPositiveTemplate } from './shot-template.js';
+import { selectShotPromptReferences } from './shot-prompt.js';
 import { generateVideo } from './fal.js';
+import { generateStillFrame, orderStillReferences } from './still-frame.js';
+import type { StillClipSession } from './still-clip.js';
 import { type ReferenceUploader, uploadDataUrl } from './fal-storage.js';
 import { defaultRequestTimeoutMs } from './provider-timeouts.js';
 
@@ -23,6 +30,18 @@ export interface GeneratedShot {
   submittedPrompt?: string;
   referenceImageCount?: number;
   timings?: { submitSeconds: number; queueSeconds: number; totalSeconds: number; polls: number; maxQueuePosition?: number | null };
+  /**
+   * PIC-1974: single-frame only. The clip is synthesized on this machine, so a consumer that can
+   * read the filesystem (the offline replay harness) uses the file directly instead of fetching
+   * the loopback URL, and the run log can separate image time from mux time.
+   */
+  localFilePath?: string;
+  stillImageUrl?: string;
+  stillModelId?: string;
+  /** Which references actually survived the edit endpoint's four-image cap, in order. */
+  stillReferenceNames?: string[];
+  /** When the generated image came back, i.e. before the ffmpeg mux. */
+  imageReadyAt?: string;
 }
 
 export type ShotDependency =
@@ -33,6 +52,10 @@ export type ShotDependency =
   | { kind: 'chain'; sceneKey: string; sourceShotId: string };
 
 export interface ShotGeneratorOptions {
+  promptMode?: ShotPromptMode;
+  /** Server-owned Anthropic credential; never included in renderer config or artifacts. */
+  promptApiKey?: string;
+  promptModel?: string;
   renderMode: RenderMode;
   continuity: ContinuityStrategy;
   resolution: '480P' | '768P';
@@ -52,6 +75,11 @@ export interface ShotGeneratorOptions {
   guard?: () => void;
   queueBaseUrl?: string;
   timeoutMs?: number;
+  /** PIC-1974: required in `single-frame`; muxes each generated still with the line's audio. */
+  stillClipSession?: StillClipSession;
+  /** Uploads references fal cannot fetch, shared with `stillUploadCache` across the whole run. */
+  stillReferenceUploader?: ReferenceUploader;
+  stillUploadCache?: Map<string, Promise<string>>;
 }
 
 interface Source { shotId: string; job: ScheduledShot<GeneratedShot> | null }
@@ -70,9 +98,14 @@ export class ShotGenerator {
 
   /** Reference-slot rules that must hold before any paid submission for the shot's payload. */
   validate(shot: PlannedShot): void {
+    if (this.options.promptMode === 'llm') {
+      if (this.options.renderMode !== 'fal-max-ref2v') throw new Error('LLM prompts require fal-max-ref2v');
+      if (!this.options.promptApiKey) throw new Error('LLM prompts require server ANTHROPIC_API_KEY');
+    }
+    if (shot.preparedCoverage && this.options.renderMode !== 'fal-max-ref2v') throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
     if (this.options.renderMode !== 'fal-max-ref2v') return;
     if (shot.referenceImageUrls.length === 0) throw new Error('fal-max-ref2v requires configured image references for every shot');
-    const anchors = this.options.continuity === 'camera-anchors';
+    const anchors = !shot.preparedCoverage && this.options.continuity === 'camera-anchors';
     const referenceLimit = anchors ? 11 : 12;
     if (shot.referenceImageUrls.length + shot.referenceAudioUrls.length > referenceLimit) {
       throw new Error(anchors
@@ -83,6 +116,7 @@ export class ShotGenerator {
 
   /** The dependency `schedule` would create for this shot, given the shots registered so far. */
   describe(shot: PlannedShot): ShotDependency {
+    if (shot.preparedCoverage) return { kind: 'independent' };
     const { continuity } = this.options;
     if (continuity === 'last-frame-chain') {
       const tail = this.sceneTails.get(shot.sceneKey);
@@ -107,6 +141,7 @@ export class ShotGenerator {
   /** `shotGuard` fences this shot alone, e.g. against the assignment its payload arrived under. */
   schedule(shot: PlannedShot, shotGuard?: () => void): { dependency: ShotDependency; job: ScheduledShot<GeneratedShot> } {
     const { renderMode: mode, continuity, scheduler, signal } = this.options;
+    this.validate(shot);
     const guard = () => { this.options.guard?.(); shotGuard?.(); };
     const dependency = this.describe(shot);
     const source = dependency.kind === 'anchor-reuse' ? this.anchors.get(shot.anchorKey)
@@ -124,18 +159,70 @@ export class ShotGenerator {
         images.push(continuityFrame);
         prompt += ` Preserve the camera composition and character appearance of Image ${images.length}, the established frame for this camera setup.`;
       }
+      // PIC-1974: the stills mode replaces the provider clip with a generated frame muxed against
+      // the line's own dialogue audio. Placed at the provider call site so the continuity work
+      // above (a no-op under continuity `none`) and the scheduling below are untouched.
+      if (mode === 'single-frame') {
+        const session = this.options.stillClipSession;
+        if (!session) throw new Error('single-frame rendering requires a still clip session');
+        // The set is the planner's last reference, so it must be prioritized explicitly or the
+        // four-image cap drops the environment before it drops a spare face.
+        const stillReferences = orderStillReferences(shot.imageReferences, shot.speaker);
+        const still = await generateStillFrame({ prompt, referenceImageUrls: stillReferences.map(entry => entry.url) }, {
+          apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
+          timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
+          referenceUploader: this.options.stillReferenceUploader, uploadCache: this.options.stillUploadCache,
+        });
+        const imageReadyAt = new Date().toISOString();
+        guard();
+        const clip = await session.synthesize({
+          shotId: shot.id, imageUrl: still.imageUrl,
+          dialogueAudioUrl: shot.dialogueAudioUrl ?? null, holdSeconds: shot.durationSeconds, signal,
+        });
+        guard();
+        return {
+          videoUrl: clip.url, localFilePath: clip.filePath, requestId: still.requestId,
+          submittedPrompt: prompt, referenceImageCount: stillReferences.length, timings: still.timings,
+          stillImageUrl: still.imageUrl, stillModelId: still.modelId, imageReadyAt,
+          stillReferenceNames: stillReferences.map(entry => entry.name),
+        };
+      }
+      const candidates = [...shot.imageReferences];
+      if (continuity === 'camera-anchors' && continuityFrame) {
+        candidates.push({ name: 'camera anchor', role: 'camera-anchor', url: continuityFrame, label: `Image ${candidates.length + 1}` });
+      }
+      const references = selectShotPromptReferences(shot.promptInput, candidates, shot.audioReferences);
+      let promptExpansionMode: 'balanced' | 'disabled' = 'balanced';
+      if (mode === 'fal-max-ref2v') {
+        images.splice(0, images.length, ...references.images.map(r => r.url));
+        const resolvedShot = { ...shot, imageReferences: references.images, audioReferences: references.audios };
+        prompt = formatPositiveTemplate(buildShotBrief(resolvedShot));
+        if (this.options.promptMode === 'llm') {
+          try {
+            prompt = (await expandShotPrompt(resolvedShot, { apiKey: this.options.promptApiKey!, model: this.options.promptModel ?? 'claude-opus-5', signal })).prompt;
+            promptExpansionMode = 'disabled';
+          } catch {
+            // Cancellation/fencing still stops the run. Provider/validation failures use A for this shot.
+            signal.throwIfAborted();
+            guard();
+            console.warn('[H3 prompt] Image-aware expansion failed; using template + balanced for this shot.');
+          }
+        }
+        guard();
+      }
       const generated = await generateVideo({
         prompt, duration: shot.durationSeconds, resolution: this.options.resolution, aspectRatio: '16:9',
         renderMode: mode,
+        ...(mode === 'fal-max-ref2v' ? { promptExpansionMode } : {}),
         initialImageUrl: mode === 'fal-turbo-i2v' ? continuityFrame ?? this.options.initialImageUrl : undefined,
         referenceImageUrls: mode === 'fal-max-ref2v' ? images : undefined,
-        referenceAudioUrls: mode === 'fal-max-ref2v' ? [...shot.referenceAudioUrls] : undefined,
+        referenceAudioUrls: mode === 'fal-max-ref2v' ? references.audios.map(r => r.url) : undefined,
       }, {
         apiKey: this.options.apiKey, queueBaseUrl: this.options.queueBaseUrl ?? process.env.FAL_QUEUE_BASE_URL,
         timeoutMs: this.options.timeoutMs ?? defaultRequestTimeoutMs(), signal,
       });
       guard();
-      let nextFrame = continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
+      let nextFrame = shot.preparedCoverage || continuity === 'none' ? undefined : continuity === 'last-frame-chain' || !source
         ? await extractVideoFrame(generated.videoUrl, {
           position: continuity === 'last-frame-chain' || shot.hasMovement ? 'last' : 'first', signal,
         })

@@ -301,6 +301,37 @@ frame extraction. Supported combinations are auto/none, Turbo image-to-video/las
 and Max reference-to-video with either none or camera-anchors. Unsupported combinations fail
 before generation. Legacy renderMode/concurrency fields normalize to their previous strategies.
 
+Single Frame is the stills mode: it generates one image per talk payload with FLUX.2 klein 4B and
+holds that frame for the whole line while the kernel's own dialogue audio plays, so a story costs
+roughly a cent per line instead of several dollars per scene. It supports continuity `none` only —
+there is no generated video to extract a frame from, and each line is an independent still. It
+announces itself to Renderer Platform as `still-flux-klein` and advertises no prepared-coverage
+support. Its asset manifest names the klein model family rather than a video endpoint, which is why
+it registers under its own renderer version. Its provider shares the fal queue protocol
+(`fal-queue.ts`) with the video adapters — submit, poll to a terminal status, reread the paid
+result, cancel on abort — and differs only in request body and result shape. Because fal fetches
+reference images itself, any reference that is not already a `fal.media` URL (a foreign HTTPS URL
+or an inline data URL) is downscaled and uploaded to fal storage once per run before it is
+referenced.
+
+A Single Frame shot is not a provider clip. The still and the kernel's own dialogue MP3 — the
+`talk.audio` the DSS has always carried and nothing previously consumed — are muxed locally into one
+mp4 that holds the frame for the whole line: minimum five seconds, no upper bound, silence when the
+payload carried no audio. Clips are written to a per-session temp directory and served over loopback
+on the operator port under an unguessable per-session token, which `parsePlayoutClip` already admits;
+the route checks the peer address itself rather than the operator token, because the consumer is
+this process's own playout. Playout's clip duration bound is correspondingly 5-180 s rather than the
+video provider's 5-15 s.
+
+The stills branch sits at the provider call site inside `ShotGenerator.schedule`, so validation,
+dependency description and scheduling are shared with the video modes unchanged — continuity `none`
+already short-circuits the anchor and chain logic. The live bridge and the offline `npm run replay`
+harness both take that branch; replay copies each synthesized clip off disk instead of fetching the
+loopback URL, because a replay run has no HTTP server. Group render metrics report `fal-image` as
+the provider, and each shot logs one `[single-frame]` line covering payload receipt, fal submit,
+image return, clip ready, and playback, so per-frame latency and cost are reconstructable from a run
+log alone.
+
 Max with continuity none generates independent shots using configured references and performs no
 frame extraction. It can use all 12 reference slots. Selecting camera-anchors for that same model
 adds per-setup dependencies and reserves one slot for the extracted continuity frame. Both use the
@@ -372,3 +403,51 @@ provisioning routes. The renderer's older browser creator UI and its legacy
 handoff CLI have separate adapters; use the private operator API for V1. Public
 viewer HLS remains local renderer media. Audience messages for V1 go through
 Pickford's V1 chat API; the removed `audience.message` bridge frame is not sent.
+
+### Prepared stationary coverage (PIC-1920)
+
+The configured `fal-max-ref2v` adapter advertises typed `prepared_coverage_versions: [1]`
+in `renderer.hello`. Other adapters omit it and reject prepared catalogs before generation.
+Legacy `scene_context` remains supported. A v1 catalog supplies a full-cast master, one
+speaker closeup per cast member, body orientations, immutable preparation/source identities,
+and SHA-256 hashes for the compositions and full original portraits. It does not create a
+second command, acknowledgement or playback lifecycle.
+
+The renderer validates exact cast membership and distinct assets, then verifies downloaded
+composition and original portrait bytes before a provider submission. Prepared images bypass
+downscaling. Signed URL refresh retains cached bytes; a fresh run verifies them again. Catalog,
+identity or position mutation within an accepted scene fails closed. A fixture of the wire
+contract lives in `server/fixtures/prepared-coverage-dss.json`; its URLs and bytes are test data.
+
+Prepared shots use the ensemble master unless DSS explicitly requests a speaker closeup.
+Unsupported reaction closeups fail instead of selecting unrelated coverage. The composition
+is reference Image 1; only the visible cast's full original portraits follow it, in the
+composition's declared order. Portrait references bind character identity, never global
+style or camera placement. Body orientation stays as prepared while authored `look` takes
+precedence over respondent-derived gaze. Unknown or ambiguous respondents preserve the
+composed eyeline; visible listeners watch the speaker unless they have an authored look.
+Offscreen recipients remain outside the shot.
+
+These shots enter the existing bounded scheduler independently and reference the prepared
+composition directly; they never await or append a frame extracted from the first video.
+A repeated master retains its setup identity across speaker changes. This provides stable
+framing, not continuous performance across independent generated clips. Existing measured
+full-clip duration, playout, `Script_Started` and `Group_Finished` handling still applies.
+
+### H3 reference-video prompt policy
+
+Reference-video shots use the accepted A template with FAL balanced expansion. The
+shot brief retains DSS placement, gaze, torso orientation, explicit emotion, current
+dialogue and phrase delivery. Visual definitions include visible cast only; hidden
+relationships become anonymous attention context. Composition images govern framing
+and the environment, while character portraits govern identity and wardrobe.
+Stationary shots explicitly state that each visible character stays in place.
+
+The template is rebuilt after camera-anchor selection so Image and Audio numbers
+match the actual submitted arrays. Authored location changes retain their movement
+instead of receiving a stationary instruction. Single Frame and Turbo retain their
+existing prompt paths. The shared FAL adapter permits an explicit expansion override
+and retains balanced as its default. Image-aware LLM expansion is opt-in; see `prompt-options.md`.
+
+Dialogue follows a natural conversational pace, with its onset unspecified; clip
+duration is not an instruction to stretch speech.

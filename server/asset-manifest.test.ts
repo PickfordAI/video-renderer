@@ -27,9 +27,22 @@ describe('renderer asset manifest identity', () => {
     expect(assetManifestSha256(manifest({ model: 'fal-max-ref2v', continuity: 'none' }))).not.toBe(base);
     expect(assetManifestSha256(manifest({ model: 'fal-turbo-i2v' }))).not.toBe(base);
     expect(assetManifestSha256(manifest({ model: 'auto' }, 'minimax-direct'))).not.toBe(assetManifestSha256(manifest({ model: 'auto' })));
+    expect(assetManifestSha256(manifest({ model: 'single-frame' }))).not.toBe(base);
     const fal = { rendererVersion: VERSION, renderMode: 'auto' as const, rendererConfig: parseRendererConfig({ model: 'auto' }) };
     expect(assetManifestSha256(assetManifestFor(fal, 'fal', { FAL_VIDEO_MODEL_ID: 'minimax/other' })))
       .not.toBe(assetManifestSha256(assetManifestFor(fal, 'fal', {})));
+  });
+
+  // PIC-1971: stills are a different asset class from video. The manifest names the klein model
+  // family rather than a video endpoint, and a new mode under the shipped renderer version would
+  // collide on hash, which is why the creator RENDERER_VERSION was bumped alongside this branch.
+  it('describes single-frame runs as klein stills rather than a video endpoint', () => {
+    expect(manifest({ model: 'single-frame' })).toMatchObject({
+      render_mode: 'single-frame',
+      renderer_config: { model: 'single-frame', continuity: 'none' },
+      model: 'fal-ai/flux-2/klein/4b',
+      output: { owner: 'external_renderer', protocol: 'hls' },
+    });
   });
 
   it('pins the version and output contract inside the manifest', () => {

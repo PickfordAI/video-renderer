@@ -14,6 +14,10 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      # PIC-1973: the held-frame clip tests shell out to ffmpeg/ffprobe, and a host-run worker
+      # requires both on PATH anyway (AGENTS.md). The runner image does not ship them.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: ffmpeg -version && ffprobe -version
       - run: npm run check
       - run: npm audit --audit-level=high
       - run: docker compose config --quiet

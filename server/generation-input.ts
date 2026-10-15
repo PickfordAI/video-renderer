@@ -26,6 +26,10 @@ export function parseGenerationInput(
   }
   const resolution = body.resolution === '480P' ? '480P' : '768P';
   const renderMode = parseRendererConfig(body.rendererConfig, { renderMode: body.renderMode }).model;
+  // PIC-1971: `/generate` is the one-off video endpoint; the stills mode renders through the story pipeline.
+  if (renderMode === 'single-frame') {
+    throw new Error('single-frame rendering is not wired to a provider yet');
+  }
   const initialImageUrl = parseInitialImageUrl(body.initialImageUrl, true);
   if (renderMode === 'fal-turbo-i2v' && !initialImageUrl) {
     throw new Error('H3 Max Turbo image-to-video requires an initial image');

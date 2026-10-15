@@ -17,6 +17,8 @@ checks.push(credentialCheck);
 checks.push({ name: 'agent-managed story access', ok: !onboardingStatus().missing.includes('storyAccess'), fix: 'Have the agent configure STORY_HANDOFF_PATH or STORY_* environment variables. See docs/agents.md.' });
 try { execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], { stdio: 'ignore' }); checks.push({ name: 'FFmpeg', ok: true }); }
 catch { checks.push({ name: 'FFmpeg', ok: false, fix: 'Install FFmpeg or use the full Docker profile.' }); }
+try { execFileSync(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], { stdio: 'ignore' }); checks.push({ name: 'FFprobe', ok: true }); }
+catch { checks.push({ name: 'FFprobe', ok: false, fix: 'Install the FFmpeg package (which includes ffprobe) or use the full Docker profile.' }); }
 for (const [name, url] of Object.entries({ ...services(), worker: rendererOrigin, mediaRelay: process.env.MEDIA_RELAY_HLS_BASE_URL || 'http://127.0.0.1:8888' })) {
   try {
     const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) });

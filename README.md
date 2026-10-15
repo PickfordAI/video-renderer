@@ -22,7 +22,10 @@ live generation; you can build and test without keys.
 
 ## Quick start
 
-Requires **Node.js 22+**, FFmpeg, and Docker.
+Requires **Node.js 22+**, Docker, and an FFmpeg installation that provides both the `ffmpeg` and
+`ffprobe` executables. On macOS, install both with `brew install ffmpeg`. The full Docker profile
+already includes them; running only `media-relay` in Docker still requires them on the host where
+`npm start` runs.
 
 ```sh
 npm ci
@@ -187,6 +190,16 @@ Story Kernel, stories, generated media, provider output, or Pickford trademarks.
 
 ## Generation choices
 
+Two renderers play the same StoryBundle, and the creator picks one beside Play:
+
+- **Single Frame** (default) generates one still per line with FLUX.2 [klein] 4B and holds it while
+  the kernel's own dialogue audio plays. About a cent a line, so a whole story is a few dollars —
+  cheap enough to watch a story you just wrote and decide whether it holds together.
+- **MiniMax video** generates real video per shot. Several dollars a scene, tens of dollars for a
+  story, and the right choice once the writing is settled.
+
+Both bill the creator's own fal key. The choice is remembered in the browser between runs.
+
 The agent configures generation in the private onboarding handoff. Model choice, continuity,
 concurrency, and generation lookahead remain separate:
 
@@ -301,3 +314,10 @@ command group per payload, including separate setup and dialogue chunks, and lim
 outstanding playback duration. The renderer compiles each group in order, carries state between
 chunks, and acknowledges each original group only after its content or control delay has played.
 It does not wait for a complete scene or acknowledge early to request more DSS.
+
+Prepared stationary StoryBundles may include version 1 `scene_context.prepared_coverage`.
+The explicit H3 Max reference-to-video adapter accepts the certified master and speaker
+closeups, checks their hashes and original portrait identities before generation, and keeps
+prepared framing independent of previous generated clips. This supports stable compositions;
+it does not promise continuous performance between clips. Other adapters reject these bundles.
+See [the prepared coverage contract](docs/architecture.md#prepared-stationary-coverage-pic-1920).

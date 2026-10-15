@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseGenerationInput } from './generation-input.js';
 
 describe('parseGenerationInput', () => {
+  // PIC-1971: the mode parses everywhere so configuration and replay accept it, but `/generate`
+  // is the one-off video endpoint and must refuse it rather than quietly paying for a video clip.
+  it('refuses single-frame on the one-off video endpoint', () => {
+    expect(() => parseGenerationInput({
+      prompt: 'A cinematic diner at night',
+      renderMode: 'single-frame',
+    }, vi.fn())).toThrow('not wired to a provider yet');
+  });
+
   it('keeps legacy text-only requests compatible', () => {
     expect(parseGenerationInput({
       prompt: 'A cinematic diner at night',

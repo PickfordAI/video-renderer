@@ -26,7 +26,13 @@ describe('V1 renderer connection', () => {
     expect(() => rendererToken({ ...token, renderer: { ...token.renderer, bridge_url: 'wss://example.test/api/v1/renderer-bridge/ws' } })).toThrow('Invalid V1');
   });
 
-  it.each([false, true])('correlates only the assigned Pickford run and fences replacement=%s', async replacement => {
+  it.each([
+    { replacement: false, renderMode: 'auto' },
+    { replacement: true, renderMode: 'auto' },
+    { replacement: false, renderMode: 'single-frame' },
+    { replacement: false, renderMode: 'fal-max-ref2v' },
+  ])('correlates the assigned V1 run with $renderMode and fences replacement=$replacement', async ({ replacement, renderMode }) => {
+    vi.stubEnv('FAL_KEY', 'fixture-no-provider-calls');
     const http = createServer();
     const ws = new WebSocketServer({ server: http });
     await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
@@ -59,13 +65,15 @@ describe('V1 renderer connection', () => {
       start: async () => ({ sessionId: 'local-media', hlsUrl: 'fake://media', enqueue: vi.fn(), status: () => ({ state: 'streaming', playedThroughPosition: 99 }) }),
       stop: vi.fn(async () => true),
     } as unknown as ExternalPlayoutManager;
-    const manager = new ExternalRendererRunManager(playout, { fakeClips: true });
-    const local = manager.start({ ...config, baseUrl, pickfordRunId: runId });
+    const manager = new ExternalRendererRunManager(playout, { fakeClips: renderMode === 'auto' });
+    const local = manager.start({ ...config, baseUrl, pickfordRunId: runId, rendererConfig: { model: renderMode } });
     try {
       await vi.waitFor(() => expect(manager.get(local.runId)).toMatchObject({ state: 'running', pickfordRunId: runId, storyRunId: runId }), { timeout: 2_000 });
       expect(local.runId).not.toBe(runId);
       expect(auth).toEqual(['Bearer fixture-token']);
       expect(frames[0]).toMatchObject({ type: 'renderer.hello', renderer_kind: 'generative_video', capabilities: ['assignment_state_v1'] });
+      expect(frames[0]?.instance_id).toBe(local.runId);
+      expect(frames[0]?.prepared_coverage_versions).toEqual(renderMode === 'fal-max-ref2v' ? [1] : undefined);
       expect(frames.some(frame => frame.type === 'renderer.asset_manifest')).toBe(false);
       expect(local.clips).toEqual([]);
       if (replacement) {

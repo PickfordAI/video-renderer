@@ -11,7 +11,11 @@ user for a fal key, and never place one in the agent's context, a command line, 
 behalf.** The renderer performs its own OAuth sign-in as the creator and mints its own renderer
 credential, so this path has no developer page, no setup token, and no handoff file.
 
-1. Clone the repository, select Node 22+, then run `npm ci` and `npm run build`.
+1. Clone the repository, select Node 22+, and install FFmpeg so both `ffmpeg` and `ffprobe` are on
+   `PATH` (`brew install ffmpeg` on macOS). Verify both with `ffmpeg -version` and
+   `ffprobe -version`, then run `npm ci` and `npm run build`. The default workflow runs only
+   MediaMTX in Docker, so its container does not provide these binaries to the host worker. The
+   full Docker profile includes both binaries inside the renderer image.
 2. Start the media relay and the worker as a managed persistent process:
    `docker compose up -d media-relay`, then `npm start`. Read the startup output for a port
    conflict; set `PORT`/`MEDIA_PORT` consistently if needed.
@@ -67,6 +71,15 @@ one cannot silently break the other. `PICKFORD_API_URL`, `PICKFORD_WEB_URL`,
 or one-off kernel. Production is the default; any other hosted environment requires explicit API,
 web, and chat origins alongside `STORY_ENVIRONMENT`.
 
+For a local stack whose frontend and Renderer Platform use separate origins, set
+`RENDERER_PLATFORM_URL` to the platform's HTTP origin. The creator workflow uses this for renderer
+login and story start; it defaults to `PICKFORD_WEB_URL` when omitted. For example, a slot 3 stack
+can use `PICKFORD_WEB_URL=http://localhost:3300` with
+`RENDERER_PLATFORM_URL=http://localhost:8393`. These are developer process settings; the creator
+page still requires only sign-in and the creator's own fal key. Configure certificate trust as
+described under [Local Story Kernel bridge](#local-story-kernel-bridge) for the advertised TLS
+WebSocket endpoint.
+
 Access tokens last 12 hours, the grant 90 days, and refresh tokens are **single-use and rotating**:
 replaying one revokes the whole grant. The renderer refreshes a stored token exactly once and never
 retries with the same value — a rejected refresh discards the sign-in and the creator signs in
@@ -94,6 +107,17 @@ the default when the user has no preference. Explain the ongoing hosting and fal
 login and billing authorization are user actions; service URLs, private connections, application
 names, secret transfer, DNS (for VMs), and link construction are agent work. Do not introduce a
 second hosting account for the viewer. The kernel remains an earlier onboarding dependency.
+
+## Renderer choice
+
+The creator picks a renderer beside Play; the choice is theirs because it is a cost decision.
+**Single Frame** is the default: one generated still per line held over the kernel's dialogue audio,
+roughly a cent a line, which makes watching a freshly authored story affordable. **MiniMax video**
+generates real video per shot at several dollars a scene and is the right choice once the writing is
+settled. Both bill the creator's own fal key, and the last choice is remembered in the browser. Do
+not choose for them or hide the cost difference; state both numbers when you offer the choice.
+
+![The renderer picker beside Play on the creator page](images/creator-renderer-picker.png)
 
 ## Advanced: handoff contract (legacy)
 
@@ -203,7 +227,10 @@ goal is only to prove restartability; a control-only first DSS acknowledgement i
 Do not wait for the full episode. Neither setting belongs in hosted or shared dev, edge, staging,
 or prod configuration.
 
-1. Clone the repository. Select Node 22+ and run `npm ci`.
+1. Clone the repository. Select Node 22+, install FFmpeg so both `ffmpeg` and `ffprobe` are on
+   `PATH` (`brew install ffmpeg` on macOS), and verify both with `ffmpeg -version` and
+   `ffprobe -version`. Then run `npm ci`. The default workflow runs the worker on the host; only
+   the full Docker profile supplies these binaries inside the renderer container.
 2. Obtain `MINIMAX_API_KEY` (configured direct adapter) or `FAL_KEY` from the user's connected fal account or secret manager. Keep it in the process
    environment or `.env` with mode `0600`. Never use a `VITE_` prefix for secrets.
 3. Start the existing Story Kernel stack. Run `npm run setup`. It reads only Compose labels and
@@ -240,11 +267,17 @@ then prints `mediaDir` and `finalMp4`. Never enable it for a user who did not as
 
 ## Local Story Kernel bridge
 
-A local unified stack advertises its WebSocket bridge behind a self-signed TLS port, which no client
-trusts. Put the stack's plain bridge URL in the handoff as `services.rendererWebsocketUrl`
-(for example `ws://127.0.0.1:8293/api/v1/renderer-bridge/ws`); the renderer prefers it over the
-advertised URL. Without it, a loopback `wss://` advertisement is downgraded to `ws://` on the same
-host and port, which only works when the stack serves both on that port.
+A local unified stack advertises its WebSocket bridge behind a TLS port. The renderer preserves
+the advertised `wss://` protocol, hostname, and port, including when login uses loopback HTTP.
+For a development certificate, supply its trusted CA certificate bundle through
+`NODE_EXTRA_CA_CERTS=/absolute/path/to/local-ca.pem` in the worker's process environment **before
+starting Node**, then restart the worker. Loading this variable later through the renderer's
+`.env` file does not configure Node's trust store. The certificate must cover the advertised
+hostname; keep certificate verification enabled.
+
+An advertised plain `ws://` endpoint remains supported with a loopback HTTP service. Legacy plain
+`ws://*.local` advertisements are rehosted onto that service's host and port; secure advertisements
+are never rehosted or downgraded.
 
 ## Environment and persistent configuration
 

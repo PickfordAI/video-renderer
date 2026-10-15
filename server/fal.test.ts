@@ -10,6 +10,17 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('generateVideo', () => {
+  // PIC-1971: `single-frame` shares the render-mode vocabulary but not this module. Without an
+  // explicit guard it would fall through to the text-to-video default and bill a video clip.
+  it('refuses the stills mode instead of falling through to a video endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(generateVideo(
+      { prompt: 'A cinematic diner at night', duration: 5, resolution: '768P', aspectRatio: '16:9', renderMode: 'single-frame' },
+      { apiKey: 'secret', fetchImpl },
+    )).rejects.toThrow(FalVideoError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('runs the fal queue protocol and returns its video URL', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -37,7 +48,7 @@ describe('generateVideo', () => {
     });
   });
 
-  it('uses the reference-to-video endpoint and forwards ordered image and audio references', async () => {
+  it.each(['balanced', 'disabled'] as const)('forwards ordered references with explicit %s expansion', async promptExpansionMode => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json({ request_id: 'request-ref' }))
@@ -47,6 +58,7 @@ describe('generateVideo', () => {
     const result = await generateVideo(
       {
         prompt: 'Image 1 is Marcus Kent. He studies the ledger.',
+        promptExpansionMode,
         duration: 8,
         resolution: '768P',
         aspectRatio: '16:9',
@@ -58,6 +70,7 @@ describe('generateVideo', () => {
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://queue.fal.run/minimax/h3-max/reference-to-video');
     expect(JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({
+      prompt_expansion_mode: promptExpansionMode,
       reference_image_urls: ['data:image/jpeg;base64,AAAA'],
       reference_audio_urls: ['https://audio.example/kent.mp3'],
     });

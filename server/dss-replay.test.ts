@@ -1,4 +1,7 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { DssShotPlanner } from './shot-planner.js';
+import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
+import { ShotScheduler } from './shot-scheduler.js';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,10 +9,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { formatReplaySummary, loadDssRecording, replayDss, type ReplayMedia } from './dss-replay.js';
 import { generateVideo } from './fal.js';
+import { generateStillFrame } from './still-frame.js';
 import { extractVideoFrame } from './video-frame.js';
 
 vi.mock('./fal.js', () => ({ generateVideo: vi.fn() }));
 vi.mock('./video-frame.js', () => ({ extractVideoFrame: vi.fn() }));
+vi.mock('./still-frame.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./still-frame.js')>()),
+  generateStillFrame: vi.fn(),
+}));
+
+/** The real store shells out to ffmpeg; replay only needs the clip it would have written. */
+const stillSynthesize = vi.fn();
+vi.mock('./still-clip.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./still-clip.js')>()),
+  StillClipStore: class {
+    open() { return { synthesize: stillSynthesize, close: async () => undefined }; }
+  },
+}));
 
 type Json = Record<string, unknown>;
 type Generated = Awaited<ReturnType<typeof generateVideo>>;
@@ -73,7 +90,8 @@ describe('replayDss planning', () => {
     expect(result.payloads).toMatchObject({ replayedForStaging: 4, selected: 2 });
     expect(result.shots.map(shot => [shot.sequence, shot.dependency.kind])).toEqual([[3, 'anchor-establish'], [4, 'anchor-establish']]);
     // Staging from the replayed setup payload still reaches the compiled prompt.
-    expect(result.shots[0].prompt).toMatch(/Sam/);
+    expect(result.shots[0].prompt).not.toMatch(/Sam/);
+    expect(result.shots[0].prompt).toContain('at desk');
   });
 
   it('chains Turbo shots within a scene and restarts on a scene change', async () => {
@@ -81,6 +99,19 @@ describe('replayDss planning', () => {
     const result = await replayDss(scenes, { rendererConfig: { model: 'fal-turbo-i2v' }, initialImageUrl: 'https://images.example/opening.png' });
     expect(result.shots.map(shot => shot.dependency.kind)).toEqual(['chain-start', 'chain', 'chain-start']);
     expect(result.shots[1].dependency).toMatchObject({ sourceShotId: result.shots[0].shotId });
+  });
+
+  // PIC-1971: replay is the offline harness the stills work is verified against, so the mode has
+  // to compile here before any provider exists. Continuity none makes every shot independent.
+  it('compiles single-frame runs as independent stills', async () => {
+    const result = await replayDss(story, { rendererConfig: { model: 'single-frame' }, shotPlanner: references });
+    expect(result.rendererConfig).toMatchObject({ model: 'single-frame', continuity: 'none' });
+    expect(result.shots.map(shot => [shot.sequence, shot.dependency.kind])).toEqual([
+      [1, 'independent'], [2, 'independent'], [3, 'independent'], [4, 'independent'],
+    ]);
+    expect(result.shots[0].imageReferences.map(reference => reference.name)).toContain('Alex');
+    expect(generateVideo).not.toHaveBeenCalled();
+    expect(extractVideoFrame).not.toHaveBeenCalled();
   });
 
   it('keeps compiling after a payload the compiler rejects, and reports it', async () => {
@@ -91,8 +122,49 @@ describe('replayDss planning', () => {
   });
 
   it('rejects the configured-provider mode and Turbo without an opening frame', async () => {
-    await expect(replayDss(story, { rendererConfig: { model: 'auto' } })).rejects.toThrow(/explicit fal modes/);
+    await expect(replayDss(story, { rendererConfig: { model: 'auto' } })).rejects.toThrow(/explicit modes/);
     await expect(replayDss(story, { rendererConfig: { model: 'fal-turbo-i2v' } })).rejects.toThrow(/initialImageUrl/);
+  });
+});
+
+describe('shot submission reference selection', () => {
+  it.each([false, true])('rebinds the final payload after excluding hidden portraits and unrelated audio (reaction=%s)', async reaction => {
+    const planner = new DssShotPlanner({
+      ...references,
+      characters: { ...references.characters, Alex: { ...references.characters.Alex, voice: { url: 'https://images.example/alex.wav', durationSeconds: 3 } } },
+    });
+    planner.planGroup(setup, 'setup', storyBlockId);
+    const visibleName = reaction ? 'Sam' : 'Alex';
+    const hiddenName = reaction ? 'Alex' : 'Sam';
+    const shot = planner.planGroup([
+      { command: 'character camera', args: { character: visibleName, shot: 'Character_CloseUp' } },
+      { command: 'talk', args: { character: 'Alex', respondent: 'Sam', dialogue: 'We should stay here.', audio_duration: 5 } },
+    ], 'line', storyBlockId).shots[0];
+    const hiddenPortrait = { name: hiddenName, role: 'character' as const, url: `https://images.example/${hiddenName.toLowerCase()}.png`, label: 'Image 99' };
+    const unrelatedVoice = { name: 'Sam', purpose: 'voice' as const, url: 'https://images.example/sam.wav', durationSeconds: 3, label: 'Audio 99' };
+    const supplied = {
+      ...shot,
+      imageReferences: [hiddenPortrait, ...shot.imageReferences],
+      referenceImageUrls: [hiddenPortrait.url, ...shot.referenceImageUrls],
+      audioReferences: [unrelatedVoice, ...shot.audioReferences],
+      referenceAudioUrls: [unrelatedVoice.url, ...shot.referenceAudioUrls],
+    };
+    vi.mocked(generateVideo).mockResolvedValue({ videoUrl: 'https://fal.media/selected.mp4', requestId: 'selected' } as Generated);
+    const signal = new AbortController().signal;
+    const generator = new ShotGenerator({ renderMode: 'fal-max-ref2v', continuity: 'none', resolution: '768P', apiKey: 'fixture', scheduler: new ShotScheduler<GeneratedShot>(1, 15, signal), signal });
+    await generator.schedule(supplied).job.result;
+    const submitted = vi.mocked(generateVideo).mock.calls[0][0];
+    expect(submitted.referenceImageUrls).toEqual([`https://images.example/${visibleName.toLowerCase()}.png`, 'https://images.example/lobby.png']);
+    expect(submitted.referenceAudioUrls).toEqual(['https://images.example/alex.wav']);
+    expect(submitted.prompt).toContain(`${visibleName}'s identity and wardrobe follow Image 1`);
+    expect(submitted.prompt).toContain('Image 2');
+    expect(submitted.prompt).toContain('Audio 1');
+    expect(submitted.prompt).not.toMatch(/(?:Image|Audio) (?:3|99)\b/);
+    expect(submitted.prompt).not.toContain(`${hiddenName}'s identity and wardrobe`);
+    expect(submitted.promptExpansionMode).toBe('balanced');
+    expect(submitted.prompt).toContain('<d>[English] We should stay here.</d>');
+    if (reaction) expect(submitted.prompt).toMatch(/Alex \(voice from beyond the frame\)/i);
+    else expect(submitted.prompt).not.toContain('Sam');
   });
 });
 
@@ -124,7 +196,8 @@ describe('replayDss rendering', () => {
     // The reused anchor received its source's extracted frame as the extra reference.
     const reuse = vi.mocked(generateVideo).mock.calls[2][0];
     expect(reuse.referenceImageUrls?.at(-1)).toMatch(/^data:image\/jpeg;base64,/);
-    expect(reuse.prompt).toMatch(/established frame for this camera setup/);
+    expect(reuse.prompt).toContain('Image 3 establishes the camera setup');
+    expect(reuse.promptExpansionMode).toBe('balanced');
     expect(calls).toEqual([
       'download https://fal.media/clip-1.mp4 -> 001-seq1.mp4', 'normalize 001-seq1.mp4 5s @0',
       'download https://fal.media/clip-2.mp4 -> 002-seq2.mp4', 'normalize 002-seq2.mp4 5s @5',
@@ -134,6 +207,52 @@ describe('replayDss rendering', () => {
     ]);
     expect(result.timing).toMatchObject({ videoSeconds: 20, providerSeconds: 8 });
     expect(result.shots[0].generated?.continuityFrame).toBe('[frame]');
+  });
+
+  // PIC-1974: replay is the cheap offline harness the whole Single Frame verification rests on,
+  // so it must run the same generator branch the live bridge does.
+  it('renders single-frame stories from local clips without touching a video endpoint', async () => {
+    outDir = await mkdtemp(join(tmpdir(), 'dss-replay-'));
+    let frames = 0;
+    vi.mocked(generateStillFrame).mockImplementation(async () => {
+      const index = ++frames;
+      return {
+        imageUrl: `https://v3.fal.media/frame-${index}.jpg`, width: 1280, height: 720,
+        requestId: `still-${index}`, modelId: 'fal-ai/flux-2/klein/4b/edit',
+        timings: { submitSeconds: 0.1, queueSeconds: 1.4, totalSeconds: 1.6, polls: 2, maxQueuePosition: 0 },
+      };
+    });
+    stillSynthesize.mockImplementation(async ({ shotId, holdSeconds }: { shotId: string; holdSeconds: number }) => {
+      const filePath = join(outDir, `${shotId.replace(/[^A-Za-z0-9_-]/g, '_')}.source.mp4`);
+      await writeFile(filePath, 'fixture clip bytes');
+      return { url: `http://127.0.0.1:4173/still-clips/t/${shotId}.mp4`, filePath, durationSeconds: holdSeconds };
+    });
+    const calls: string[] = [];
+    const media: ReplayMedia = {
+      download: vi.fn(async () => undefined),
+      normalize: async (input, output, duration, offset) => { calls.push(`normalize ${input.split('/').at(-1)} ${duration}s @${offset}`); void output; },
+      concat: async (inputs, output) => { calls.push(`concat ${inputs.length} -> ${output.split('/').at(-1)}`); },
+    };
+    const result = await replayDss(story, {
+      rendererConfig: { model: 'single-frame' }, shotPlanner: references,
+      render: { apiKey: 'fixture', outDir, media },
+    });
+
+    expect(result.output).toMatchObject({ failures: 0, moviePath: join(outDir, 'story.mp4') });
+    expect(generateVideo).not.toHaveBeenCalled();
+    expect(generateStillFrame).toHaveBeenCalledTimes(4);
+    expect(extractVideoFrame).not.toHaveBeenCalled();
+    // Clips are copied off disk, not fetched: there is no HTTP server in a replay run.
+    expect(media.download).not.toHaveBeenCalled();
+    expect(await readFile(join(outDir, 'clips', '001-seq1.mp4'), 'utf8')).toBe('fixture clip bytes');
+    expect(calls).toEqual([
+      'normalize 001-seq1.mp4 5s @0', 'normalize 002-seq2.mp4 5s @5',
+      'normalize 003-seq3.mp4 5s @10', 'normalize 004-seq4.mp4 5s @15',
+      'concat 4 -> story.mp4',
+    ]);
+    // The prompt the still was generated from is the planner's, unchanged.
+    expect(vi.mocked(generateStillFrame).mock.calls[0][0].prompt).toMatch(/Alex/);
+    expect(vi.mocked(generateStillFrame).mock.calls[0][0].referenceImageUrls).toContain('https://images.example/alex.png');
   });
 
   it('records a failed shot, skips assembly, and still releases the budget for later shots', async () => {

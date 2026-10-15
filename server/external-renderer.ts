@@ -12,12 +12,14 @@ import { generateMiniMaxVideo } from './minimax.js';
 import { parseRendererConfig, parseInitialImageUrl, type RenderMode, type RendererConfig, type ContinuityStrategy } from './render-mode.js';
 import { DssShotPlanner, type ShotPlannerSettings, type PlannedShot, type PlannedGroup } from './shot-planner.js';
 import { ShotScheduler, type ScheduledShot } from './shot-scheduler.js';
+import { KLEIN_MODEL_FAMILY } from './still-frame.js';
+import { sharedStillClipStore, type StillClipSession } from './still-clip.js';
 import { ShotGenerator, type GeneratedShot } from './shot-generation.js';
 import { PreparedFrameQueue } from './prepared-frame-queue.js';
 import { requestStoryStart, requestTransientDependency, type TransientDependencyRetry } from './story-start.js';
 import { storyStartRefusalMessage } from './story-bundles.js';
 import { rendererEventId, RendererEventVerdicts, type RendererEventVerdictStatus, type VerdictAcknowledgement } from './renderer-event-verdicts.js';
-import { MinimaxSceneAssetCache, parseMinimaxSceneContext, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
+import { MinimaxSceneAssetCache, parseMinimaxSceneContext, preparedSceneIdentity, sceneContextImageUrls, sceneContextPrompt, type MinimaxSceneContext } from './scene-context.js';
 import type { PlayoutClipBoundary, PlayoutClipInput, PlayoutStatus } from './playout.js';
 
 type JsonObject = Record<string, unknown>;
@@ -96,8 +98,15 @@ export interface RendererClipRecord {
   sequence: number;
   position: number;
   durationSeconds: number;
+  /** PIC-1974: when the payload carrying this shot was compiled, i.e. the start of its timeline. */
+  receivedAt: string | null;
   /** When the provider call actually began, which is after any scheduler or dependency wait. */
   submittedAt: string | null;
+  /** Single Frame only: when the generated image returned, before the local mux into a clip. */
+  stillImageReadyAt: string | null;
+  stillModelId: string | null;
+  /** Which references survived the provider's image cap. A missing `set` explains a wrong room. */
+  stillReferenceNames: string[] | null;
   readyAt: string | null;
   generationMs: number | null;
   playedAt: string | null;
@@ -145,7 +154,7 @@ export interface PlaybackGapSummary {
  * line yields several clips, which are summed).
  */
 export interface GroupRenderMetrics {
-  provider: 'fal' | 'minimax-direct';
+  provider: 'fal' | 'minimax-direct' | 'fal-image';
   clips: number;
   submitted_at: string | null;
   ready_at: string | null;
@@ -816,6 +825,15 @@ export function planGroupClips(frame: DssFrame, group: DssGroup, durationSeconds
 }
 
 /**
+ * PIC-1971: how the stills mode identifies itself to Renderer Platform. `renderer_kind` is a new
+ * string rather than a MiniMax one because the kernel uses it to reason about what the renderer
+ * produces, and Single Frame deliberately advertises no prepared-coverage support.
+ */
+export const SINGLE_FRAME_RENDERER_KIND = 'still-flux-klein';
+/** Model family for the asset manifest; the edit/text endpoint varies per shot, the model does not. */
+export const SINGLE_FRAME_MODEL_FAMILY = KLEIN_MODEL_FAMILY;
+
+/**
  * The immutable asset manifest registered under `rendererVersion`. Renderer Platform keys manifests by
  * (renderer, version) and closes the bridge with 4400 when the same version arrives with a different
  * hash, so only inputs that change what gets generated belong here. Scheduler tuning (`concurrency`,
@@ -832,7 +850,9 @@ export function assetManifestFor(
     provider: providerKind,
     render_mode: config.renderMode,
     renderer_config: { model: config.rendererConfig.model, continuity: config.rendererConfig.continuity },
-    model: config.renderMode === 'fal-turbo-i2v'
+    model: config.renderMode === 'single-frame'
+      ? SINGLE_FRAME_MODEL_FAMILY
+      : config.renderMode === 'fal-turbo-i2v'
       ? 'minimax/h3-max-turbo/image-to-video'
       : config.renderMode === 'fal-max-ref2v'
         ? 'minimax/h3-max/reference-to-video'
@@ -989,15 +1009,9 @@ export function rendererWebSocketUrl(config: Pick<ExternalRendererRunConfig, 'ba
   if (url.search) throw new Error('renderer websocket_url must be query-free');
   const service = new URL(config.baseUrl);
   const localService = service.protocol === 'http:' && LOOPBACK_HOSTS.includes(service.hostname);
-  if (localService && url.hostname.endsWith('.local')) {
-    url.protocol = 'ws:';
+  if (localService && url.protocol === 'ws:' && url.hostname.endsWith('.local')) {
     url.hostname = service.hostname;
     url.port = service.port;
-  } else if (localService && url.protocol === 'wss:' && LOOPBACK_HOSTS.includes(url.hostname)) {
-    // A local stack advertises its self-signed TLS front, whose cert no client trusts.
-    // Its plain bridge port is unknown here, so keep the advertised port and let an
-    // explicit handoff services.rendererWebsocketUrl override this best-effort guess.
-    url.protocol = 'ws:';
   }
   if (url.protocol !== 'wss:' && !(localService && url.protocol === 'ws:')) {
     throw new Error('renderer websocket_url must use WSS (or WS for a loopback service)');
@@ -1060,12 +1074,14 @@ class ExternalRendererRun {
   private readonly scheduler: ShotScheduler<GeneratedShot>;
   private readonly generator: ShotGenerator;
   private readonly scenePositions = new Map<number, string>();
+  private readonly sceneCoverage = new Map<number, string>();
   private readonly assetIdentities = new Map<string, string>();
   private readonly sceneAssets = new MinimaxSceneAssetCache({
     uploader: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? falReferenceUploader(process.env.FAL_KEY) : null,
     downscale: process.env.FAL_KEY && sceneAssetTransport() === 'storage' ? ffmpegReferenceDownscaler() : null,
   });
   private assignmentKey: string | null = null;
+  private stillClips: StillClipSession | null = null;
   private readonly pendingAudienceMessages = new Map<
     string,
     { resolve: (value: AudienceChatMessageResult) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
@@ -1078,13 +1094,23 @@ class ExternalRendererRun {
     private readonly fakeFailureAfterClips: number | null,
     private readonly consumeFakeFailure: () => void,
   ) {
-    this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds });
+    this.shotPlanner = new DssShotPlanner({ ...config.shotPlanner, initialImageUrl: config.initialImageUrl ?? config.shotPlanner.initialImageUrl, referenceMode: config.renderMode === 'fal-turbo-i2v' ? 'initial-frame' : 'reference', defaultDurationSeconds: config.clipDurationSeconds, singleFrame: config.renderMode === 'single-frame' });
     this.scheduler = new ShotScheduler(config.generationConcurrency, config.maxBufferedSeconds, this.abortController.signal);
+    // Single Frame muxes its own clips locally and serves them back over loopback; the session
+    // owns that temp directory for the life of the run.
+    this.stillClips = config.renderMode === 'single-frame' ? sharedStillClipStore().open() : null;
     this.generator = new ShotGenerator({
       renderMode: config.renderMode, continuity: config.continuityStrategy, resolution: config.resolution,
+      promptMode: config.rendererConfig.promptMode, promptApiKey: process.env.ANTHROPIC_API_KEY, promptModel: process.env.H3_PROMPT_MODEL,
       initialImageUrl: config.initialImageUrl, apiKey: provider.apiKey, scheduler: this.scheduler,
       signal: this.abortController.signal, guard: () => this.verdicts.assertHealthy(),
       frameUploader: provider.kind === 'fal' && sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
+      ...(this.stillClips ? {
+        stillClipSession: this.stillClips,
+        stillReferenceUploader: sceneAssetTransport() === 'storage' ? falReferenceUploader(provider.apiKey) : undefined,
+        // One memo for the whole run: every line references the same cast portraits.
+        stillUploadCache: new Map<string, Promise<string>>(),
+      } : {}),
     });
     this.status = {
       runId: this.runId,
@@ -1157,10 +1183,13 @@ class ExternalRendererRun {
         this.scheduler.drain(),
       ]).then(() => undefined);
     }
+    const closingStillClips = this.stillClips;
+    this.stillClips = null;
+    const stillClipStop = closingStillClips ? closingStillClips.close().catch(() => undefined) : Promise.resolve();
     const closingPlayout = this.playout && !options.preservePlayableOutput ? this.playout : null;
     const playoutStop = closingPlayout ? this.playoutManager.stop(closingPlayout.sessionId) : Promise.resolve();
     if (closingPlayout) this.playout = null;
-    await Promise.all([this.closing, playoutStop]);
+    await Promise.all([this.closing, playoutStop, stillClipStop]);
     if (closingPlayout) this.recordRetainedMedia(closingPlayout);
   }
 
@@ -1194,7 +1223,8 @@ class ExternalRendererRun {
       storyBlockId: frame.storyBlockId,
       durationSeconds,
       episodeId: frame.episodeId,
-      renderMetrics: groupRenderMetrics(records, this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
+      renderMetrics: groupRenderMetrics(records, this.config.renderMode === 'single-frame' ? 'fal-image'
+        : this.provider.kind === 'minimax-direct' ? 'minimax-direct' : 'fal'),
     });
   }
 
@@ -1288,6 +1318,9 @@ class ExternalRendererRun {
   private validateSceneContext(frame: DssFrame): void {
     const context = frame.sceneContext;
     if (!context) return;
+    if (context.preparedCoverage && (this.provider.kind !== 'fal' || this.config.renderMode !== 'fal-max-ref2v')) {
+      throw new Error('Prepared coverage requires the fal-max-ref2v adapter');
+    }
     for (const image of [context.setImage, ...context.characterImages]) {
       const previous = this.assetIdentities.get(image.assetId);
       const identity = JSON.stringify([image.sourceId, image.characterName ?? null]);
@@ -1296,6 +1329,10 @@ class ExternalRendererRun {
     }
     const positions = canonicalJson(context.characterPositions);
     const sceneIndex = frame.sceneIndex ?? -1;
+    const identity = context.preparedCoverage ? preparedSceneIdentity(context) : 'legacy';
+    const previousCoverage = this.sceneCoverage.get(sceneIndex);
+    if (previousCoverage && previousCoverage !== identity) throw new Error('Prepared coverage changed within a scene');
+    this.sceneCoverage.set(sceneIndex, identity);
     const previousPositions = this.scenePositions.get(sceneIndex);
     if (previousPositions && previousPositions !== positions) {
       throw new Error('Certified character_positions changed within a scene');
@@ -1324,7 +1361,11 @@ class ExternalRendererRun {
       sequence: frame.sequence,
       position,
       durationSeconds: shot.durationSeconds,
+      receivedAt: new Date().toISOString(),
       submittedAt: null,
+      stillImageReadyAt: null,
+      stillModelId: null,
+      stillReferenceNames: null,
       readyAt: null,
       generationMs: null,
       playedAt: null,
@@ -1360,7 +1401,9 @@ class ExternalRendererRun {
    * before `waitForPlayback` returns, so a null boundary means a playout that does not report them.
    */
   private markPlayed(record: RendererClipRecord): void {
+    const firstPlay = record.playedAt === null;
     record.playedAt ??= new Date().toISOString();
+    if (firstPlay && this.config.renderMode === 'single-frame') this.logStillFrameTiming(record);
     if (record.streamStartSeconds !== null) return;
     const playout = this.playout as { clipBoundary?: (position: number) => PlayoutClipBoundary | null } | null;
     const boundary = typeof playout?.clipBoundary === 'function' ? playout.clipBoundary(record.position) : null;
@@ -1386,11 +1429,32 @@ class ExternalRendererRun {
     }
   }
 
+  /**
+   * PIC-1974: one line per shot, so per-frame latency and cost stay reconstructable from a run log
+   * alone — which is the whole evidence basis for the Single Frame cost comparison (PIC-1976).
+   * Offsets are seconds from the payload's receipt; `image` is the fal call, `clip` the local mux.
+   */
+  private logStillFrameTiming(record: RendererClipRecord): void {
+    const base = record.receivedAt === null ? null : Date.parse(record.receivedAt);
+    const at = (value: string | null) => (base === null || value === null ? 'n/a' : `+${((Date.parse(value) - base) / 1000).toFixed(1)}s`);
+    console.log(
+      `[single-frame] shot=${record.shotId} seq=${record.sequence} model=${record.stillModelId ?? 'unknown'}`
+      + ` request=${record.providerRequestId ?? 'none'} hold=${record.durationSeconds}s`
+      + ` refs=${record.stillReferenceNames?.join(',') || 'none'} received=${record.receivedAt ?? 'n/a'}`
+      + ` submitted=${at(record.submittedAt)} image=${at(record.stillImageReadyAt)} clip=${at(record.readyAt)}`
+      + ` played=${at(record.playedAt)} fal_submit=${record.falSubmitSeconds ?? 'n/a'}s fal_total=${record.falTotalSeconds ?? 'n/a'}s`,
+    );
+  }
+
   private completeClip(
     record: RendererClipRecord,
     requestId: unknown,
     timings?: { submitSeconds?: number; queueSeconds?: number; totalSeconds?: number; maxQueuePosition?: number | null } | null,
+    still?: { imageReadyAt?: string; stillModelId?: string; stillReferenceNames?: string[] } | null,
   ): void {
+    if (still?.imageReadyAt) record.stillImageReadyAt = still.imageReadyAt;
+    if (still?.stillModelId) record.stillModelId = still.stillModelId;
+    if (still?.stillReferenceNames) record.stillReferenceNames = still.stillReferenceNames;
     const readyAt = Date.now();
     record.readyAt = new Date(readyAt).toISOString();
     record.generationMs = record.submittedAt === null ? null : readyAt - Date.parse(record.submittedAt);
@@ -1407,7 +1471,7 @@ class ExternalRendererRun {
   private scheduleShot(frame: DssFrame, shot: PlannedShot, position: number): { job: ScheduledShot<GeneratedShot>; record: RendererClipRecord } {
     this.assertCurrentAssignment(frame);
     const dependency = this.generator.describe(shot);
-    const record = this.trackClip(frame, shot, position, this.config.continuityStrategy !== 'camera-anchors' ? 'none'
+    const record = this.trackClip(frame, shot, position, shot.preparedCoverage || this.config.continuityStrategy !== 'camera-anchors' ? 'none'
       : dependency.kind === 'anchor-reuse' ? 'reuse' : 'establish');
     let submitted = false;
     const { job } = this.generator.schedule(shot, () => {
@@ -1417,7 +1481,7 @@ class ExternalRendererRun {
     });
     // Registered at schedule time so it settles before any consumer's own await of the same result.
     void job.result.then(
-      generated => this.completeClip(record, generated.requestId, generated.timings ?? null),
+      generated => this.completeClip(record, generated.requestId, generated.timings ?? null, generated),
       // A future shot can fail while an earlier clip is playing. Fence the whole run
       // immediately, before another scheduler slot submits additional paid work.
       error => {
@@ -1713,7 +1777,10 @@ class ExternalRendererRun {
         protocol_version: PROTOCOL_VERSION,
         stream_id: this.config.rendererId,
         ...(v1 ? { capabilities: ['assignment_state_v1'] } : {}),
-        renderer_kind: v1 ? 'generative_video' : this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
+        renderer_kind: v1 ? 'generative_video' : this.config.renderMode === 'single-frame' ? SINGLE_FRAME_RENDERER_KIND
+          : this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
+        ...(this.provider.kind === 'fal' && this.config.renderMode === 'fal-max-ref2v'
+          ? { prepared_coverage_versions: [1] } : {}),
         instance_id: v1 ? this.runId : `video-renderer-${this.runId}`,
         assignment_id: '',
       });

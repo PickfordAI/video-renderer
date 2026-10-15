@@ -49,6 +49,7 @@ function dss(sequence: number) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -104,6 +105,10 @@ describe('local fake clips', () => {
       return Response.json({ renderer_id: rendererId }, { status: 202 });
     }));
 
+    // Keep synthetic generation in one clock instant; real sockets and timers still run.
+    // Even synchronous work can cross a wall-clock millisecond on a busy runner.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-12T00:00:00Z'));
     const manager = new ExternalRendererRunManager(
       new FakeClipPlayoutManager(),
       { fakeClips: true, fakeFailureAfterClips: 2 },
@@ -114,7 +119,10 @@ describe('local fake clips', () => {
       expect(first.fakeClips).toBe(true);
       expect(first.clipsRendered).toBe(2);
       expect(first.clips).toHaveLength(3);
-      expect(first.clips.slice(0, 2).every(clip => clip.playedAt !== null && clip.generationMs === 0)).toBe(true);
+      for (const clip of first.clips.slice(0, 2)) {
+        expect(clip.playedAt).not.toBeNull();
+        expect(clip.generationMs).toBe(0);
+      }
       expect(first.clips[2]).toMatchObject({ readyAt: null, playedAt: null });
       expect(first.failures).toEqual(['Synthetic local renderer failure after 2 fake clips']);
       expect(first.eventVerdicts).toMatchObject({ pending: 0, refused: 0, ignored: 0 });
