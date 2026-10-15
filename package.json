@@ -21,7 +21,8 @@
     "release:source": "node scripts/release-source.mjs",
     "deploy:fly": "node scripts/deploy-worker.mjs",
     "hosted:prepare": "node scripts/prepare-hosted.mjs",
-    "hosted:connect": "node scripts/connect-hosted.mjs"
+    "hosted:connect": "node scripts/connect-hosted.mjs",
+    "renderer:device": "tsx server/renderer-device-cli.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

@@ -99,6 +99,15 @@ With this approach, run `npm run setup`, then use the same start/status/stop com
 the worker after changing `.env`; changes to a registered handoff are read on the next command.
 The agent obtains or refreshes account access through the supported onboarding flow.
 
+## V1 headless clients
+
+V1 harnesses connect the worker through its private operator API with
+`startMode: "v1"`, then create/cancel runs through Pickford's public `/v1/runs`
+API. Renderer authentication uses V1 machine client credentials or device
+sign-in (`npm run renderer:device -- <renderer-name>`). Local status preserves
+all clip timing fields and correlates them with `pickfordRunId`; see the
+[V1 client runbook](docs/agents.md#v1-headless-renderer-client).
+
 ## Opaque story starts
 
 Set `"startMode": "opaque"` in the handoff to skip room and story provisioning. The CLI sends only
