@@ -50,10 +50,12 @@ describe('external renderer lifecycle', () => {
     const manager = new ExternalRendererRunManager(media.manager);
     const run = manager.start(config(`http://127.0.0.1:${port}`));
     try {
-      await vi.waitFor(() => expect(run.dssCommandsRendered).toBe(1));
+      await vi.waitFor(() => {
+        expect(run.dssCommandsRendered).toBe(1);
+        expect(frames.some(f => f.type === 'renderer.event' && f.event === 'completed' && f.id === 6)).toBe(true);
+      });
       expect(generateVideo).toHaveBeenCalledTimes(1);
       expect(media.enqueue).toHaveBeenCalledTimes(1);
-      expect(frames.some(f => f.type === 'renderer.event' && f.event === 'completed' && f.id === 6)).toBe(true);
       expect(frames.some(f => String(f.type).startsWith('audience.'))).toBe(false);
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(() => manager.start(config())).toThrow('already active');
