@@ -19,7 +19,7 @@ function run(): ExternalRendererRunStatus {
     rendererVersion: 'h3.opensource.v1.1',
     fakeClips: false,
     startMode: 'opaque',
-    storyRunId: null,
+    storyRunId: null, pickfordRunId: null,
     audienceJoinUrl: null,
     storyId: null,
     roomId: '', roomShortlink: '', storyMessageChannelId: '', roomMainMessageChannelId: '',

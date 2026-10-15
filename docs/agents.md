@@ -404,3 +404,39 @@ The Kernel's delivery credit and the renderer's unplayed-video budget are separa
 renderer concurrency cannot create DSS lookahead the Kernel has not supplied. Start with one ready
 clip and measure startup, generation, actual playback and gaps independently. Keep source-derived
 fixtures, captured wire recordings and live provider results clearly identified in evidence.
+
+## V1 headless renderer client
+
+For V1 kernels use the private operator API, not the legacy `npm run story`
+adapter. The external renderer's own `/api/*` routes and HLS URLs are local
+control/media endpoints, not Pickford API routes.
+
+1. Obtain an existing renderer's confidential `clientId`/`clientSecret` through
+   the approved Pickford V1 installation flow. Alternatively run
+   `PICKFORD_API_URL=<gateway-origin> npm run renderer:device -- <renderer-name>`.
+   The person approves the device code in Pickford. The command uses
+   `/v1/auth/device/authorize`, `/v1/auth/token`, and renderer token exchange;
+   only the verification code, renderer ID, and private file path are printed.
+   Credentials are stored mode 0600 in `.renderer/v1-renderer.json`. Do not read
+   or print that file in agent output. Re-sign in for a new worker session;
+   refresh tokens rotated during an active run are kept in worker memory.
+2. POST `/api/external-renderer/runs` on the private local operator listener with
+   `startMode: "v1"`, `baseUrl`, `rendererId`, `rendererVersion`, existing render
+   options, and either `clientId`/`clientSecret` or `rendererAccessToken` plus
+   optional `rendererRefreshToken`, `rendererTokenExpiresIn`, and `clientId`.
+   Supply secrets through private server-side configuration, never command
+   arguments, browser forms, or logs. Retain the returned local `runId`.
+3. Wait for local status `state: "running"` and non-null `sessionId`, then create
+   the Pickford run with the user's bearer at `POST /v1/runs`, an
+   `Idempotency-Key`, and `{story_bundle_id, renderer: {id: rendererId}}`.
+4. Poll `/api/external-renderer/runs/{localRunId}` until `pickfordRunId` matches
+   the exact Pickford `run_id` before accepting DSS/clip telemetry. An optional
+   `pickfordRunId` in step 2 fences a run created in advance. Clip/gap fields
+   retain their existing meanings. Connection and correlation do not prove
+   playable video or real-provider performance.
+5. Cancel the exact Pickford run at `/v1/runs/{run_id}:cancel`, then DELETE the
+   local worker run. Deleting a local run alone does not cancel Pickford.
+
+The V1 path requires no legacy `credentialId`, setup token, room provisioning,
+or EVD-specific renderer start permission. Do not start paid generation to test
+this integration; the mocked V1 regression tests use only loopback services.

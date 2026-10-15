@@ -378,6 +378,32 @@ be cached separately; it must not overwrite those source assets. Refreshable ref
 caches would also need upstream asset versions in their cache keys. Automatic opening-frame
 generation and changes to the Kernel wire format are outside this renderer integration.
 
+## V1 Hub client
+
+The private operator API accepts `startMode: "v1"` for V1 kernels. It authenticates
+through `POST /v1/auth/token`, connects to `/v1/renderers/bridge` with the
+`pickford.renderer-bridge.v1` subprotocol, and advertises `assignment_state_v1`.
+There is no asset-manifest registration on that bridge. `renderer_kind` is
+`generative_video`. Machine client credentials or renderer tokens obtained from
+device sign-in and token exchange are accepted. Tokens renew on the live socket
+through `renderer.auth.refresh`; rotated refresh tokens stay in worker memory.
+
+The caller creates its Pickford run through `POST /v1/runs` after the worker is
+connected. The worker never starts a Pickford run in V1 mode. The local `runId`
+continues to identify clip telemetry; `pickfordRunId` and `storyRunId` identify
+`renderer.assignment.state.assignment.story_run_id`. Optional input
+`pickfordRunId` fences a known expected run. A changed run, assignment, or session
+fails the worker; clearing an established assignment stops it. DSS must match
+the reconciled assignment before generation. Existing scheduling, playout,
+clip-duration, and gap calculations are shared unchanged.
+
+The caller cancels through `POST /v1/runs/{run_id}:cancel`, then deletes its local
+worker run. V1 mode does not call legacy start, lifecycle, audience-exchange, or
+provisioning routes. The renderer's older browser creator UI and its legacy
+handoff CLI have separate adapters; use the private operator API for V1. Public
+viewer HLS remains local renderer media. Audience messages for V1 go through
+Pickford's V1 chat API; the removed `audience.message` bridge frame is not sent.
+
 ### Prepared stationary coverage (PIC-1920)
 
 The configured `fal-max-ref2v` adapter advertises typed `prepared_coverage_versions: [1]`

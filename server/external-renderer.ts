@@ -3,6 +3,7 @@ import type { ServerResponse } from 'node:http';
 
 import WebSocket from 'ws';
 
+import { mintRendererToken, type RendererToken } from './v1-renderer-auth.js';
 import { generateVideo } from './fal.js';
 import { falReferenceUploader, sceneAssetTransport } from './fal-storage.js';
 import { ffmpegReferenceDownscaler } from './image-downscale.js';
@@ -23,8 +24,8 @@ import type { PlayoutClipBoundary, PlayoutClipInput, PlayoutStatus } from './pla
 
 type JsonObject = Record<string, unknown>;
 
-/** `legacy` pre-provisions a story; `opaque` lets the kernel allocate it from an EVD (PIC-1545). */
-export type StoryStartMode = 'legacy' | 'opaque';
+/** V1 connects to Hub; the caller creates and cancels its run through the public runs API. */
+export type StoryStartMode = 'legacy' | 'opaque' | 'v1';
 
 export const AUDIENCE_EXCHANGE_PATH = '/api/v1/external-audience/exchange';
 
@@ -36,7 +37,12 @@ interface ExternalRendererRunConfig {
   registerManifest: boolean;
   rendererId: string;
   credentialId: string;
+  clientId: string | null;
   clientSecret: string;
+  rendererAccessToken: string | null;
+  rendererRefreshToken: string | null;
+  rendererTokenExpiresIn: number;
+  pickfordRunId: string | null;
   rendererVersion: string;
   startMode: StoryStartMode;
   evdId: string | null;
@@ -203,6 +209,7 @@ export interface ExternalRendererRunStatus {
   fakeClips: boolean;
   startMode: StoryStartMode;
   storyRunId: string | null;
+  pickfordRunId: string | null;
   audienceJoinUrl: string | null;
   storyId: number | null;
   roomId: string;
@@ -457,7 +464,9 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
   const storyConfig = asObject(body.storyConfig ?? { message_channel_ids: [fallbackStoryChannel] }, 'storyConfig');
   const resumeExistingStory = body.resumeExistingStory === true;
   const startMode = body.startMode ?? 'legacy';
-  if (startMode !== 'legacy' && startMode !== 'opaque') throw new Error('startMode must be legacy or opaque');
+  if (startMode !== 'legacy' && startMode !== 'opaque' && startMode !== 'v1') throw new Error('startMode must be legacy or opaque or v1');
+  const v1 = startMode === 'v1';
+  if (v1 && !body.rendererAccessToken && !(body.clientId && body.clientSecret)) throw new Error('V1 requires clientId/clientSecret or rendererAccessToken');
   const opaque = startMode === 'opaque';
   if (body.supersedeExistingStory !== undefined && typeof body.supersedeExistingStory !== 'boolean') {
     throw new Error('supersedeExistingStory must be boolean');
@@ -495,15 +504,20 @@ export function parseExternalRendererRunConfig(value: unknown): ExternalRenderer
     websocketUrl: body.websocketUrl === undefined ? null : requiredWebSocketUrl(body.websocketUrl, 'websocketUrl', environment),
     registerManifest: body.registerManifest !== false,
     rendererId,
-    credentialId: uuid(body.credentialId, 'credentialId'),
-    clientSecret: requiredString(body.clientSecret, 'clientSecret'),
+    credentialId: v1 ? '' : uuid(body.credentialId, 'credentialId'),
+    clientId: v1 && body.clientId !== undefined ? requiredString(body.clientId, 'clientId') : null,
+    clientSecret: v1 && body.rendererAccessToken ? '' : requiredString(body.clientSecret, 'clientSecret'),
+    rendererAccessToken: v1 && body.rendererAccessToken !== undefined ? requiredString(body.rendererAccessToken, 'rendererAccessToken') : null,
+    rendererRefreshToken: v1 && body.rendererRefreshToken !== undefined ? requiredString(body.rendererRefreshToken, 'rendererRefreshToken') : null,
+    rendererTokenExpiresIn: positiveInteger(body.rendererTokenExpiresIn, 900, 'rendererTokenExpiresIn'),
+    pickfordRunId: body.pickfordRunId === undefined ? null : uuid(body.pickfordRunId, 'pickfordRunId'),
     rendererVersion,
     startMode,
     evdId,
     audienceExchangeUrl: body.audienceExchangeUrl === undefined
       ? null
       : requiredUrl(body.audienceExchangeUrl, 'audienceExchangeUrl', environment),
-    storyId: opaque && body.storyId === undefined ? null : positiveInteger(body.storyId, 1, 'storyId'),
+    storyId: (opaque || v1) && body.storyId === undefined ? null : positiveInteger(body.storyId, 1, 'storyId'),
     roomId: uuid(body.roomId ?? '00000000-0000-4000-8000-000000000003', 'roomId'),
     roomShortlink: typeof body.roomShortlink === 'string' ? body.roomShortlink : '',
     storyMessageChannelId,
@@ -581,9 +595,10 @@ function openWebSocket(
   url: string,
   headers: Record<string, string>,
   signal?: AbortSignal,
+  protocol?: string,
 ): Promise<{ socket: WebSocket; messages: AsyncJsonQueue }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { headers, handshakeTimeout: 30_000 });
+    const socket = protocol ? new WebSocket(url, protocol, { headers, handshakeTimeout: 30_000 }) : new WebSocket(url, { headers, handshakeTimeout: 30_000 });
     const messages = new AsyncJsonQueue();
     const onAbort = () => {
       socket.terminate();
@@ -1047,6 +1062,8 @@ class ExternalRendererRun {
   private clipPosition = 0;
   private readonly sceneContext: string[] = [];
   private heartbeat: NodeJS.Timeout | null = null;
+  private tokenRenewal: NodeJS.Timeout | null = null;
+  private v1Token: RendererToken | null = null;
   private verdictWatch: NodeJS.Timeout | null = null;
   private readonly seenDss = new Set<string>();
   private readonly startedBlocks = new Set<string>();
@@ -1103,6 +1120,7 @@ class ExternalRendererRun {
       fakeClips: provider.fakeClips,
       startMode: config.startMode,
       storyRunId: null,
+      pickfordRunId: null,
       audienceJoinUrl: null,
       storyId: config.storyId,
       roomId: config.roomId,
@@ -1150,6 +1168,8 @@ class ExternalRendererRun {
       this.stopped = true;
       this.abortController.abort(new DOMException('Renderer stopped', 'AbortError'));
       if (this.heartbeat) clearInterval(this.heartbeat);
+      if (this.tokenRenewal) clearTimeout(this.tokenRenewal);
+      this.tokenRenewal = null;
       if (this.verdictWatch) clearInterval(this.verdictWatch);
       this.heartbeat = null;
       this.verdictWatch = null;
@@ -1658,6 +1678,7 @@ class ExternalRendererRun {
   }
 
   private async observeStoryLifecycle(): Promise<void> {
+    if (this.config.startMode === 'v1') return;
     if (!this.config.storyStatusBaseUrl || !this.config.storyStatusToken || this.status.storyId === null) return;
     let observedRunning = false;
     while (!this.stopped) {
@@ -1692,6 +1713,7 @@ class ExternalRendererRun {
   }
 
   async submitAudienceMessage(input: AudienceChatMessageInput): Promise<AudienceChatMessageResult> {
+    if (this.config.startMode === 'v1') throw new Error('Send audience messages through Pickford V1 chat');
     if (this.stopped || this.status.state !== 'running' || this.socket?.readyState !== WebSocket.OPEN) {
       throw new Error('The story chat is not connected yet.');
     }
@@ -1736,7 +1758,8 @@ class ExternalRendererRun {
       this.playout = playout;
       this.status.hlsUrl = this.playout.hlsUrl;
       this.status.mediaDir = playout.status().mediaDir ?? null;
-      const loginPayload = await rendererLogin(this.config, this.abortController.signal);
+      const v1 = this.config.startMode === 'v1';
+      const loginPayload = v1 ? await this.loginV1() : await rendererLogin(this.config, this.abortController.signal);
       if (this.stopped) return;
       const websocketUrl = this.config.websocketUrl ?? rendererWebSocketUrl(this.config, loginPayload.websocket_url);
       requiredWebSocketUrl(websocketUrl, 'renderer websocket_url', this.config.environment);
@@ -1745,6 +1768,7 @@ class ExternalRendererRun {
         websocketUrl,
         { Authorization: `Bearer ${accessToken}` },
         this.abortController.signal,
+        v1 ? 'pickford.renderer-bridge.v1' : undefined,
       );
       if (this.stopped) { await closeSocket(opened.socket); return; }
       this.socket = opened.socket;
@@ -1752,11 +1776,12 @@ class ExternalRendererRun {
         type: 'renderer.hello',
         protocol_version: PROTOCOL_VERSION,
         stream_id: this.config.rendererId,
-        renderer_kind: this.config.renderMode === 'single-frame' ? SINGLE_FRAME_RENDERER_KIND
+        ...(v1 ? { capabilities: ['assignment_state_v1'] } : {}),
+        renderer_kind: v1 ? 'generative_video' : this.config.renderMode === 'single-frame' ? SINGLE_FRAME_RENDERER_KIND
           : this.provider.kind === 'minimax-direct' || this.config.renderMode === 'fal-max-ref2v' ? 'minimax-h3-max' : 'minimax-h3-max-turbo',
         ...(this.provider.kind === 'fal' && this.config.renderMode === 'fal-max-ref2v'
           ? { prepared_coverage_versions: [1] } : {}),
-        instance_id: `video-renderer-${this.runId}`,
+        instance_id: v1 ? this.runId : `video-renderer-${this.runId}`,
         assignment_id: '',
       });
       const welcome = await abortable(
@@ -1764,7 +1789,7 @@ class ExternalRendererRun {
         this.abortController.signal,
       );
       if (this.stopped) return;
-      if (welcome.stream_id !== this.config.rendererId || welcome.media_ingest_url !== null) {
+      if (welcome.stream_id !== this.config.rendererId || (v1 ? welcome.media_ingest_url != null : welcome.media_ingest_url !== null)) {
         throw new Error('renderer welcome returned mismatched identity or platform media ingest');
       }
       this.status.sessionId = requiredString(welcome.session_id, 'session_id');
@@ -1774,11 +1799,12 @@ class ExternalRendererRun {
         const detail = reason?.length ? `: ${reason.toString()}` : '';
         if (!this.stopped) this.fail(new Error(`renderer WebSocket closed (${code}${detail})`));
       });
+      if (v1) this.scheduleTokenRenewal();
       const leaseSeconds = Number(welcome.lease_seconds ?? 30);
       this.heartbeat = setInterval(() => {
         if (this.socket?.readyState === WebSocket.OPEN) send(this.socket, { type: 'renderer.heartbeat' });
       }, Math.max(1_000, Math.floor(leaseSeconds * 1_000 / 4)));
-      if (this.config.registerManifest) {
+      if (this.config.registerManifest && !v1) {
         const assetJson = assetManifestFor(this.config, this.provider.kind);
         const sha256 = assetManifestSha256(assetJson);
         send(this.socket, {
@@ -1791,7 +1817,7 @@ class ExternalRendererRun {
         const manifest = await opened.messages.matching((item) => item.type === 'renderer.asset_manifest.accepted');
         if (manifest.sha256 !== sha256) throw new Error('asset manifest acknowledgement hash mismatch');
       }
-      if (!this.config.resumeExistingStory) {
+      if (!this.config.resumeExistingStory && !v1) {
         this.status.storyStartAt = new Date().toISOString();
         const startPayload = await requestStoryStart({
           url: `${this.config.baseUrl}/api/v1/renderers/start-story`,
@@ -1828,6 +1854,15 @@ class ExternalRendererRun {
         while (!this.stopped && this.socket?.readyState === WebSocket.OPEN) {
           const message = await opened.messages.next(300_000, this.abortController.signal);
           if (message.type === 'websocket.closed') break;
+          if (v1 && message.type === 'renderer.assignment.state') {
+            this.adoptV1Assignment(message);
+            continue;
+          }
+          if (v1 && message.type === 'renderer.auth.refreshed') {
+            this.validateV1Session(message);
+            this.scheduleTokenRenewal();
+            continue;
+          }
           if (message.type === 'renderer.heartbeat.accepted') {
             this.status.lastHeartbeatAt = new Date().toISOString();
             continue;
@@ -1847,9 +1882,10 @@ class ExternalRendererRun {
             if (this.ending) continue;
             const frame = parseDssFrame(message);
             this.adoptAssignedStory(frame);
+            if (v1 && (!this.assignmentKey || this.assignmentKey !== `${frame.assignmentId}:${frame.assignmentGeneration}`)) throw new Error('DSS arrived without its matching V1 assignment');
             if (this.config.renderMode !== 'auto') {
               if (message.stream_id !== this.config.rendererId) throw new Error('DSS command targeted another renderer');
-              if (!frame.assignmentId || !Number.isInteger(frame.assignmentGeneration) || frame.assignmentGeneration < 1) throw new Error('DSS assignment identity is required');
+              if (!frame.assignmentId || !Number.isInteger(frame.assignmentGeneration) || frame.assignmentGeneration < (v1 ? 0 : 1)) throw new Error('DSS assignment identity is required');
               const key = `${frame.assignmentId}:${frame.assignmentGeneration}`;
               if (this.assignmentKey && this.assignmentKey !== key) throw new Error('Renderer assignment changed; start a fresh run');
               this.assignmentKey = key;
@@ -1928,6 +1964,65 @@ class ExternalRendererRun {
     } catch (error) {
       if (!this.stopped) this.fail(error);
     }
+  }
+
+  private async loginV1(): Promise<JsonObject> {
+    if (this.config.rendererAccessToken && !this.v1Token) {
+      const bridge = new URL('/v1/renderers/bridge', this.config.baseUrl);
+      bridge.protocol = bridge.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.v1Token = {
+        access_token: this.config.rendererAccessToken,
+        refresh_token: this.config.rendererRefreshToken ?? undefined,
+        expires_in: this.config.rendererTokenExpiresIn,
+        renderer: { renderer_id: this.config.rendererId, bridge_url: bridge.toString(), session_generation: 0 },
+      };
+    } else {
+      const refresh = this.v1Token?.refresh_token;
+      this.v1Token = await mintRendererToken(this.config.baseUrl, refresh
+        ? { grant_type: 'refresh_token', refresh_token: refresh, ...(this.config.clientId ? { client_id: this.config.clientId } : {}) }
+        : { grant_type: 'client_credentials', client_id: this.config.clientId, client_secret: this.config.clientSecret },
+      this.config.rendererId, this.abortController.signal);
+    }
+    return { access_token: this.v1Token.access_token, websocket_url: this.v1Token.renderer.bridge_url };
+  }
+
+  private scheduleTokenRenewal(): void {
+    if (this.tokenRenewal) clearTimeout(this.tokenRenewal);
+    const token = this.v1Token;
+    if (!token) return;
+    const renewable = !!token.refresh_token || !!this.config.clientSecret;
+    this.tokenRenewal = setTimeout(() => {
+      if (this.stopped) return;
+      if (!renewable) { this.fail(new Error('V1 renderer token requires a new sign-in before expiry')); return; }
+      void this.loginV1().then(payload => {
+        if (!this.stopped && this.socket) send(this.socket, { type: 'renderer.auth.refresh', protocol_version: PROTOCOL_VERSION, access_token: payload.access_token });
+      }).catch(error => { if (!this.stopped) this.fail(error); });
+    }, Math.max(100, (token.expires_in - Math.min(60, token.expires_in / 4)) * 1_000));
+  }
+
+  private validateV1Session(message: JsonObject): void {
+    if (message.session_id !== this.status.sessionId || message.session_epoch !== this.status.sessionEpoch) throw new Error('V1 bridge session changed');
+  }
+
+  private adoptV1Assignment(message: JsonObject): void {
+    this.validateV1Session(message);
+    if (message.assignment === null) {
+      if (this.assignmentKey) { this.ending = true; void this.stop(); }
+      return;
+    }
+    const assignment = asObject(message.assignment, 'renderer assignment');
+    const pickfordRunId = uuid(assignment.story_run_id, 'assignment story_run_id');
+    if ((this.config.pickfordRunId && this.config.pickfordRunId !== pickfordRunId)
+        || (this.status.pickfordRunId && this.status.pickfordRunId !== pickfordRunId)) throw new Error('V1 assignment targeted another Pickford run');
+    const id = uuid(assignment.assignment_id, 'assignment_id');
+    const generation = Number(assignment.assignment_generation);
+    if (!Number.isInteger(generation) || generation < 0) throw new Error('Invalid V1 assignment generation');
+    const key = `${id}:${generation}`;
+    if (this.assignmentKey && this.assignmentKey !== key) throw new Error('Renderer assignment changed; start a fresh run');
+    this.assignmentKey = key;
+    this.status.pickfordRunId = pickfordRunId;
+    this.status.storyRunId = pickfordRunId;
+    this.status.firstAssignmentAt ??= new Date().toISOString();
   }
 
   private storyStartBody(): JsonObject {
